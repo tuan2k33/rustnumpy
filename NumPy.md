@@ -261,6 +261,13 @@ Note: only NEP 41/42/43 are still being shaped (43 remains Draft); NEP 21 is a r
 
 Not needed in the early stage (the basic `NdArray` struct) — but the `validity` field should be reserved from the start when designing the struct, to avoid a large refactor later.
 
+**Op-level scope for masked array** (when this is eventually built — lowest priority, see step 20) — split by whether the op can just skip masked entries, or needs a filled (full) array first:
+
+- **Skip-mask directly (no fill needed)**: reductions (`sum`, `mean`, `std`, `var`, `min`/`max`, `count`, `median`, `average`) — the kernel checks validity and excludes masked entries from the accumulation; mask-creation from a condition (`masked_where`, `masked_invalid`, `masked_equal`); elementwise arithmetic (`+`, `-`, `*`, `/`) — result is masked wherever either operand is masked, no filling involved; `filled()`/`compressed()` — conversion utilities, not computation.
+- **Needs a full (filled) array first, fill = 0**: `dot`/`trace`/`outer`/matmul-style ops — mathematically these are just "treat masked entries as excluded terms in a sum of products", which is equivalent to filling with 0 (the additive identity) and running the normal op. Not a general linear-algebra solution — just a convenience shortcut for sum-of-products-shaped ops.
+- **Needs a full array, but there's no principled fill — not supported**: `solve`, `eig`, `det`, `inv`, SVD — there is no generic mathematically valid way to fill missing entries for these; they require actual imputation (a modeling decision, not a default), so skip masked-array support for these entirely and require the caller to impute first, then hand a regular (unmasked) array to `linalg`.
+- **Special case — pairwise deletion, not filling**: `cov`/`corrcoef` — each pairwise covariance between two columns uses only the rows where both columns are visible together, which is not equivalent to any single upfront fill (a global fill would bias the statistics). This is the one case where masked-array support has a real, non-fakeable advantage over "just fill and use a regular array".
+
 ## Mapping Real Source Code → Rust Modules
 
 Based on the actual structure map of NumPy's source (871 files: 190 Python, 653 C/C++, 16 Cython, 12 vendored) — grouped by capability layer, not by the original directory tree:
@@ -329,12 +336,12 @@ Each step should pause to write a benchmark comparing against NumPy — both to 
 14. **Full `linalg`** — solve, eig, SVD, QR, Cholesky, det, norm, matrix_power — via the `faer` crate (native Rust; see the convert-vs-depend-on-a-crate decision above).
 15. **FFT module** — via the `rustfft` crate (native Rust).
 16. **Full `random` distributions** — binomial, poisson, gamma, beta, dirichlet... (the earlier step 6 only covers basic uniform/normal).
-17. **Masked array** — use the `validity: Option<Bitmap>` design already noted.
-18. **`polynomial`** — Chebyshev/Hermite/Laguerre/Legendre, built on the existing `linalg`.
-19. **Array API standard audit** (NEP 56) — reconcile the final namespace/function names to match the standard.
-20. **Free-threading audit + packaging** — review thread safety, publish to crates.io/PyPI, a benchmark suite against real NumPy.
+17. **`polynomial`** — Chebyshev/Hermite/Laguerre/Legendre, built on the existing `linalg`.
+18. **Array API standard audit** (NEP 56) — reconcile the final namespace/function names to match the standard.
+19. **Free-threading audit + packaging** — review thread safety, publish to crates.io/PyPI, a benchmark suite against real NumPy.
+20. **Masked array** (lowest priority) — use the `validity: Option<Bitmap>` design already noted; scoped down to reduction-style ops only — see the op-level breakdown in the "Missing Data / numpy.ma" section. Pushed to the very end since it's the least load-bearing piece for a usable core.
 
-Steps 13–18 account for most of the raw workload (the rarely-used "long tail"), while steps 8–12 decide whether it's "actually usable" for ordinary use cases. If the goal is "usable" rather than 100% coverage, stopping after steps 12–14 can still be considered a success.
+Steps 13–17 account for most of the raw workload (the rarely-used "long tail"), while steps 8–12 decide whether it's "actually usable" for ordinary use cases. If the goal is "usable" rather than 100% coverage, stopping after steps 12–14 can still be considered a success.
 
 ## NumPy Parts Worth Dropping When Rewriting in Rust
 
@@ -367,6 +374,6 @@ The general principle above is easy to state but easy to under-apply without a c
 
 Two related items tracked but **not** yet actual deprecations (don't drop, just don't over-invest until NumPy itself settles them):
 - **`np.matrix`** — on the long-term roadmap for deprecation, but explicitly gated on SciPy finishing its own migration off sparse *matrix* onto sparse *array* first. Still fine to drop from this port now per the entry above (this project has no SciPy-style backward-compat obligation to wait for), just noting *why* real NumPy hasn't pulled the trigger yet.
-- **`numpy.ma` (masked arrays)** — NumPy considers the current design "poorly designed and undermaintained" and is weighing a rewrite (not inheriting from `ndarray`, becoming a duck-array, or moving missing-value support into the dtype system itself) but hasn't committed to a direction. Step 17 of this project already plans a `validity: Option<Bitmap>` design rather than copying `numpy.ma`'s structure — keep that plan; if NumPy lands a concrete redesign before step 17 is reached, re-check this section against it then.
+- **`numpy.ma` (masked arrays)** — NumPy considers the current design "poorly designed and undermaintained" and is weighing a rewrite (not inheriting from `ndarray`, becoming a duck-array, or moving missing-value support into the dtype system itself) but hasn't committed to a direction. Step 20 of this project already plans a `validity: Option<Bitmap>` design rather than copying `numpy.ma`'s structure — keep that plan; if NumPy lands a concrete redesign before step 20 is reached, re-check this section against it then.
 
 General principle: if something in NumPy exists only to avoid breaking code from decades past (a backward-compat sentinel), you don't carry that burden — just implement the most modern "correct" version (the latest NEP) directly from the start, without needing to implement-then-deprecate the way NumPy had to.
