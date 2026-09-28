@@ -23,6 +23,25 @@ pub enum LinalgError {
     SvdFailed,
 }
 
+impl std::fmt::Display for LinalgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LinalgError::NotSquare { shape } => write!(f, "expected a square matrix, got shape {shape:?}"),
+            LinalgError::Not2D { shape } => write!(f, "expected a 2-D array, got shape {shape:?}"),
+            LinalgError::Not1D { shape } => write!(f, "expected a 1-D array, got shape {shape:?}"),
+            LinalgError::ShapeMismatch { lhs, rhs } => {
+                write!(f, "shapes {lhs:?} and {rhs:?} are not compatible for this operation")
+            }
+            LinalgError::Singular => write!(f, "matrix is singular"),
+            LinalgError::NotPositiveDefinite => write!(f, "matrix is not positive definite"),
+            LinalgError::EigenFailed => write!(f, "eigenvalue decomposition failed to converge"),
+            LinalgError::SvdFailed => write!(f, "singular value decomposition failed to converge"),
+        }
+    }
+}
+
+impl std::error::Error for LinalgError {}
+
 fn to_mat(a: &NdArray) -> Result<Mat<f64>, LinalgError> {
     if a.ndim() != 2 {
         return Err(LinalgError::Not2D { shape: a.shape().to_vec() });

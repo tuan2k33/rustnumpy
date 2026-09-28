@@ -18,6 +18,25 @@ pub enum FftError {
     Not2D { ndim: usize },
 }
 
+impl std::fmt::Display for FftError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FftError::EmptyInput => write!(f, "input array is empty"),
+            FftError::LengthMismatch { expected, got } => {
+                write!(f, "expected length {expected}, got {got}")
+            }
+            FftError::ShapeMismatch { data_len, shape } => write!(
+                f,
+                "data has {data_len} elements but shape {shape:?} needs {}",
+                shape.iter().product::<usize>()
+            ),
+            FftError::Not2D { ndim } => write!(f, "expected a 2-D array, got {ndim} dimensions"),
+        }
+    }
+}
+
+impl std::error::Error for FftError {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComplexArray {
     data: Vec<Complex64>,

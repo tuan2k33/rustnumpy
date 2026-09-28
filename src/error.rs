@@ -1,5 +1,80 @@
 use std::fmt;
 
+#[derive(Debug)]
+pub enum Error {
+    Shape(ShapeError),
+    Linalg(crate::linalg::LinalgError),
+    Fft(crate::fft::FftError),
+    Random(crate::random::RandomError),
+    Reduction(crate::reductions::ReductionError),
+    Assertion(crate::testing::ArrayAssertionError),
+    Npy(crate::npy::NpyError),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Shape(e) => write!(f, "{e}"),
+            Error::Linalg(e) => write!(f, "{e}"),
+            Error::Fft(e) => write!(f, "{e}"),
+            Error::Random(e) => write!(f, "{e}"),
+            Error::Reduction(e) => write!(f, "{e}"),
+            Error::Assertion(e) => write!(f, "{e}"),
+            Error::Npy(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Shape(e) => Some(e),
+            Error::Linalg(e) => Some(e),
+            Error::Fft(e) => Some(e),
+            Error::Random(e) => Some(e),
+            Error::Reduction(e) => Some(e),
+            Error::Assertion(e) => Some(e),
+            Error::Npy(e) => Some(e),
+        }
+    }
+}
+
+impl From<ShapeError> for Error {
+    fn from(e: ShapeError) -> Self {
+        Error::Shape(e)
+    }
+}
+impl From<crate::linalg::LinalgError> for Error {
+    fn from(e: crate::linalg::LinalgError) -> Self {
+        Error::Linalg(e)
+    }
+}
+impl From<crate::fft::FftError> for Error {
+    fn from(e: crate::fft::FftError) -> Self {
+        Error::Fft(e)
+    }
+}
+impl From<crate::random::RandomError> for Error {
+    fn from(e: crate::random::RandomError) -> Self {
+        Error::Random(e)
+    }
+}
+impl From<crate::reductions::ReductionError> for Error {
+    fn from(e: crate::reductions::ReductionError) -> Self {
+        Error::Reduction(e)
+    }
+}
+impl From<crate::testing::ArrayAssertionError> for Error {
+    fn from(e: crate::testing::ArrayAssertionError) -> Self {
+        Error::Assertion(e)
+    }
+}
+impl From<crate::npy::NpyError> for Error {
+    fn from(e: crate::npy::NpyError) -> Self {
+        Error::Npy(e)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapeError {
 
@@ -88,3 +163,23 @@ impl fmt::Display for ShapeError {
 }
 
 impl std::error::Error for ShapeError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ndarray::NdArray;
+
+    fn compose() -> Result<f64, Error> {
+        let a = NdArray::from_vec(vec![1.0, 2.0, 4.0], &[1, 3])?;
+        let b = crate::linalg::solve(&a, &a)?;
+        Ok(b.get(&[0, 0]).unwrap())
+    }
+
+    #[test]
+    fn error_composes_across_domains_through_question_mark() {
+        let err = compose().unwrap_err();
+        assert!(matches!(err, Error::Linalg(_)));
+        assert!(err.to_string().contains("square"));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+}

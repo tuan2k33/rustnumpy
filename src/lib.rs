@@ -17,7 +17,7 @@ pub mod view;
 
 pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
-pub use error::ShapeError;
+pub use error::{Error, ShapeError};
 pub use fft::{
     fft, fft2, fftfreq, fftn, fftshift, ifft, ifft2, ifftn, ifftshift, irfft, rfft, rfftfreq,
     Complex64, ComplexArray, FftError,
