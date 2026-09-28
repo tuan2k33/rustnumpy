@@ -32,6 +32,21 @@ pub enum ShapeError {
     /// `boolean_index`'s mask doesn't have exactly one entry per element
     /// of the array (`mask.len()` must equal `array.len()`).
     BooleanMaskShapeMismatch { mask_len: usize, array_shape: Vec<usize> },
+    /// `concatenate`/`stack`/`split` was called with an empty list of
+    /// arrays, or an `axis` that doesn't exist on the given array(s).
+    EmptyArrayList,
+    /// An `axis` argument was `>=` the array's `ndim`.
+    AxisOutOfBounds { axis: usize, ndim: usize },
+    /// `concatenate`'s arrays don't all agree on every axis except the one
+    /// being concatenated along.
+    ConcatShapeMismatch { axis: usize, shapes: Vec<Vec<usize>> },
+    /// `stack`'s arrays don't all have exactly the same shape.
+    StackShapeMismatch { shapes: Vec<Vec<usize>> },
+    /// `split`'s axis length isn't evenly divisible by the requested
+    /// number of sections (matches real NumPy's plain `split`, which
+    /// requires an exact division — unlike `array_split`, not implemented
+    /// here).
+    NotEvenlyDivisible { axis_len: usize, sections: usize },
 }
 
 impl fmt::Display for ShapeError {
@@ -69,6 +84,21 @@ impl fmt::Display for ShapeError {
                 f,
                 "boolean mask has {mask_len} entries but array shape {array_shape:?} has {} elements",
                 array_shape.iter().product::<usize>()
+            ),
+            ShapeError::EmptyArrayList => write!(f, "need at least one array"),
+            ShapeError::AxisOutOfBounds { axis, ndim } => {
+                write!(f, "axis {axis} is out of bounds for an array of dimension {ndim}")
+            }
+            ShapeError::ConcatShapeMismatch { axis, shapes } => write!(
+                f,
+                "all input arrays must have the same shape except along axis {axis}, got shapes {shapes:?}"
+            ),
+            ShapeError::StackShapeMismatch { shapes } => {
+                write!(f, "all input arrays must have the same shape to stack, got shapes {shapes:?}")
+            }
+            ShapeError::NotEvenlyDivisible { axis_len, sections } => write!(
+                f,
+                "array of length {axis_len} along the split axis cannot be split into {sections} equal sections"
             ),
         }
     }

@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–12 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–13 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -20,9 +20,11 @@
 //! subset of string ufuncs, including its missing-data sentinel
 //! (`strings.rs`), a `numpy.testing` equivalent (`assert_array_equal`,
 //! `assert_allclose`, `assert_array_almost_equal`) so this project's own
-//! tests never depend on a running NumPy (`testing.rs`), and whole-array
+//! tests never depend on a running NumPy (`testing.rs`), whole-array
 //! reductions/statistics (`sum`/`mean`/`var`/`std`/`median`/`percentile`,
-//! their `nan*` variants, `histogram`, `cov`/`corrcoef`) in `reductions.rs`.
+//! their `nan*` variants, `histogram`, `cov`/`corrcoef`) in `reductions.rs`,
+//! and `lib/`-layer utilities (`unique`/`intersect1d`/`union1d`,
+//! `concatenate`/`stack`/`split`/`tile`, `interp`, `gradient`) in `utils.rs`.
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -33,10 +35,11 @@
 //! `align=True` structured dtypes, calendar (`Y`/`M`) datetime units,
 //! ISO-8601 date-string parsing, most of `numpy.strings` (only a
 //! representative subset is implemented), most of `numpy.testing`
-//! (no `assert_raises`-equivalent, no generic `assert_array_compare`), and
-//! `axis=`-parameterized reductions (whole-array only for now) — those are
-//! later steps (or, for the deprecated/calendar-dependent pieces, explicit
-//! non-goals) in `NumPy.md`.
+//! (no `assert_raises`-equivalent, no generic `assert_array_compare`),
+//! `axis=`-parameterized reductions (whole-array only for now), and
+//! `array_split` (uneven splitting; `utils.rs`'s `split` requires an exact
+//! division) — those are later steps (or, for the deprecated/calendar-
+//! dependent pieces, explicit non-goals) in `NumPy.md`.
 
 pub mod allocator;
 pub mod datetime;
@@ -51,6 +54,7 @@ pub mod strings;
 pub mod structured;
 pub mod testing;
 pub mod ufunc;
+pub mod utils;
 pub mod view;
 
 pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
@@ -75,4 +79,5 @@ pub use ufunc::{
     add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, sub, zip_with,
     zip_with_into, zip_with_parallel,
 };
+pub use utils::{concatenate, gradient, intersect1d, interp, split, stack, tile, union1d, unique};
 pub use view::{ArrayView, ArrayViewMut};
