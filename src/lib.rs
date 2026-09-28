@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–14 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–15 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -29,7 +29,9 @@
 //! `svd`/norms/`matrix_power`) in `linalg.rs`, delegating the actual
 //! numerics to the pure-Rust `faer` crate (no LAPACK/FFI) per NumPy.md's
 //! "depend on a crate, don't hand-convert" decision for numerical tools
-//! NumPy merely borrows.
+//! NumPy merely borrows, and `fft` (`fft`/`ifft`/`rfft`/`irfft`/
+//! `fftfreq`/`rfftfreq`/`fftshift`/`ifftshift`) in `fft.rs`, delegating to
+//! the pure-Rust `rustfft` crate the same way.
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -45,14 +47,17 @@
 //! `array_split` (uneven splitting; `utils.rs`'s `split` requires an exact
 //! division), and complex eigenvectors for a non-symmetric matrix (no
 //! complex dtype yet — `linalg::eigvals` returns `(re, im)` pairs instead
-//! of full `eig`, see `linalg.rs`'s doc comment) — those are later steps
-//! (or, for the deprecated/calendar-dependent pieces, explicit non-goals)
-//! in `NumPy.md`.
+//! of full `eig`, see `linalg.rs`'s doc comment), and `fft2`/`fftn`
+//! (`fft.rs` is 1-D only, and works on `Vec<Complex64>`/`Vec<f64>` rather
+//! than `NdArray` for the same no-complex-dtype reason) — those are later
+//! steps (or, for the deprecated/calendar-dependent pieces, explicit
+//! non-goals) in `NumPy.md`.
 
 pub mod allocator;
 pub mod datetime;
 pub mod dtype;
 pub mod error;
+pub mod fft;
 pub mod index;
 pub mod linalg;
 pub mod ndarray;
@@ -70,6 +75,7 @@ pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
 pub use datetime::{Datetime64, TimeError, TimeUnit, Timedelta64};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
 pub use error::ShapeError;
+pub use fft::{fft, fftfreq, fftshift, ifft, ifftshift, irfft, rfft, rfftfreq, Complex64, FftError};
 pub use index::AxisIndex;
 pub use linalg::{
     cholesky, det, eigh, eigvals, eigvalsh, frobenius_norm, inv, matrix_power, qr, solve, svd,
