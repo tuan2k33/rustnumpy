@@ -1,24 +1,3 @@
-//! Read/write the `.npy` format (NEP 1), restricted to the `float64`
-//! little-endian dtype (`<f8`), C order (row-major) — exactly the fixed
-//! dtype `NdArray` supports since step 1.
-//!
-//! File layout (see NumPy.md, "Định dạng file .npy/.npz" section):
-//!
-//! ```text
-//! offset  size            content
-//! 0       6 bytes         magic string \x93NUMPY
-//! 6       2 bytes         version (major, minor) — always written as 1.0 here
-//! 8       2 or 4 bytes    header_len (u16 for v1.x, u32 for v2.x/v3.x)
-//! 10/12   header_len byte header dict as a Python literal, padded with spaces + '\n'
-//!                         so that (header offset + header_len) is a multiple of 64
-//! ...     data_len bytes  raw data, row-major, in the declared dtype
-//! ```
-//!
-//! The header reader **doesn't** use a full Python parser — it just picks
-//! out the 3 fixed keys (`descr`, `fortran_order`, `shape`) via manual
-//! string scanning, since this format is produced by NumPy itself with a
-//! known dict shape, not an arbitrary Python literal.
-
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -28,9 +7,7 @@ use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 
 const MAGIC: &[u8; 6] = b"\x93NUMPY";
-/// NumPy aligns the header to a multiple of 64 bytes from the start of the
-/// file (good for SIMD/mmap reads of the data that follows) — this
-/// constant is called `ARRAY_ALIGN` in the C core.
+
 const ALIGN: usize = 64;
 
 #[derive(Debug)]
@@ -79,30 +56,24 @@ impl From<ShapeError> for NpyError {
     }
 }
 
-/// Write `arr` to `path` in `.npy` v1.0 format.
 pub fn save_npy<P: AsRef<Path>>(path: P, arr: &NdArray) -> Result<(), NpyError> {
     let file = File::create(path)?;
     write_npy(BufWriter::new(file), arr)
 }
 
-/// Read an array from a `.npy` file at `path`.
 pub fn load_npy<P: AsRef<Path>>(path: P) -> Result<NdArray, NpyError> {
     let file = File::open(path)?;
     read_npy(BufReader::new(file))
 }
 
-/// Write `arr` in `.npy` v1.0 format to any `Write` (file, in-memory
-/// buffer, ...) — kept separate from `save_npy` so tests can write to a
-/// `Vec<u8>` and compare byte-for-byte without touching the filesystem.
 pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
     let header_dict = format!(
         "{{'descr': '<f8', 'fortran_order': False, 'shape': {}, }}",
         format_shape_tuple(arr.shape())
     );
 
-    // Prefix for version 1.0: magic(6) + version(2) + header_len field(2) = 10.
     const PREFIX_LEN: usize = 10;
-    let unpadded_len = header_dict.len() + 1; // +1 for the mandatory trailing '\n'
+    let unpadded_len = header_dict.len() + 1;
     let total_before_pad = PREFIX_LEN + unpadded_len;
     let pad = (ALIGN - total_before_pad % ALIGN) % ALIGN;
 
@@ -116,7 +87,7 @@ pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
         .expect("header too long for the u16 field (shape with too many dimensions?)");
 
     w.write_all(MAGIC)?;
-    w.write_all(&[1, 0])?; // version 1.0
+    w.write_all(&[1, 0])?;
     w.write_all(&header_len.to_le_bytes())?;
     w.write_all(&header)?;
 
@@ -126,7 +97,6 @@ pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
     Ok(())
 }
 
-/// Read an array from any `Read`.
 pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
     let mut magic = [0u8; 6];
     r.read_exact(&mut magic)?;
@@ -158,10 +128,7 @@ pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
 
     let descr = extract_str_field(&header, "descr")?;
     if descr != "<f8" && descr != "=f8" {
-        // '=f8' means "native byte order" — on most machines (modern
-        // x86/ARM) native is little-endian, so we treat it as equivalent
-        // to '<f8'. '>f8' (big-endian) is deliberately unsupported: it
-        // would need byte-swapping, which this step doesn't do.
+
         return Err(NpyError::UnsupportedDtype(descr));
     }
 
@@ -182,10 +149,6 @@ pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
     Ok(NdArray::from_vec(data, &shape)?)
 }
 
-/// Print a shape as a Python tuple literal, matching NumPy's own 3
-/// conventions exactly: `()` for 0-D, `(N,)` for 1-D (the trailing comma
-/// is mandatory so Python doesn't mistake it for a number in parens),
-/// `(a, b, ...)` for 2-D and up.
 fn format_shape_tuple(shape: &[usize]) -> String {
     match shape.len() {
         0 => "()".to_string(),
@@ -197,9 +160,6 @@ fn format_shape_tuple(shape: &[usize]) -> String {
     }
 }
 
-/// Find `'key': <rest after the ':'>` in the header, returning the
-/// remaining string after the colon (leading whitespace trimmed) so each
-/// `extract_*_field` function can parse the expected value type from there.
 fn value_after_key<'a>(header: &'a str, key: &str) -> Result<&'a str, NpyError> {
     let needle = format!("'{key}'");
     let key_pos = header
@@ -304,8 +264,6 @@ mod tests {
         assert!(matches!(err, NpyError::BadMagic(_)));
     }
 
-    // --- Cross-check against .npy files produced by real NumPy (scripts/gen_fixtures.py) ---
-
     fn fixture(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
     }
@@ -319,7 +277,7 @@ mod tests {
 
     #[test]
     fn reads_real_numpy_matrix() {
-        // np.arange(12, dtype='<f8').reshape(3, 4)
+
         let arr = load_npy(fixture("matrix_f64.npy")).unwrap();
         assert_eq!(arr.shape(), &[3, 4]);
         assert_eq!(arr.get(&[0, 0]), Some(0.0));
@@ -330,7 +288,7 @@ mod tests {
     fn reads_real_numpy_cube_and_scalar() {
         let cube = load_npy(fixture("cube_f64.npy")).unwrap();
         assert_eq!(cube.shape(), &[2, 3, 4]);
-        assert_eq!(cube.get(&[1, 2, 3]), Some(23.0)); // last element of np.arange(24)
+        assert_eq!(cube.get(&[1, 2, 3]), Some(23.0));
 
         let scalar = load_npy(fixture("scalar_f64.npy")).unwrap();
         assert_eq!(scalar.shape(), &[] as &[usize]);
@@ -339,9 +297,7 @@ mod tests {
 
     #[test]
     fn writer_output_is_byte_identical_to_real_numpy() {
-        // Same data as np.arange(12, dtype='<f8').reshape(3, 4) used to
-        // generate the fixture — if the bytes match 100%, the writer is
-        // genuinely compatible with NumPy, not just "reads back its own output".
+
         let arr = NdArray::from_vec((0..12).map(|i| i as f64).collect(), &[3, 4]).unwrap();
         let mut ours = Vec::new();
         write_npy(&mut ours, &arr).unwrap();

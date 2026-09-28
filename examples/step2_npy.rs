@@ -1,10 +1,3 @@
-//! Run: `cargo run --example step2_npy`
-//!
-//! Reads `.npy` files produced by real NumPy directly (`tests/fixtures/`,
-//! see `scripts/gen_fixtures.py`), then writes a new array to `/tmp` and
-//! reads it back — proving both the read and write paths are compatible
-//! with the real format, not just able to read back their own output.
-
 use rustnumpy::{load_npy, save_npy, NdArray};
 
 fn main() {
@@ -20,9 +13,6 @@ fn main() {
     let cube = load_npy(fixtures.join("cube_f64.npy")).expect("read cube_f64.npy");
     println!("\ncube_f64.npy: shape = {:?}, cube[1,2,3] = {:?}", cube.shape(), cube.get(&[1, 2, 3]));
 
-    // Write an array created by rustnumpy, then read it back with our own
-    // reader (and you can open this file with `np.load(...)` in Python to
-    // verify it yourself).
     let mine = NdArray::from_vec(vec![10.5, 20.25, 30.75, 40.125], &[2, 2]).unwrap();
     let out_path = std::env::temp_dir().join("rustnumpy_step2_demo.npy");
     save_npy(&out_path, &mine).expect("write .npy");

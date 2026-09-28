@@ -1,30 +1,7 @@
-//! Step 11: `lib/`-layer utility functions — set operations (`unique`,
-//! `intersect1d`, `union1d`), shape ops (`concatenate`, `stack`, `split`,
-//! `tile`), `interp`, and `gradient`.
-//!
-//! Scope: a representative subset of what NumPy's `lib/` layer offers
-//! (per `NumPy.md`, this is "the largest volume of functions, but built
-//! on top of the core that's already there" — not meant to be
-//! exhaustive). `split` here matches real NumPy's plain `split` (requires
-//! an exact even division) rather than `array_split` (handles uneven
-//! splits) — not implemented, since `split` alone already exercises the
-//! same shape logic. `interp`/`gradient` assume their inputs are already
-//! sorted/uniformly spaced, matching what real NumPy itself requires
-//! (undefined behavior otherwise, in both).
-//!
-//! Every formula and edge case — including `unique`'s `NaN`-deduplication
-//! (`NaN`s collapse to one, even though `NaN != NaN`), `tile`'s
-//! shorter-`reps`-gets-padded-with-leading-1s rule, and `gradient`'s exact
-//! edge-vs-interior formula — was checked against real NumPy 2.5.3 first.
-
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 use crate::shape::IndexIter;
 
-/// `np.unique(data)`: sorted, deduplicated. Real NumPy collapses every
-/// `NaN` into a single trailing entry (verified: even though `NaN !=
-/// NaN`, `unique` treats them as one group and sorts them to the end,
-/// the same way `sort_unstable_by(total_cmp)` orders `NaN` last).
 pub fn unique(data: &[f64]) -> Vec<f64> {
     let mut v = data.to_vec();
     v.sort_unstable_by(|a, b| a.total_cmp(b));
@@ -32,14 +9,12 @@ pub fn unique(data: &[f64]) -> Vec<f64> {
     v
 }
 
-/// `np.intersect1d(a, b)`: sorted values present in both.
 pub fn intersect1d(a: &[f64], b: &[f64]) -> Vec<f64> {
     let ua = unique(a);
     let ub = unique(b);
     ua.into_iter().filter(|x| ub.iter().any(|y| x == y || (x.is_nan() && y.is_nan()))).collect()
 }
 
-/// `np.union1d(a, b)`: sorted values present in either.
 pub fn union1d(a: &[f64], b: &[f64]) -> Vec<f64> {
     let mut combined = a.to_vec();
     combined.extend_from_slice(b);
@@ -54,9 +29,6 @@ fn check_axis(axis: usize, ndim: usize) -> Result<(), ShapeError> {
     }
 }
 
-/// `np.concatenate([arrays...], axis)`: join arrays end-to-end along
-/// `axis`. Every array must have the same `ndim` and the same size on
-/// every axis *except* `axis` itself.
 pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
     let first = arrays.first().ok_or(ShapeError::EmptyArrayList)?;
     check_axis(axis, first.ndim())?;
@@ -74,9 +46,6 @@ pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeErr
     let mut out_shape = first.shape().to_vec();
     out_shape[axis] = arrays.iter().map(|a| a.shape()[axis]).sum();
 
-    // Precompute, for each array, the running offset of its slice along
-    // `axis` in the output — turns "which source array does output index
-    // N belong to" into a linear scan over a handful of boundaries.
     let mut offsets = Vec::with_capacity(arrays.len());
     let mut acc = 0;
     for a in arrays {
@@ -100,20 +69,10 @@ pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeErr
     Ok(NdArray::from_vec(data, &out_shape).expect("data.len() == out_shape.iter().product() by construction"))
 }
 
-/// Step 16 (NEP 56 / Array API standard v2022.12) audit: the standard's
-/// own manipulation function is named `concat`, not `concatenate` —
-/// NumPy itself keeps `concatenate` as the primary name even post-NEP 56,
-/// so both stay valid entry points here too, the same "old name still
-/// works, new name is what the standard calls it" precedent
-/// [`crate::ufunc::subtract`] follows.
 pub fn concat(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
     concatenate(arrays, axis)
 }
 
-/// `np.stack([arrays...], axis)`: like [`concatenate`], but inserts a
-/// **new** axis (of length `arrays.len()`) at position `axis` instead of
-/// joining along an existing one. Every array must have exactly the same
-/// shape.
 pub fn stack(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
     let first = arrays.first().ok_or(ShapeError::EmptyArrayList)?;
     let out_ndim = first.ndim() + 1;
@@ -138,10 +97,6 @@ pub fn stack(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
     Ok(NdArray::from_vec(data, &out_shape).expect("data.len() == out_shape.iter().product() by construction"))
 }
 
-/// `np.split(arr, sections, axis)`: cut `arr` into `sections` equal
-/// pieces along `axis`. Errs if the axis length isn't evenly divisible by
-/// `sections` (matches real NumPy's plain `split`; see the module doc
-/// comment for the `array_split` distinction this doesn't implement).
 pub fn split(arr: &NdArray, sections: usize, axis: usize) -> Result<Vec<NdArray>, ShapeError> {
     check_axis(axis, arr.ndim())?;
     if sections == 0 {
@@ -165,19 +120,8 @@ pub fn split(arr: &NdArray, sections: usize, axis: usize) -> Result<Vec<NdArray>
         .collect()
 }
 
-/// `np.tile(arr, reps)`: repeat `arr`'s content `reps[i]` times along
-/// axis `i`. Whichever of `reps`/`arr.ndim()` is shorter gets padded with
-/// leading `1`s to match the other, both directions verified against real
-/// NumPy: `tile(2x2 matrix, 2)` pads `reps` to `(1, 2)` (only the *last*
-/// axis repeats, the matrix's row count is untouched); `tile(2-vector,
-/// (2, 2))` pads the vector's own shape to `(1, 2)` (a new leading axis
-/// appears) before applying `reps`.
 pub fn tile(arr: &NdArray, reps: &[usize]) -> NdArray {
-    // Whichever of `arr`'s own shape / `reps` is shorter gets padded with
-    // leading size-1 / 1-rep entries, matching real NumPy exactly:
-    // `tile((2,2)-matrix, 2)` pads `reps` to `(1,2)` (repeats only the
-    // last axis); `tile((2,)-vector, (2,2))` pads the vector's *shape* to
-    // `(1,2)` (adds a new leading axis) before applying `reps=(2,2)`.
+
     let out_ndim = arr.ndim().max(reps.len());
     let mut padded_shape = vec![1usize; out_ndim - arr.ndim()];
     padded_shape.extend_from_slice(arr.shape());
@@ -188,9 +132,7 @@ pub fn tile(arr: &NdArray, reps: &[usize]) -> NdArray {
         padded_shape.iter().zip(padded_reps.iter()).map(|(&d, &r)| d * r).collect();
     let data: Vec<f64> = IndexIter::new(&out_shape)
         .map(|idx| {
-            // Modulo against the padded shape, then drop the leading
-            // padded axes (each always size 1, so index 0) to get back to
-            // `arr`'s own real dimensionality.
+
             let padded_source_idx: Vec<usize> =
                 idx.iter().zip(padded_shape.iter()).map(|(&i, &d)| i % d).collect();
             let source_idx = &padded_source_idx[out_ndim - arr.ndim()..];
@@ -200,11 +142,6 @@ pub fn tile(arr: &NdArray, reps: &[usize]) -> NdArray {
     NdArray::from_vec(data, &out_shape).expect("data.len() == out_shape.iter().product() by construction")
 }
 
-/// `np.interp(x, xp, fp)`: 1-D linear interpolation. `xp` must already be
-/// sorted ascending (real NumPy's own requirement — results are
-/// unspecified otherwise, not checked here). Outside `[xp[0], xp[-1]]`,
-/// clamps flat to `fp[0]`/`fp[-1]` (real NumPy's default; it also accepts
-/// explicit `left`/`right` override values, not implemented here).
 pub fn interp(x: &[f64], xp: &[f64], fp: &[f64]) -> Vec<f64> {
     x.iter()
         .map(|&xi| {
@@ -221,12 +158,6 @@ pub fn interp(x: &[f64], xp: &[f64], fp: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-/// `np.gradient(f, dx)`: the numerical derivative of a 1-D sequence with
-/// uniform spacing `dx`. Interior points use the central difference
-/// `(f[i+1] - f[i-1]) / (2*dx)`; the two edges use a one-sided difference
-/// `(f[1]-f[0])/dx` / `(f[n-1]-f[n-2])/dx` (real NumPy's default
-/// `edge_order=1`) — verified against real NumPy at every point, not just
-/// the formula in the abstract.
 pub fn gradient(f: &[f64], dx: f64) -> Vec<f64> {
     let n = f.len();
     if n < 2 {
@@ -247,7 +178,7 @@ mod tests {
 
     #[test]
     fn unique_sorts_dedups_and_collapses_nan_to_one() {
-        // np.unique([3,1,2,1,NaN,NaN,2]) -> [1,2,3,NaN]
+
         let data = [3.0, 1.0, 2.0, 1.0, f64::NAN, f64::NAN, 2.0];
         let u = unique(&data);
         assert_eq!(&u[..3], &[1.0, 2.0, 3.0]);
@@ -265,14 +196,13 @@ mod tests {
 
     #[test]
     fn concatenate_axis0_and_axis1_match_real_numpy() {
-        // np.concatenate([[[1,2],[3,4]], [[5,6]]], axis=0)
+
         let c1 = NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
         let c2 = NdArray::from_vec(vec![5.0, 6.0], &[1, 2]).unwrap();
         let out = concatenate(&[&c1, &c2], 0).unwrap();
         assert_eq!(out.shape(), &[3, 2]);
         assert_eq!(out.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-        // np.concatenate([[[1,2],[3,4]], [[5],[6]]], axis=1)
         let c3 = NdArray::from_vec(vec![5.0, 6.0], &[2, 1]).unwrap();
         let out = concatenate(&[&c1, &c3], 1).unwrap();
         assert_eq!(out.shape(), &[2, 3]);
@@ -295,14 +225,13 @@ mod tests {
 
     #[test]
     fn stack_axis0_and_axis1_match_real_numpy() {
-        // np.stack([[1,2,3,4],[3,4,5,6]], axis=0) -> [[1,2,3,4],[3,4,5,6]]
+
         let a = NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[4]).unwrap();
         let b = NdArray::from_vec(vec![3.0, 4.0, 5.0, 6.0], &[4]).unwrap();
         let out = stack(&[&a, &b], 0).unwrap();
         assert_eq!(out.shape(), &[2, 4]);
         assert_eq!(out.as_slice(), &[1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 6.0]);
 
-        // np.stack([...], axis=1) -> [[1,3],[2,4],[3,5],[4,6]]
         let out = stack(&[&a, &b], 1).unwrap();
         assert_eq!(out.shape(), &[4, 2]);
         assert_eq!(out.as_slice(), &[1.0, 3.0, 2.0, 4.0, 3.0, 5.0, 4.0, 6.0]);
@@ -310,7 +239,7 @@ mod tests {
 
     #[test]
     fn split_into_equal_sections_matches_real_numpy() {
-        // np.split(np.arange(9.), 3) -> [[0,1,2],[3,4,5],[6,7,8]]
+
         let d = NdArray::from_vec((0..9).map(|i| i as f64).collect(), &[9]).unwrap();
         let parts = split(&d, 3, 0).unwrap();
         assert_eq!(parts.len(), 3);
@@ -327,11 +256,10 @@ mod tests {
 
     #[test]
     fn tile_1d_and_2d_reps_match_real_numpy() {
-        // np.tile([1,2], 3) -> [1,2,1,2,1,2]
+
         let e = NdArray::from_vec(vec![1.0, 2.0], &[2]).unwrap();
         assert_eq!(tile(&e, &[3]).as_slice(), &[1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
 
-        // np.tile([1,2], (2,2)) -> [[1,2,1,2],[1,2,1,2]]
         let out = tile(&e, &[2, 2]);
         assert_eq!(out.shape(), &[2, 4]);
         assert_eq!(out.as_slice(), &[1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
@@ -339,8 +267,7 @@ mod tests {
 
     #[test]
     fn tile_matrix_with_shorter_reps_pads_leading_axes() {
-        // np.tile([[1,2],[3,4]], 2) -> [[1,2,1,2],[3,4,3,4]] (only the
-        // last axis repeats; reps=(2,) is padded to (1,2))
+
         let m = NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
         let out = tile(&m, &[2]);
         assert_eq!(out.shape(), &[2, 4]);
@@ -351,22 +278,22 @@ mod tests {
     fn interp_matches_real_numpy_inside_and_extrapolated() {
         let xp = [0.0, 1.0, 2.0, 3.0];
         let fp = [0.0, 10.0, 20.0, 30.0];
-        // np.interp([0.5,1.5,2.9], xp, fp) -> [5., 15., 29.]
+
         let inside = interp(&[0.5, 1.5, 2.9], &xp, &fp);
         for (got, want) in inside.iter().zip([5.0, 15.0, 29.0]) {
             assert!((got - want).abs() < 1e-9);
         }
-        // np.interp([-1,5], xp, fp) -> [0., 30.] (clamped flat)
+
         let outside = interp(&[-1.0, 5.0], &xp, &fp);
         assert_eq!(outside, vec![0.0, 30.0]);
     }
 
     #[test]
     fn gradient_matches_real_numpy_edges_and_interior() {
-        // np.gradient([1,2,4,7,11]) -> [1., 1.5, 2.5, 3.5, 4.]
+
         let g = gradient(&[1.0, 2.0, 4.0, 7.0, 11.0], 1.0);
         assert_eq!(g, vec![1.0, 1.5, 2.5, 3.5, 4.0]);
-        // np.gradient([1,2,4,7,11], 2.0) -> [0.5, 0.75, 1.25, 1.75, 2.]
+
         let g2 = gradient(&[1.0, 2.0, 4.0, 7.0, 11.0], 2.0);
         assert_eq!(g2, vec![0.5, 0.75, 1.25, 1.75, 2.0]);
     }

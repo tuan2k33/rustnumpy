@@ -1,9 +1,3 @@
-//! Run: `cargo run --example full_numeric_support`
-//!
-//! Full numeric support: `ufunc`/`reductions` genericized over `T`. Same engine as
-//! every earlier `f64` example -- just called with `NdArray<i32>`,
-//! `NdArray<u64>`, and `NdArray<Complex64>` instead.
-
 use rustnumpy::{add, max, mean, min, sub, sum, Complex64, NdArray};
 
 fn main() {
@@ -12,12 +6,11 @@ fn main() {
     println!("i32 add(a, b) -> {:?}", add(&a.view(), &b.view()).unwrap().as_slice());
     println!("i32 sub(b, a) -> {:?}", sub(&b.view(), &a.view()).unwrap().as_slice());
 
-    // sum/min/max preserve the input's own type...
     let s: i32 = sum(&a.view());
     println!("\ni32 sum(a) -> {s} (still i32, not upcast to i64 like real NumPy -- see reductions.rs's `sum` doc comment)");
     println!("i32 min(a) -> {}", min(&a.view()).unwrap());
     println!("i32 max(a) -> {}", max(&a.view()).unwrap());
-    // ...but mean always promotes to f64, matching real NumPy exactly.
+
     println!("i32 mean(a) -> {} (f64, not truncated back to i32)", mean(&a.view()));
 
     let ua = NdArray::from_vec(vec![100u64, 200, 300], &[3]).unwrap();

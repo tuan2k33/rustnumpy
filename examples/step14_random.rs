@@ -1,12 +1,3 @@
-//! Run: `cargo run --example step14_random`
-//!
-//! Step 14: a NEP 19 `Generator` (`rand_pcg::Pcg64` + `rand_distr`). This
-//! generator is only *statistically* equivalent to NumPy's `Generator`,
-//! not bit-stream compatible -- see `random.rs`'s doc comment for why
-//! that's the deliberately accepted scope here. Each distribution's mean
-//! is checked against its own textbook formula using this project's own
-//! `reductions::mean`, not against a running NumPy.
-
 use rustnumpy::{mean, Generator};
 
 fn main() {

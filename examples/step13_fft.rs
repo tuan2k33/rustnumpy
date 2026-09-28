@@ -1,9 +1,3 @@
-//! Run: `cargo run --example step13_fft`
-//!
-//! Step 13: `fft` via `rustfft` (pure Rust, no FFI). Every value below was
-//! checked against real NumPy 2.5.3 first (see `fft.rs`'s doc comment for
-//! the tolerance-not-exact-equality policy this follows).
-
 use rustnumpy::{fft, fft2, fftfreq, fftn, fftshift, ifft, ifftshift, irfft, rfft, rfftfreq, Complex64, ComplexArray};
 
 fn main() {
@@ -26,7 +20,6 @@ fn main() {
     println!("\nfftshift([0,1,2,3]) -> {shifted:?}");
     println!("ifftshift(fftshift(a)) -> {:?}", ifftshift(&shifted));
 
-    // fftn/fft2: auto-detects ndim, loops a 1-D fft over every axis.
     let matrix = ComplexArray::from_vec(
         [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(|r| Complex64::new(r, 0.0)).to_vec(),
         &[2, 3],

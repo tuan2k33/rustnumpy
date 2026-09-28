@@ -1,125 +1,4 @@
-//! rustnumpy — steps 1–19 of the plan to port NumPy to Rust (see `NumPy.md`).
-//! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
-//! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
-//! Worth Dropping" section).
-//!
-//! Covered so far: a generic `NdArray<T = f64>` (shape/strides/buffer,
-//! monomorphized per concrete `T` at compile time — the same idea NumPy's
-//! own per-dtype `.c.src` templates express at build time, see
-//! `ndarray.rs`'s doc comment; every other module still only writes the
-//! bare, default-`f64` name in its own signatures, unchanged), manual
-//! immutable/mutable views (slicing, broadcasting), `.npy`
-//! read/write (NEP 1) cross-checked byte-for-byte against real NumPy, a
-//! DType trait + the NEP 50 promotion algorithm, a small generic ufunc
-//! engine (broadcasting + closures + the `out=` pattern) with both
-//! sequential and Rayon-parallel element loops, a custom `Allocator`
-//! trait (NEP 49) with a system and a bump-arena implementation, PyO3
-//! bindings (in the separate `python/` crate) so the array is callable
-//! from real Python, advanced indexing (fancy integer-array indexing,
-//! boolean mask indexing) split into explicit `.oindex()`/`.vindex()`
-//! methods per NEP 21's never-shipped proposal (`index.rs`), a packed
-//! structured/record dtype (`structured.rs`), fixed-ratio-unit
-//! `datetime64`/`timedelta64` with NaT semantics matching real NumPy
-//! (`datetime.rs`), `StringDType` (NEP 55) plus a `numpy.strings`-shaped
-//! subset of string ufuncs, including its missing-data sentinel
-//! (`strings.rs`), a `numpy.testing` equivalent (`assert_array_equal`,
-//! `assert_allclose`, `assert_array_almost_equal`) so this project's own
-//! tests never depend on a running NumPy (`testing.rs`), whole-array
-//! reductions/statistics (`sum`/`mean`/`var`/`std`/`median`/`percentile`,
-//! their `nan*` variants, `histogram`, `cov`/`corrcoef`) in `reductions.rs`,
-//! `lib/`-layer utilities (`unique`/`intersect1d`/`union1d`,
-//! `concatenate`/`stack`/`split`/`tile`, `interp`, `gradient`) in `utils.rs`,
-//! and full `linalg` (`solve`/`inv`/`det`/`qr`/`cholesky`/`eigh`/`eigvals`/
-//! `svd`/norms/`matrix_power`) in `linalg.rs`, delegating the actual
-//! numerics to the pure-Rust `faer` crate (no LAPACK/FFI) per NumPy.md's
-//! "depend on a crate, don't hand-convert" decision for numerical tools
-//! NumPy merely borrows, `fft` (`fft`/`ifft`/`rfft`/`irfft`/`fftn`/`ifftn`/
-//! `fft2`/`ifft2`/`fftfreq`/`rfftfreq`/`fftshift`/`ifftshift`) in `fft.rs`,
-//! delegating to the pure-Rust `rustfft` crate the same way (the N-D
-//! variants auto-detect dimensionality and loop a 1-D FFT over every
-//! axis, the same separable-transform trick pocketfft itself uses), and a
-//! NEP 19 `Generator`
-//! (`random`/`uniform`/`integers`/`standard_normal`/`normal`/
-//! `exponential`/`gamma`/`beta`/`binomial`/`poisson`/`dirichlet`) in
-//! `random.rs`, mapping BitGenerator/Generator onto `rand_pcg::Pcg64` +
-//! `rand_distr` (statistically, not bit-stream, equivalent to NumPy's own
-//! `Generator` — see `random.rs`'s doc comment), and `polynomial`
-//! (`Polynomial` over `Chebyshev`/`Hermite`/`Laguerre`/`Legendre` bases:
-//! `evaluate` via each family's three-term recurrence, `roots` via a
-//! power-basis companion matrix fed into `linalg::eigvals`) in
-//! `polynomial.rs`, plus (also generic-hardening work, and separately a
-//! `dtype.rs` extension: `Kind`/`DType` now also cover `Uint`/`Complex`,
-//! verified rule-by-rule against real NumPy's own `can_cast`/
-//! `result_type`) a step 16 audit of this crate's public function names
-//! against the Python Array API standard (NEP 56): `subtract`/
-//! `multiply`/`concat`/`matrix_norm` added as standard-aligned aliases of
-//! `sub`/`mul`/`concatenate`/`frobenius_norm` — see `NumPy.md`'s "Step 16
-//! audit" section for the full comparison table (what already matched,
-//! what got aliased, what's a genuine gap against the standard). Step 17
-//! then audited thread-safety crate-wide (zero global mutable state found;
-//! `BumpArena`/`PooledVec` were found `!Send` and fixed with a documented
-//! `unsafe impl`, see `allocator.rs`) and added crates.io/PyPI packaging
-//! metadata (`LICENSE-MIT`/`LICENSE-APACHE`, `README.md`) without actually
-//! publishing — see `NumPy.md`'s "Step 17" section for what's verified vs.
-//! still an open gap (notably: free-threaded-CPython behavior of the
-//! `python/` PyO3 bindings isn't tested, no free-threaded interpreter is
-//! available here; the NumPy benchmark suite stays deferred).
-//!
-//! (Unnumbered, extending steps 4/10 — see `NumPy.md` for why this isn't
-//! its own numbered step) full numeric support then closed the biggest
-//! remaining gap from step 16: `ufunc`'s
-//! `add`/`sub`/`mul` (+ `_parallel` variants) and `reductions`'s
-//! `sum`/`min`/`max`/`mean`/`var`/`std`/`median`/`percentile`/`nan*` are
-//! now generic over `T` (any numeric type with the right `std::ops`
-//! bound), and `dtype.rs`'s `DType` trait was widened to cover every
-//! integer width (`i8`..`i64`, `u8`..`u64` — previously only `i32`/`u32`)
-//! and `complex64` (previously only `complex128`). `sum`/`min`/`max`
-//! preserve `T` exactly; `mean`/`var`/`std`/`median`/`percentile` always
-//! promote to `f64`, matching real NumPy's own "these always return a
-//! float" reduction rule — see `sum`'s own doc comment in `reductions.rs`
-//! for one documented, deliberate divergence from real NumPy (NumPy
-//! additionally upcasts a *narrow* integer `sum`/`mean` to a wider
-//! integer to dodge overflow; a plain Rust generic can't return a
-//! different concrete type per input type the way NumPy's runtime
-//! dispatch can, so `sum::<T>` here stays exactly `T`). `linalg`/`fft`/
-//! `random` deliberately remain `f64`/`Complex64`-only: real NumPy's own
-//! LAPACK/FFT bindings upcast every input to `float64` internally too, so
-//! genericizing those signatures wouldn't change their actual arithmetic.
-//!
-//! Deliberately **not yet** present: `cov`/`corrcoef`/`histogram` (in
-//! `reductions.rs`) stay `f64`-only (not yet generic like the rest of that
-//! module), `linalg`/`fft`/`random` stay `f64`/`Complex64`-only as noted
-//! above, and `NEP 50` mixed-type promotion still isn't wired into any of
-//! these — `ufunc::add::<i32>` requires *both* operands already be `i32`,
-//! it doesn't accept an `i32` array and an `f64` array and promote the
-//! result the way `dtype.rs`'s `common_dtype`/`can_cast` describe how it
-//! *should*; actually dispatching to the right monomorphized instance
-//! from two different runtime dtypes is a separate, harder problem (real
-//! NumPy's `resolve_descriptors`/`get_loop`) not solved here.
-//! `NdArray` isn't generic over `Allocator` yet
-//! (that's `allocator.rs`'s own standalone `PooledVec`), a cache-optimized
-//! iterator (NEP 10), generalized core-dimension ufuncs (NEP 20), boolean
-//! masks over a prefix of axes, non-adjacent fancy indices in `vindex`,
-//! `align=True` structured dtypes, calendar (`Y`/`M`) datetime units,
-//! ISO-8601 date-string parsing, most of `numpy.strings` (only a
-//! representative subset is implemented), most of `numpy.testing`
-//! (no `assert_raises`-equivalent, no generic `assert_array_compare`),
-//! `axis=`-parameterized reductions (whole-array only for now),
-//! `array_split` (uneven splitting; `utils.rs`'s `split` requires an exact
-//! division), and complex eigenvectors for a non-symmetric matrix
-//! (`linalg::eigvals` returns `(re, im)` pairs instead of full `eig`, and
-//! `fft.rs`'s N-D functions still use their own `ComplexArray` type
-//! rather than `NdArray<Complex64>` — both predate `NdArray<T>` becoming
-//! generic and haven't been migrated to it yet; `NdArray<Complex64>`
-//! itself now works fine as a container, see `examples/generic_ndarray.rs`),
-//! and `RandomState`/
-//! the legacy `np.random.seed()` API (deliberately dropped, not a gap —
-//! see `random.rs`'s doc comment and `NumPy.md`'s "Parts Worth Dropping")
-//! — those are later steps (or, for the deprecated/calendar-dependent
-//! pieces, explicit non-goals) in `NumPy.md`.
-
 pub mod allocator;
-pub mod datetime;
 pub mod dtype;
 pub mod error;
 pub mod fft;
@@ -131,15 +10,12 @@ pub mod polynomial;
 pub mod random;
 pub mod reductions;
 pub mod shape;
-pub mod strings;
-pub mod structured;
 pub mod testing;
 pub mod ufunc;
 pub mod utils;
 pub mod view;
 
 pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
-pub use datetime::{Datetime64, TimeError, TimeUnit, Timedelta64};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
 pub use error::ShapeError;
 pub use fft::{
@@ -160,8 +36,6 @@ pub use reductions::{
     nanmin, nanstd, nanstd_default, nansum, nanvar, nanvar_default, percentile, std, std_default,
     sum, var, var_default, ReductionError,
 };
-pub use strings::{StringArray, StringError};
-pub use structured::{Field, RecordArray, RecordDType, RecordError};
 pub use testing::{
     assert_allclose, assert_allclose_default, assert_array_almost_equal,
     assert_array_almost_equal_default, assert_array_equal, ArrayAssertionError,

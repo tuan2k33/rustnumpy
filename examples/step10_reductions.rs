@@ -1,11 +1,3 @@
-//! Run: `cargo run --example step10_reductions`
-//!
-//! Step 10: whole-array reductions/statistics. Every value below was
-//! checked against real NumPy 2.5.3 first (see `reductions.rs`'s doc
-//! comment) -- including the two counter-intuitive `nan*` findings:
-//! `nansum` of an all-`NaN` array is `0.0`, but `nanmean`/`nanvar`/
-//! `nanstd`/`nanmedian`/`nanmin`/`nanmax` of the same array are all `NaN`.
-
 use rustnumpy::{corrcoef, cov_default, histogram, mean, median, nanmean, nansum, percentile, std_default, var_default, NdArray};
 
 fn arr(values: &[f64]) -> NdArray {

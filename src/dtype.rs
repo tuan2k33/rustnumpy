@@ -1,92 +1,18 @@
-//! Step 3: a basic DType system via a trait, plus the NEP 50 promotion
-//! algorithm (see NumPy.md, "The new DType system" and "Promotion rules").
-//!
-//! Design choice made here, straight from NumPy.md's own mapping table:
-//! **hybrid** dispatch — a closed `Kind` enum for the built-in numeric
-//! kinds, covering `bool`/unsigned+signed integers/floats/complex (fast,
-//! exhaustive `match`, what most code will use) plus a `DType` trait
-//! implemented directly on Rust's own primitive types (`bool`, `i32`,
-//! `u32`, `f32`, `f64`, `num_complex::Complex<f64>`), so a generic
-//! function like `common_dtype_of::<i32, f32>()` gets monomorphized at
-//! compile time instead of paying for dynamic dispatch. A real "third
-//! parties can add dtypes" story (NEP 41/42's actual point) would need
-//! `dyn DType` instead — deliberately out of scope for this step.
-//!
-//! `Kind::Uint`/`Kind::Int` mixing and `Kind::Complex` were added and
-//! verified directly against real NumPy's own `np.can_cast(...,
-//! casting=...)`/`np.result_type` after a first pass of this module
-//! shipped without them — see [`can_cast`] and `common_dtype`'s
-//! `int_uint_common` helper for the specific (occasionally
-//! non-obvious — e.g. `int64 + uint64 -> float64`, not some wider
-//! integer) rules that verification turned up.
-//!
-//! **Known, still-open gaps against real NumPy's full casting model**:
-//! - [`CastSafety`] has 4 levels, not NumPy's full 5 (`no`, `equiv`,
-//!   `safe`, `same_kind`, `unsafe`): `no` and `equiv` are collapsed into
-//!   one `Equivalent` here, since the distinction between them is entirely
-//!   about byte-order (`equiv` allows a byte-swap, `no` doesn't), and this
-//!   project has no byte-order/endianness model at all (`npy.rs` only
-//!   reads/writes native-order files, explicitly refusing big-endian).
-//! - This module only classifies *whether a cast is allowed* — there's no
-//!   function anywhere in this crate that actually performs one
-//!   (`NdArray<T>` has no `astype::<U>()` yet, even though `NdArray<T>`
-//!   becoming generic makes one straightforward to add). Nothing here
-//!   converts real data.
-//! - Real NumPy's weak-scalar-overflow behavior (`np.int8(1) + 1000`
-//!   raising `OverflowError` instead of silently upcasting) and its
-//!   reduction-specific default-dtype rule (`sum()`/`prod()` on a narrow
-//!   int always accumulates in at least `int64`) both depend on actually
-//!   *running* int arithmetic — out of scope until `ufunc`/`reductions`
-//!   grow int support (currently both are `f64`-only, see their own doc
-//!   comments), not something `dtype.rs`'s cast-safety table alone could
-//!   express.
-//! - [`can_cast`] deliberately does **not** match real NumPy on one pair
-//!   (`int64`/`uint64` -> `float64`/`complex128`) where NumPy's own
-//!   cast-safety table is internally inconsistent — see `can_cast`'s own
-//!   doc comment for the evidence and the reasoning for diverging there.
-//! - No `Kind::String` (or similar) variant, so `numeric <-> string`
-//!   casting (`unsafe` both directions in real NumPy) isn't expressible
-//!   either — `strings.rs`'s `StringArray` is a wholly separate type, not
-//!   integrated with `Kind`/`DType` at all.
-
-/// A dtype's "kind" plus bit width, ordered exactly per real NumPy's own
-/// `dtype.kind` tiebreak order: `b(ool) < u(int) < i(nt) < f(loat) <
-/// c(omplex)`, and within the same kind, wider wins. Deriving
-/// `PartialOrd`/`Ord` here isn't just convenient — the derive compares the
-/// variant's declaration order first, which happens to match that exact
-/// ranking, and only falls back to comparing the payload (bit width) when
-/// the variant matches. So `Kind::Int(16) < Kind::Float(32)` and
-/// `Kind::Int(16) < Kind::Int(32)` both fall out of one `derive` for free.
-///
-/// This `Ord` is **not** used to resolve `Int`/`Uint` mixing, though —
-/// unlike every other pair, which side "should be visited" isn't a simple
-/// linear order (see [`common_dtype`]'s `int_uint_common` helper for why
-/// `int64 + uint64` promotes all the way to `float64`, not to some Int/Uint
-/// variant at all).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Bool,
-    /// Bit width: 8, 16, 32, or 64 in this exercise.
+
     Uint(u8),
-    /// Bit width: 8, 16, 32, or 64 in this exercise.
+
     Int(u8),
-    /// Bit width: 32 or 64 in this exercise (no float16/float128 here).
+
     Float(u8),
-    /// Bit width of **each component** (`32` for `complex64`'s two
-    /// `f32`s, `64` for `complex128`'s two `f64`s) — matching what
-    /// `Float`'s own payload means, not NumPy's own dtype-name convention
-    /// (NumPy's `complex64` has *itself* 64 total bits, 32 per component).
+
     Complex(u8),
 }
 
 impl Kind {
-    /// NEP 50's "kind rank" as a plain integer — used where we need to
-    /// compare *only* the kind and ignore bit width (the weak-scalar rule
-    /// below needs exactly this, since a Python scalar has no width).
-    /// `Uint` shares `Int`'s rank: a weak Python `int` scalar doesn't
-    /// upgrade a `uint` array's dtype any more than it does an `int`
-    /// array's (`np.uint8([1]) + 1` stays `uint8`, same shape of rule as
-    /// `np.int8([1]) + 1` staying `int8`).
+
     fn rank(self) -> u8 {
         match self {
             Kind::Bool => 0,
@@ -97,13 +23,6 @@ impl Kind {
     }
 }
 
-/// How many bits of an integer a float's mantissa can represent *exactly*
-/// (sign + all bit patterns up to `2^mantissa_bits` round-trip losslessly
-/// through the float). This is the real reason `int32 + float32 ->
-/// float64` in NumPy: a 32-bit int can hold values float32's 24-bit
-/// mantissa (23 stored + 1 implicit) can't represent exactly, so NumPy
-/// bumps to the next float width that can, capping at 64 bits since this
-/// exercise has no float128.
 fn float_mantissa_bits(float_bits: u8) -> u8 {
     match float_bits {
         32 => 24,
@@ -112,10 +31,6 @@ fn float_mantissa_bits(float_bits: u8) -> u8 {
     }
 }
 
-/// Pick the narrowest available float width whose mantissa can exactly
-/// represent an integer of `int_bits` bits, falling back to the widest
-/// float we support (64) if none can — matching NumPy's own fallback
-/// (there's no float128 to reach for either).
 fn smallest_exact_float_for_int(int_bits: u8) -> u8 {
     for float_bits in [32u8, 64] {
         if int_bits <= float_mantissa_bits(float_bits) {
@@ -125,19 +40,11 @@ fn smallest_exact_float_for_int(int_bits: u8) -> u8 {
     64
 }
 
-/// NEP 50's `common_dtype` for two *concrete* array dtypes: no Python
-/// scalars involved here, both sides are already real array dtypes.
-///
-/// Cross-checked against real NumPy's `np.result_type`:
-/// `int16+float32->float32`, `int32+float32->float64`,
-/// `int64+float32->float64`, `bool+int32->int32`, plus every `Uint`/
-/// `Complex` combination this function now handles (see
-/// `int_uint_common`'s own doc comment and this module's tests).
 pub fn common_dtype(a: Kind, b: Kind) -> Kind {
     use Kind::*;
     match (a, b) {
         (Bool, Bool) => Bool,
-        (Bool, other) | (other, Bool) => other, // bool is the additive identity of kind ranking
+        (Bool, other) | (other, Bool) => other,
 
         (Int(x), Int(y)) => Int(x.max(y)),
         (Uint(x), Uint(y)) => Uint(x.max(y)),
@@ -154,16 +61,6 @@ pub fn common_dtype(a: Kind, b: Kind) -> Kind {
     }
 }
 
-/// NumPy's int/uint promotion when neither side's range is a subset of the
-/// other's: if the signed type is already wide enough to hold every value
-/// the unsigned type can, the result is that signed type, unchanged;
-/// otherwise it's the narrowest *wider* signed type that can, or `float64`
-/// if none of the available signed widths (up to 64 here) are wide enough
-/// — this is exactly why real NumPy's `int64 + uint64 -> float64`: there's
-/// no `int128` to promote to, so it falls all the way through to a float,
-/// the same "no wider exact type available" reasoning `smallest_exact_float_for_int`
-/// uses for plain `Int + Float`. Verified against real NumPy for every
-/// `(signed width, unsigned width)` pair among 8/16/32/64.
 fn int_uint_common(signed_bits: u8, unsigned_bits: u8) -> Kind {
     if signed_bits > unsigned_bits {
         return Kind::Int(signed_bits);
@@ -176,9 +73,6 @@ fn int_uint_common(signed_bits: u8, unsigned_bits: u8) -> Kind {
     Kind::Float(64)
 }
 
-/// A Python `int`/`float` literal as NEP 50 sees it: a "weak" scalar with
-/// a kind but **no fixed width** — it only becomes a concrete dtype once
-/// it collides with a real array.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WeakScalar {
     Int(i64),
@@ -194,24 +88,6 @@ impl WeakScalar {
     }
 }
 
-/// NEP 50's headline rule, stated precisely: combining an array with a
-/// weak Python scalar **never changes the array's concrete dtype** as
-/// long as the scalar's kind is the same rank or lower. Only when the
-/// scalar's kind outranks the array's does the result change — and even
-/// then it becomes the *default* dtype for that kind (`int64`/`float64`),
-/// completely ignoring the array's own bit width, because the weak scalar
-/// never had a width to contribute in the first place.
-///
-/// This is the exact behavior NEP 50 was written to make predictable: old
-/// NumPy would sometimes look at the scalar's *value* to decide; NEP 50
-/// looks at its *kind* only, so the result never depends on what number
-/// you happened to write.
-///
-/// Cross-checked against real NumPy (`arr + scalar`):
-/// `bool_array + 1 -> int64`, `bool_array + 1.0 -> float64`,
-/// `int32_array + 1 -> int32` (unchanged), `int32_array + 1.0 -> float64`
-/// (not float32!), `float32_array + 1 -> float32`,
-/// `float32_array + 1.0 -> float32` (unchanged).
 pub fn promote_array_with_weak_scalar(array_kind: Kind, scalar: WeakScalar) -> Kind {
     if scalar.rank() <= array_kind.rank() {
         array_kind
@@ -223,72 +99,34 @@ pub fn promote_array_with_weak_scalar(array_kind: Kind, scalar: WeakScalar) -> K
     }
 }
 
-/// The 4 casting safety levels NumPy tracks between dtypes (see
-/// NumPy.md, "Casting rules"). Ordered loosest-last so `derive(Ord)`
-/// gives a sensible "is at least this safe" comparison if ever needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastSafety {
-    /// Bit-preserving (e.g. same dtype).
+
     Equivalent,
-    /// No information can be lost.
+
     Safe,
-    /// Same kind, but precision may be lost (e.g. float64 -> float32).
+
     SameKind,
-    /// May lose information or change kind entirely (e.g. float -> int).
+
     Unsafe,
 }
 
-/// How safe is it to cast a value of kind `from` into kind `to`?
-///
-/// This is deliberately a *simplified* table (real NumPy's is a fixed,
-/// exhaustively-enumerated matrix per concrete dtype pair) — but the
-/// shape of the reasoning is the same: same-kind-and-wider is `Safe`,
-/// same-kind-and-narrower is `SameKind`, going to a strictly higher kind
-/// that can hold the value exactly is `Safe`, and anything that can
-/// silently truncate or change meaning (float -> int, int -> bool where
-/// the value isn't 0/1) is `Unsafe`.
-/// **Known, deliberate deviation from real NumPy**: NumPy's own
-/// `np.can_cast(np.int64, np.float64, casting='safe')` (and the `uint64`/
-/// `complex128` equivalents) returns `True`, even though float64's 53-bit
-/// mantissa can't represent every 64-bit integer value exactly — the same
-/// mantissa shortfall that correctly makes `int32 -> float32` `same_kind`
-/// under this function's general rule. Verified directly against real
-/// NumPy 2.5.3 (`np.can_cast(int64, float64, casting='safe') == True`,
-/// `np.promote_types(int64, float64) == float64`), so this isn't a
-/// misreading — NumPy genuinely ships this. It's also NumPy's *own*,
-/// self-acknowledged inconsistency in its cast-safety table (the 64-bit
-/// int/float pair is special-cased in NumPy's C implementation, not
-/// derived from the same mantissa reasoning applied everywhere else) —
-/// tracked as a known issue in NumPy's own bug tracker rather than
-/// intended behavior. This port deliberately does **not** replicate it:
-/// `int64`/`uint64` -> `float64`/`complex128` are classified `same_kind`
-/// here, consistently with every other integer/float(-component) pair,
-/// per this project's stated preference for internally consistent logic
-/// over bug-for-bug NumPy compatibility on a pair NumPy itself considers
-/// a mistake, not a documented guarantee.
 pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
     use Kind::*;
     if from == to {
         return CastSafety::Equivalent;
     }
     match (from, to) {
-        (Bool, _) => CastSafety::Safe, // 0/1 always fits anywhere
-        (_, Bool) => CastSafety::Unsafe, // collapses every other value down to true/false
+        (Bool, _) => CastSafety::Safe,
+        (_, Bool) => CastSafety::Unsafe,
 
         (Int(a), Int(b)) => width_cast(a, b),
         (Uint(a), Uint(b)) => width_cast(a, b),
         (Float(a), Float(b)) => width_cast(a, b),
         (Complex(a), Complex(b)) => width_cast(a, b),
 
-        // A negative signed value has no unsigned representation at all,
-        // regardless of width -- verified: every int-width -> every
-        // uint-width is `unsafe` in real NumPy, even int8 -> uint64.
         (Int(_), Uint(_)) => CastSafety::Unsafe,
-        // The other direction *does* depend on width, the same shape of
-        // rule as Int->Int: safe if the signed side is wide enough to
-        // hold every value of the unsigned side, same_kind otherwise
-        // (verified for every width pair, including the equal-width case
-        // uint64 -> int64 == same_kind).
+
         (Uint(u), Int(i)) => {
             if i > u {
                 CastSafety::Safe
@@ -304,20 +142,12 @@ pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
                 CastSafety::SameKind
             }
         }
-        // Drops the fractional part regardless of width -- always unsafe.
+
         (Float(_), Int(_)) | (Float(_), Uint(_)) => CastSafety::Unsafe,
 
-        // A real number embeds losslessly into a complex of at least the
-        // same component precision (im=0) -- same width_cast shape as
-        // Float->Float. The reverse always drops the imaginary part, so
-        // it's unconditionally unsafe regardless of width (verified:
-        // complex64 -> float32 unsafe, complex128 -> complex64 same_kind
-        // but complex128 -> float32/float64 both unsafe).
         (Float(f), Complex(c)) => width_cast(f, c),
         (Complex(_), Float(_)) => CastSafety::Unsafe,
 
-        // Same mantissa-exactness reasoning as Int/Uint -> Float, just
-        // measured against the complex target's own component width.
         (Int(i), Complex(c)) | (Uint(i), Complex(c)) => {
             if i <= float_mantissa_bits(c) {
                 CastSafety::Safe
@@ -325,14 +155,11 @@ pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
                 CastSafety::SameKind
             }
         }
-        // Drops both the fractional part and the imaginary part -- always unsafe.
+
         (Complex(_), Int(_)) | (Complex(_), Uint(_)) => CastSafety::Unsafe,
     }
 }
 
-/// Same-kind, different-width casting: wider-or-equal is `Safe`,
-/// narrower is `SameKind` -- the one rule shared by every `Int`/`Int`,
-/// `Uint`/`Uint`, `Float`/`Float`, and `Complex`/`Complex` pair.
 fn width_cast(from_bits: u8, to_bits: u8) -> CastSafety {
     if to_bits >= from_bits {
         CastSafety::Safe
@@ -341,14 +168,6 @@ fn width_cast(from_bits: u8, to_bits: u8) -> CastSafety {
     }
 }
 
-/// A dtype as a Rust *type*, not just a runtime value — implemented
-/// directly on the primitive types themselves rather than on wrapper
-/// structs, so `i32::KIND` and `f64::KIND` just work. This is the
-/// "generic, monomorphized" half of the hybrid design: a function generic
-/// over `D: DType` gets a fully specialized, branch-free version per
-/// concrete type at compile time, the same way NumPy's C core has to
-/// dispatch at runtime because Python types aren't known until the
-/// interpreter runs.
 pub trait DType: Copy {
     const KIND: Kind;
     fn type_name() -> &'static str;
@@ -431,10 +250,6 @@ impl DType for f64 {
     }
 }
 
-// `num_complex::Complex<f32>`/`<f64>` are foreign types, but `DType` is a
-// local trait, so these are plain, ordinary trait impls under Rust's
-// orphan rule (`fft.rs`'s `Complex64` is the `Complex<f64>` type under a
-// local alias).
 impl DType for num_complex::Complex<f32> {
     const KIND: Kind = Kind::Complex(32);
     fn type_name() -> &'static str {
@@ -449,12 +264,6 @@ impl DType for num_complex::Complex<f64> {
     }
 }
 
-/// Compile-time promotion between two concrete Rust dtypes — no runtime
-/// branching at all, `A::KIND`/`B::KIND` are `const`s the compiler folds
-/// away. This is the generic-dispatch counterpart to the runtime
-/// `common_dtype(Kind, Kind)` above; both exist on purpose, so the design
-/// question from NumPy.md ("`dyn DType` vs. generic") is visible in code
-/// rather than just in prose.
 pub fn common_dtype_of<A: DType, B: DType>() -> Kind {
     common_dtype(A::KIND, B::KIND)
 }
@@ -479,37 +288,35 @@ mod tests {
 
     #[test]
     fn common_dtype_bool_is_absorbed() {
-        // np.result_type('bool', 'int32') == int32
+
         assert_eq!(common_dtype(Kind::Bool, Kind::Int(32)), Kind::Int(32));
-        // np.result_type('bool', 'float64') == float64
+
         assert_eq!(common_dtype(Kind::Bool, Kind::Float(64)), Kind::Float(64));
     }
 
     #[test]
     fn common_dtype_int_float_matches_real_numpy_result_type() {
-        // np.result_type('int16', 'float32') == float32
+
         assert_eq!(common_dtype(Kind::Int(16), Kind::Float(32)), Kind::Float(32));
-        // np.result_type('int32', 'float32') == float64 (float32 can't
-        // exactly represent every int32 value)
+
         assert_eq!(common_dtype(Kind::Int(32), Kind::Float(32)), Kind::Float(64));
-        // np.result_type('int64', 'float32') == float64 (best available,
-        // even though float64 can't exactly represent every int64 either)
+
         assert_eq!(common_dtype(Kind::Int(64), Kind::Float(32)), Kind::Float(64));
     }
 
     #[test]
     fn weak_scalar_never_downgrades_or_narrows_the_array_dtype() {
-        // int32_array + python int -> int32 (unchanged)
+
         assert_eq!(
             promote_array_with_weak_scalar(Kind::Int(32), WeakScalar::Int(1)),
             Kind::Int(32)
         );
-        // float32_array + python float -> float32 (unchanged, NOT float64)
+
         assert_eq!(
             promote_array_with_weak_scalar(Kind::Float(32), WeakScalar::Float(1.0)),
             Kind::Float(32)
         );
-        // float32_array + python int -> float32 (int scalar doesn't raise the kind)
+
         assert_eq!(
             promote_array_with_weak_scalar(Kind::Float(32), WeakScalar::Int(1)),
             Kind::Float(32)
@@ -518,18 +325,17 @@ mod tests {
 
     #[test]
     fn weak_scalar_promotes_to_the_default_dtype_of_its_own_kind() {
-        // bool_array + python int -> int64 (the *default* int, not "bool widened")
+
         assert_eq!(
             promote_array_with_weak_scalar(Kind::Bool, WeakScalar::Int(1)),
             Kind::Int(64)
         );
-        // bool_array + python float -> float64
+
         assert_eq!(
             promote_array_with_weak_scalar(Kind::Bool, WeakScalar::Float(1.0)),
             Kind::Float(64)
         );
-        // int32_array + python float -> float64 (NOT float32 — the array's
-        // width is irrelevant once the scalar's kind outranks it)
+
         assert_eq!(
             promote_array_with_weak_scalar(Kind::Int(32), WeakScalar::Float(1.0)),
             Kind::Float(64)
@@ -551,122 +357,102 @@ mod tests {
 
     #[test]
     fn can_cast_int64_to_float64_uses_the_consistent_mantissa_rule_not_numpy() {
-        // Real NumPy's np.can_cast(int64, float64, casting='safe') is
-        // True, despite float64's 53-bit mantissa not covering all of
-        // int64 -- NumPy's own acknowledged cast-table inconsistency (see
-        // can_cast's doc comment). Deliberately not replicated: this port
-        // applies the same mantissa rule uniformly, so int64 -> float64
-        // is SameKind here, exactly like the not-quirky int32 -> float32.
+
         assert_eq!(can_cast(Kind::Int(64), Kind::Float(64)), CastSafety::SameKind);
         assert_eq!(can_cast(Kind::Int(32), Kind::Float(32)), CastSafety::SameKind);
-        // Every other pairing already agreed with real NumPy and still does:
+
         assert_eq!(can_cast(Kind::Int(64), Kind::Float(32)), CastSafety::SameKind);
         assert_eq!(can_cast(Kind::Int(32), Kind::Float(64)), CastSafety::Safe);
     }
 
-    // -- Uint/Int mixing, verified against real NumPy 2.5.3's np.can_cast ---
-
     #[test]
     fn common_dtype_int_uint_matches_real_numpy_result_type() {
-        // np.result_type(int8, uint8) == int16 (int8 alone can't cover
-        // uint8's full range, so it widens -- not simply "pick the wider").
+
         assert_eq!(common_dtype(Kind::Int(8), Kind::Uint(8)), Kind::Int(16));
-        // np.result_type(uint16, int8) == int32
+
         assert_eq!(common_dtype(Kind::Uint(16), Kind::Int(8)), Kind::Int(32));
-        // np.result_type(uint8, int16) == int16 (int16 already covers uint8)
+
         assert_eq!(common_dtype(Kind::Uint(8), Kind::Int(16)), Kind::Int(16));
-        // np.result_type(int32, uint32) == int64
+
         assert_eq!(common_dtype(Kind::Int(32), Kind::Uint(32)), Kind::Int(64));
-        // np.result_type(int64, uint64) == float64 -- no int128 to promote
-        // to, so it falls through to a float, same reasoning as plain
-        // Int + Float's own "no wider exact type" fallback.
+
         assert_eq!(common_dtype(Kind::Int(64), Kind::Uint(64)), Kind::Float(64));
     }
 
     #[test]
     fn can_cast_int_to_uint_is_always_unsafe() {
-        // np.can_cast(int8, uint64) -> only at casting='unsafe' -- a
-        // negative value has no unsigned representation, regardless of width.
+
         assert_eq!(can_cast(Kind::Int(8), Kind::Uint(64)), CastSafety::Unsafe);
         assert_eq!(can_cast(Kind::Int(64), Kind::Uint(8)), CastSafety::Unsafe);
     }
 
     #[test]
     fn can_cast_uint_to_int_depends_on_width_like_int_to_int() {
-        // np.can_cast(uint8, int8) -> same_kind (uint8's range doesn't fit)
+
         assert_eq!(can_cast(Kind::Uint(8), Kind::Int(8)), CastSafety::SameKind);
-        // np.can_cast(uint8, int16) -> safe (int16 covers uint8's full range)
+
         assert_eq!(can_cast(Kind::Uint(8), Kind::Int(16)), CastSafety::Safe);
-        // np.can_cast(uint64, int64) -> same_kind (equal width, neither
-        // covers the other's full range).
+
         assert_eq!(can_cast(Kind::Uint(64), Kind::Int(64)), CastSafety::SameKind);
     }
 
     #[test]
     fn can_cast_uint64_to_float64_also_uses_the_consistent_rule() {
-        // Real NumPy's np.can_cast(uint64, float64) is also `safe` (the
-        // same acknowledged quirk as int64 -> float64); this port applies
-        // the uniform mantissa rule here too, so it's SameKind.
+
         assert_eq!(can_cast(Kind::Uint(64), Kind::Float(64)), CastSafety::SameKind);
         assert_eq!(can_cast(Kind::Uint(32), Kind::Float(32)), CastSafety::SameKind);
         assert_eq!(can_cast(Kind::Uint(32), Kind::Float(64)), CastSafety::Safe);
     }
 
-    // -- Complex, verified against real NumPy 2.5.3's np.can_cast ----------
-
     #[test]
     fn can_cast_float_to_complex_matches_numpy() {
-        // np.can_cast(float32, complex64) -> safe (same component width)
+
         assert_eq!(can_cast(Kind::Float(32), Kind::Complex(32)), CastSafety::Safe);
-        // np.can_cast(float64, complex64) -> same_kind (loses precision)
+
         assert_eq!(can_cast(Kind::Float(64), Kind::Complex(32)), CastSafety::SameKind);
-        // np.can_cast(float32, complex128) -> safe
+
         assert_eq!(can_cast(Kind::Float(32), Kind::Complex(64)), CastSafety::Safe);
     }
 
     #[test]
     fn can_cast_complex_to_float_is_always_unsafe() {
-        // np.can_cast(complex64, float32) -> only at casting='unsafe'
+
         assert_eq!(can_cast(Kind::Complex(32), Kind::Float(32)), CastSafety::Unsafe);
         assert_eq!(can_cast(Kind::Complex(64), Kind::Float(64)), CastSafety::Unsafe);
     }
 
     #[test]
     fn can_cast_complex_to_complex_matches_numpy() {
-        // np.can_cast(complex64, complex128) -> safe
+
         assert_eq!(can_cast(Kind::Complex(32), Kind::Complex(64)), CastSafety::Safe);
-        // np.can_cast(complex128, complex64) -> same_kind
+
         assert_eq!(can_cast(Kind::Complex(64), Kind::Complex(32)), CastSafety::SameKind);
     }
 
     #[test]
     fn can_cast_int_to_complex_uses_the_consistent_mantissa_rule() {
-        // np.can_cast(int32, complex64) -> same_kind (int32 needs float64
-        // to be exact, complex64's component is only float32)
+
         assert_eq!(can_cast(Kind::Int(32), Kind::Complex(32)), CastSafety::SameKind);
-        // np.can_cast(int64, complex64) -> same_kind, same reasoning
+
         assert_eq!(can_cast(Kind::Int(64), Kind::Complex(32)), CastSafety::SameKind);
-        // Real NumPy's np.can_cast(int64, complex128) is `safe` (the same
-        // acknowledged quirk, now for a complex128 target); this port
-        // applies the uniform mantissa rule instead, so it's SameKind too.
+
         assert_eq!(can_cast(Kind::Int(64), Kind::Complex(64)), CastSafety::SameKind);
-        // np.can_cast(int32, complex128) -> safe via the general rule (no
-        // quirk involved: int32 already fits float64/complex128 exactly)
+
         assert_eq!(can_cast(Kind::Int(32), Kind::Complex(64)), CastSafety::Safe);
     }
 
     #[test]
     fn can_cast_complex_to_int_is_always_unsafe() {
-        // np.can_cast(complex64, int32) -> only at casting='unsafe'
+
         assert_eq!(can_cast(Kind::Complex(32), Kind::Int(32)), CastSafety::Unsafe);
     }
 
     #[test]
     fn bool_complex_uint_interactions_match_numpy() {
-        // np.can_cast(bool, uint8) -> safe; np.can_cast(uint8, bool) -> unsafe
+
         assert_eq!(can_cast(Kind::Bool, Kind::Uint(8)), CastSafety::Safe);
         assert_eq!(can_cast(Kind::Uint(8), Kind::Bool), CastSafety::Unsafe);
-        // np.can_cast(bool, complex64) -> safe; np.can_cast(complex64, bool) -> unsafe
+
         assert_eq!(can_cast(Kind::Bool, Kind::Complex(32)), CastSafety::Safe);
         assert_eq!(can_cast(Kind::Complex(32), Kind::Bool), CastSafety::Unsafe);
     }
@@ -695,8 +481,7 @@ mod tests {
 
     #[test]
     fn common_dtype_of_is_resolved_at_compile_time() {
-        // Same underlying rule as common_dtype(), but driven entirely by
-        // Rust's own types instead of runtime Kind values.
+
         assert_eq!(common_dtype_of::<i32, f32>(), Kind::Float(64));
         assert_eq!(common_dtype_of::<bool, i32>(), Kind::Int(32));
         assert_eq!(common_dtype_of::<f32, f32>(), Kind::Float(32));

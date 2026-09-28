@@ -1,12 +1,3 @@
-//! Run: `cargo run --example step5_allocator`
-//!
-//! Shows the same `PooledVec` code working unchanged against two
-//! different `Allocator`s: the plain `System` allocator, and a
-//! `BumpArena` that hands out sequential offsets from one big upfront
-//! block. Watch `arena.used()` grow with each allocation, and note that
-//! `deallocate()` on the arena is a no-op — everything comes back at once
-//! when `arena` itself drops at the end of `main`.
-
 use rustnumpy::{BumpArena, PooledVec, System};
 
 fn main() {
@@ -27,8 +18,6 @@ fn main() {
     let c = PooledVec::from_slice(&arena, &[100.0]).unwrap();
     println!("  allocated c={:?}, arena.used() = {}", c.as_slice(), arena.used());
 
-    // Nothing overlapped — each PooledVec still reads back exactly what
-    // was written to it, even though they all share one underlying block.
     println!("\n  after all three allocations:");
     println!("    a = {:?}", a.as_slice());
     println!("    b = {:?}", b.as_slice());

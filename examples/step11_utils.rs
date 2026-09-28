@@ -1,9 +1,3 @@
-//! Run: `cargo run --example step11_utils`
-//!
-//! Step 11: `lib/`-layer utilities. Every value below was checked against
-//! real NumPy 2.5.3 first (see `utils.rs`'s doc comment) -- including
-//! `unique`'s NaN-collapsing and `tile`'s bidirectional shape padding.
-
 use rustnumpy::{concatenate, gradient, interp, intersect1d, split, stack, tile, union1d, unique, NdArray};
 
 fn main() {

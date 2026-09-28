@@ -1,9 +1,3 @@
-//! Run: `cargo run --example step12_linalg`
-//!
-//! Step 12: `linalg` via `faer` (pure Rust, no LAPACK/FFI). Every value
-//! below was checked against real NumPy 2.5.3 first (see `linalg.rs`'s
-//! doc comment for the tolerance-not-exact-equality policy this follows).
-
 use rustnumpy::{cholesky, det, eigh, eigvals, frobenius_norm, inv, matrix_power, qr, solve, svd, NdArray};
 
 fn main() {

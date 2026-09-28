@@ -1,38 +1,3 @@
-//! Run: `cargo run --release --example step7_rayon`
-//! (use `--release`: the sequential/parallel gap is dominated by
-//! optimizer output on the inner loop, not by anything Rayon-specific —
-//! a debug build makes both look artificially slow and the comparison
-//! meaningless)
-//!
-//! Sequential vs. Rayon-parallel `add`, timed at a few sizes. This is
-//! deliberately a Rust-vs-Rust comparison, not Rust-vs-NumPy: the core is
-//! still f64-only with two binary ufuncs and no reductions, so measuring
-//! it against NumPy now would say more about "how fast is one loop" than
-//! about whether this is a viable NumPy replacement (see
-//! `python/README.md`). That comparison belongs later in `NumPy.md`'s
-//! plan, once there's enough surface area for it to mean something.
-//!
-//! What this *does* show, honestly: parallelism has a fixed cost (Rayon
-//! has to split work and join results across threads), and paying that
-//! cost is a poor trade for a small array — you should expect small
-//! inputs to show the parallel path *losing*, not winning. Real NumPy
-//! ufuncs don't parallelize at all, in part for exactly this reason: a
-//! naive always-parallel ufunc would be worse than NumPy for by far the
-//! most common case (small-to-medium arrays), and only better for large
-//! ones — a real port would need a size-based threshold, not just an
-//! `_parallel` suffix, before this could be turned on by default.
-//!
-//! It also shows something less flattering: on this machine (16 cores)
-//! the large-array speedup measured well under 16x. That's not
-//! measurement noise — `zip_with`/`zip_with_parallel` still allocate a
-//! fresh `Vec<usize>` per element for the index (see the doc comment on
-//! `zip_with_parallel`), and the global allocator is one shared resource
-//! every thread contends on. More threads means more contention on that
-//! one lock, which caps the achievable speedup regardless of how many
-//! idle cores there are. This is a concrete, measured argument for NEP
-//! 10's real `NpyIter` design (a cache-coherent iterator with no
-//! per-element allocation) — not a hypothetical one.
-
 use rustnumpy::{add, add_parallel, NdArray};
 use std::time::Instant;
 
@@ -41,9 +6,6 @@ fn bench_add(len: usize) {
     let a = NdArray::from_vec((0..len).map(|i| i as f64).collect(), shape).unwrap();
     let b = NdArray::from_vec((0..len).map(|i| i as f64 * 2.0).collect(), shape).unwrap();
 
-    // Run a few times and keep the minimum: the first call pays for
-    // Rayon's global thread pool spinning up, and OS scheduling noise
-    // otherwise dominates the signal at these timescales.
     let runs = 5;
 
     let sequential_min = (0..runs)
