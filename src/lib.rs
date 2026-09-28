@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–13 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–14 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -23,8 +23,13 @@
 //! tests never depend on a running NumPy (`testing.rs`), whole-array
 //! reductions/statistics (`sum`/`mean`/`var`/`std`/`median`/`percentile`,
 //! their `nan*` variants, `histogram`, `cov`/`corrcoef`) in `reductions.rs`,
-//! and `lib/`-layer utilities (`unique`/`intersect1d`/`union1d`,
-//! `concatenate`/`stack`/`split`/`tile`, `interp`, `gradient`) in `utils.rs`.
+//! `lib/`-layer utilities (`unique`/`intersect1d`/`union1d`,
+//! `concatenate`/`stack`/`split`/`tile`, `interp`, `gradient`) in `utils.rs`,
+//! and full `linalg` (`solve`/`inv`/`det`/`qr`/`cholesky`/`eigh`/`eigvals`/
+//! `svd`/norms/`matrix_power`) in `linalg.rs`, delegating the actual
+//! numerics to the pure-Rust `faer` crate (no LAPACK/FFI) per NumPy.md's
+//! "depend on a crate, don't hand-convert" decision for numerical tools
+//! NumPy merely borrows.
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -36,16 +41,20 @@
 //! ISO-8601 date-string parsing, most of `numpy.strings` (only a
 //! representative subset is implemented), most of `numpy.testing`
 //! (no `assert_raises`-equivalent, no generic `assert_array_compare`),
-//! `axis=`-parameterized reductions (whole-array only for now), and
+//! `axis=`-parameterized reductions (whole-array only for now),
 //! `array_split` (uneven splitting; `utils.rs`'s `split` requires an exact
-//! division) — those are later steps (or, for the deprecated/calendar-
-//! dependent pieces, explicit non-goals) in `NumPy.md`.
+//! division), and complex eigenvectors for a non-symmetric matrix (no
+//! complex dtype yet — `linalg::eigvals` returns `(re, im)` pairs instead
+//! of full `eig`, see `linalg.rs`'s doc comment) — those are later steps
+//! (or, for the deprecated/calendar-dependent pieces, explicit non-goals)
+//! in `NumPy.md`.
 
 pub mod allocator;
 pub mod datetime;
 pub mod dtype;
 pub mod error;
 pub mod index;
+pub mod linalg;
 pub mod ndarray;
 pub mod npy;
 pub mod reductions;
@@ -62,6 +71,10 @@ pub use datetime::{Datetime64, TimeError, TimeUnit, Timedelta64};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
 pub use error::ShapeError;
 pub use index::AxisIndex;
+pub use linalg::{
+    cholesky, det, eigh, eigvals, eigvalsh, frobenius_norm, inv, matrix_power, qr, solve, svd,
+    vector_norm, LinalgError, VecNormOrd,
+};
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
 pub use reductions::{

@@ -5,4 +5,5 @@ edition = "2024"
 description = "Step-by-step Rust port of NumPy's core ideas — see NumPy.md for the plan."
 
 [dependencies]
+faer = "0.24.4"
 rayon = "1"
