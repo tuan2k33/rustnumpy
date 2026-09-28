@@ -126,6 +126,15 @@ impl NdArray {
         ArrayViewMut::new(&mut self.data, self.shape.clone(), self.strides.clone(), 0)
     }
 
+    /// Buffer thô, theo đúng thứ tự row-major của `shape` — luôn hợp lệ vì
+    /// `NdArray` được đảm bảo C-contiguous ngay từ constructor. Dùng bởi
+    /// `npy::write_npy` để ghi thẳng bytes ra file mà không cần duyệt
+    /// từng index qua `IndexIter` (chỉ view có stride bất thường mới cần
+    /// duyệt kiểu đó).
+    pub fn as_slice(&self) -> &[f64] {
+        &self.data
+    }
+
     /// Basic indexing dạng slice theo range nửa-mở trên mỗi trục, ví dụ
     /// `arr.slice(&[0..2, 1..3])`. Luôn trả về **view** (không copy) —
     /// đúng ngữ nghĩa "basic indexing" của NumPy: chỉ đổi `shape`/offset

@@ -10,11 +10,13 @@
 
 pub mod error;
 pub mod ndarray;
+pub mod npy;
 pub mod ops;
 pub mod shape;
 pub mod view;
 
 pub use error::ShapeError;
 pub use ndarray::NdArray;
+pub use npy::{load_npy, save_npy, NpyError};
 pub use ops::add_broadcast;
 pub use view::{ArrayView, ArrayViewMut};
