@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–17 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–18 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -47,7 +47,15 @@
 //! (`Polynomial` over `Chebyshev`/`Hermite`/`Laguerre`/`Legendre` bases:
 //! `evaluate` via each family's three-term recurrence, `roots` via a
 //! power-basis companion matrix fed into `linalg::eigvals`) in
-//! `polynomial.rs`.
+//! `polynomial.rs`, plus (also generic-hardening work, and separately a
+//! `dtype.rs` extension: `Kind`/`DType` now also cover `Uint`/`Complex`,
+//! verified rule-by-rule against real NumPy's own `can_cast`/
+//! `result_type`) a step 18 audit of this crate's public function names
+//! against the Python Array API standard (NEP 56): `subtract`/
+//! `multiply`/`concat`/`matrix_norm` added as standard-aligned aliases of
+//! `sub`/`mul`/`concatenate`/`frobenius_norm` — see `NumPy.md`'s "Step 18
+//! audit" section for the full comparison table (what already matched,
+//! what got aliased, what's a genuine gap against the standard).
 //!
 //! Deliberately **not yet** present: the numeric algorithms built on top
 //! of `NdArray<T>` (`ufunc`'s `add`/`mul`, `reductions`, `linalg`, `fft`,
@@ -107,8 +115,8 @@ pub use fft::{
 };
 pub use index::AxisIndex;
 pub use linalg::{
-    cholesky, det, eigh, eigvals, eigvalsh, frobenius_norm, inv, matrix_power, qr, solve, svd,
-    vector_norm, LinalgError, VecNormOrd,
+    cholesky, det, eigh, eigvals, eigvalsh, frobenius_norm, inv, matrix_norm, matrix_power, qr,
+    solve, svd, vector_norm, LinalgError, VecNormOrd,
 };
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
@@ -126,8 +134,10 @@ pub use testing::{
     assert_array_almost_equal_default, assert_array_equal, ArrayAssertionError,
 };
 pub use ufunc::{
-    add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, sub, zip_with,
-    zip_with_into, zip_with_parallel,
+    add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, multiply, sub,
+    subtract, zip_with, zip_with_into, zip_with_parallel,
 };
-pub use utils::{concatenate, gradient, intersect1d, interp, split, stack, tile, union1d, unique};
+pub use utils::{
+    concat, concatenate, gradient, intersect1d, interp, split, stack, tile, union1d, unique,
+};
 pub use view::{ArrayView, ArrayViewMut};

@@ -176,13 +176,35 @@ pub fn add(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
 }
 
 /// `a - b`, broadcasting like NumPy.
+///
+/// Named `sub` (not the Python Array API standard's own `subtract`) since
+/// it predates step 18's audit against that standard — [`subtract`] is
+/// the standard-aligned name added there, a thin wrapper around this.
 pub fn sub(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
     zip_with(a, b, |x, y| x - y)
 }
 
 /// `a * b`, broadcasting like NumPy.
+///
+/// Named `mul` (not the Python Array API standard's own `multiply`) for
+/// the same reason [`sub`] is — see [`multiply`].
 pub fn mul(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
     zip_with(a, b, |x, y| x * y)
+}
+
+/// Step 18 (NEP 56 / Array API standard v2022.12) audit: the standard's
+/// own elementwise function is named `subtract`, not `sub` — this crate
+/// kept `sub` from step 4 for its own history's sake, so `subtract` is
+/// added as the standard-named entry point instead of a disruptive rename
+/// (matching the precedent [`add_broadcast`] already set: an old name
+/// stays callable, the new name is the one the docs point newcomers at).
+pub fn subtract(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
+    sub(a, b)
+}
+
+/// See [`subtract`] — the standard's own name for [`mul`].
+pub fn multiply(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
+    mul(a, b)
 }
 
 /// The Rayon-parallel version of [`add`].
@@ -256,6 +278,20 @@ mod tests {
         let b = NdArray::from_vec(vec![2.0, 3.0], &[2]).unwrap();
         let out = sub(&a.view(), &b.view()).unwrap();
         assert_eq!(out.as_slice(), &[3.0, 2.0]);
+    }
+
+    #[test]
+    fn subtract_and_multiply_are_the_array_api_standard_names_for_sub_and_mul() {
+        let a = NdArray::from_vec(vec![5.0, 5.0], &[2]).unwrap();
+        let b = NdArray::from_vec(vec![2.0, 3.0], &[2]).unwrap();
+        assert_eq!(
+            subtract(&a.view(), &b.view()).unwrap(),
+            sub(&a.view(), &b.view()).unwrap()
+        );
+        assert_eq!(
+            multiply(&a.view(), &b.view()).unwrap(),
+            mul(&a.view(), &b.view()).unwrap()
+        );
     }
 
     #[test]

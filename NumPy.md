@@ -205,6 +205,31 @@ NumPy 2.0 adopts the Python Array API standard (specification v2022.12, defined 
 
 **Rust mapping**: if the project's long-term goal is to interoperate with the Python ecosystem (via PyO3), sticking to the Array API standard's function names/signatures (rather than inventing purely Rust-style names) will help NumPy-familiar users migrate more easily, and give the initial API design a clear direction instead of starting from a blank slate.
 
+### Step 18 audit: this crate's names vs. the Array API standard (v2022.12)
+
+Every public function's name checked against the standard's own function list (elementwise, statistical, manipulation, and linalg-extension modules), after steps 1–17 were already implemented — a genuine after-the-fact audit, not a design done with the standard open from the start.
+
+**Already matched the standard's name exactly, no change needed**: `add`, `sum`, `mean`, `min`, `max`, `std`, `var`, `stack`, `tile`, `vector_norm` (this one's a pleasant surprise — the exact name was picked in step 14 for its own descriptive reasons, before this audit existed, and it happens to be letter-for-letter the standard's own name).
+
+**Renamed/added as a standard-aligned alias, old name kept working** (the same "old name stays callable, new name is what the standard calls it" precedent `add_broadcast` already set in step 4):
+
+| This crate's original name | Standard's name | Added as |
+| --- | --- | --- |
+| `sub` (`ufunc.rs`, step 4) | `subtract` | `ufunc::subtract`, thin wrapper |
+| `mul` (`ufunc.rs`, step 4) | `multiply` | `ufunc::multiply`, thin wrapper |
+| `concatenate` (`utils.rs`, step 13) | `concat` | `utils::concat`, thin wrapper (NumPy itself keeps both names too, even post-NEP 56) |
+| `frobenius_norm` (`linalg.rs`, step 14) | `matrix_norm` (with `ord='fro'`, the standard's own default) | `linalg::matrix_norm`, thin wrapper — narrower than the standard: no `ord=` parameter, Frobenius only, documented in `matrix_norm`'s own doc comment |
+
+**Standard functions/namespaces not implemented at all** (gaps, not naming mismatches — noted here rather than silently absent):
+- `linalg`: `matmul`, `trace`, `pinv`, `slogdet`, `outer`, `cross`, `diagonal`, `matrix_rank`, `vecdot`, `svdvals`, `matrix_transpose` — none of these exist yet in `linalg.rs`.
+- `fft`: the standard's optional Fourier extension also specifies `rfftn`/`irfftn` (N-D real transforms) and `hfft`/`ihfft` (Hermitian-symmetric transforms); `fft.rs` has neither. (`fft.rs`'s own `fft2`/`ifft2` are a NumPy-style convenience the standard itself doesn't define — kept as a documented extra, not a standard name.)
+- Manipulation: the standard's `unique_all`/`unique_counts`/`unique_inverse`/`unique_values` (four distinct, more specific functions) vs. this crate's single `unique` (closer to plain NumPy's own `np.unique`) — a coarser API, not a wrong one.
+- `reshape`, `broadcast_arrays`, `expand_dims`, `flip`, `moveaxis`, `permute_dims`, `repeat`, `roll`, `squeeze`, `unstack` — none implemented; `NdArray` has no `reshape` at all yet (only `slice`/`broadcast_to`/`view`).
+
+**Out of the standard's scope entirely, so nothing to reconcile**: `random` (the Array API standard doesn't specify a random module), `polynomial`, `structured`/`datetime`/`strings` (NumPy-specific extensions with no Array-API equivalent at all) — these keep their existing, NumPy-flavored names since there's no standard name to align to.
+
+See `examples/step18_array_api.rs` for the added aliases in use.
+
 ## Index of NEPs Read, With Status
 
 | NEP | Topic | Status |

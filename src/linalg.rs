@@ -213,6 +213,23 @@ pub fn frobenius_norm(a: &NdArray) -> f64 {
     a.as_slice().iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 
+/// Step 18 (NEP 56 / Array API standard v2022.12) audit: the standard's
+/// own linalg extension names this function `matrix_norm(x, ord='fro')`
+/// — [`vector_norm`] above already happens to match the standard's name
+/// exactly (no rename needed there), but the matrix case was named after
+/// the specific norm it computes rather than the standard's own function
+/// name. `matrix_norm` is added as that standard-aligned entry point;
+/// [`frobenius_norm`] keeps working since nothing here is being removed.
+///
+/// **Narrower than the standard**: the standard's `matrix_norm` takes an
+/// `ord=` covering the Frobenius norm, the nuclear norm, and every
+/// induced `p`-norm; this only ever computes the Frobenius norm (the
+/// standard's own default), with no `ord=` parameter at all — a
+/// documented scope gap, not a silent mismatch.
+pub fn matrix_norm(a: &NdArray) -> f64 {
+    frobenius_norm(a)
+}
+
 /// `np.linalg.matrix_power(a, n)`: `a` raised to the integer power `n` by
 /// repeated squaring. `n == 0` returns the identity; `n < 0` inverts `a`
 /// first (matching real NumPy).
@@ -356,6 +373,11 @@ mod tests {
     fn frobenius_norm_matches_numpy() {
         // np.linalg.norm(A) with no ord -> 8.366600265340756.
         assert!((frobenius_norm(&sample_a()) - 8.366_600_265_340_756).abs() < 1e-9);
+    }
+
+    #[test]
+    fn matrix_norm_is_the_array_api_standard_name_for_frobenius_norm() {
+        assert_eq!(matrix_norm(&sample_a()), frobenius_norm(&sample_a()));
     }
 
     #[test]

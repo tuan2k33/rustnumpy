@@ -100,6 +100,16 @@ pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeErr
     Ok(NdArray::from_vec(data, &out_shape).expect("data.len() == out_shape.iter().product() by construction"))
 }
 
+/// Step 18 (NEP 56 / Array API standard v2022.12) audit: the standard's
+/// own manipulation function is named `concat`, not `concatenate` —
+/// NumPy itself keeps `concatenate` as the primary name even post-NEP 56,
+/// so both stay valid entry points here too, the same "old name still
+/// works, new name is what the standard calls it" precedent
+/// [`crate::ufunc::subtract`] follows.
+pub fn concat(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
+    concatenate(arrays, axis)
+}
+
 /// `np.stack([arrays...], axis)`: like [`concatenate`], but inserts a
 /// **new** axis (of length `arrays.len()`) at position `axis` instead of
 /// joining along an existing one. Every array must have exactly the same
@@ -267,6 +277,13 @@ mod tests {
         let out = concatenate(&[&c1, &c3], 1).unwrap();
         assert_eq!(out.shape(), &[2, 3]);
         assert_eq!(out.as_slice(), &[1.0, 2.0, 5.0, 3.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn concat_is_the_array_api_standard_name_for_concatenate() {
+        let c1 = NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
+        let c2 = NdArray::from_vec(vec![5.0, 6.0], &[1, 2]).unwrap();
+        assert_eq!(concat(&[&c1, &c2], 0).unwrap(), concatenate(&[&c1, &c2], 0).unwrap());
     }
 
     #[test]
