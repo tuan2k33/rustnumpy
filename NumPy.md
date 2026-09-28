@@ -353,13 +353,15 @@ Each step should pause to write a benchmark comparing against NumPy — both to 
 13. **`lib/`-layer utility functions** — set operations (`unique`, `intersect1d`, `union1d`), shape ops (`concatenate`, `stack`, `split`, `tile`), `interp`, `gradient` — the largest volume of functions, but built on top of the core that's already there.
 14. **Full `linalg`** — solve, eig, SVD, QR, Cholesky, det, norm, matrix_power — via the `faer` crate (native Rust; see the convert-vs-depend-on-a-crate decision above).
 15. **FFT module** — via the `rustfft` crate (native Rust).
-16. **Full `random` distributions** — binomial, poisson, gamma, beta, dirichlet... (the earlier step 6 only covers basic uniform/normal).
+16. **Full `random` distributions** — binomial, poisson, gamma, beta, dirichlet, exponential, uniform, normal, integers... via a NEP 19 `Generator` (`rand_pcg::Pcg64` + `rand_distr`), statistically (not bit-stream) equivalent to NumPy's own `Generator` — see `random.rs`'s doc comment. (Note: this note previously said "the earlier step 6 only covers basic uniform/normal" — stale; step 6 is the PyO3 binding, not a random module. There was no random code before this step.)
 17. **`polynomial`** — Chebyshev/Hermite/Laguerre/Legendre, built on the existing `linalg`.
 18. **Array API standard audit** (NEP 56) — reconcile the final namespace/function names to match the standard.
 19. **Free-threading audit + packaging** — review thread safety, publish to crates.io/PyPI, a benchmark suite against real NumPy.
 20. **Masked array** (lowest priority) — a separate `MaskedArray<T>` struct wrapping `NdArray<T>` (`validity: Bitmap`, not `Option`), per the design already noted; scoped down to reduction-style ops only — see the op-level breakdown in the "Missing Data / numpy.ma" section. Pushed to the very end since it's the least load-bearing piece for a usable core.
 
 Steps 13–17 account for most of the raw workload (the rarely-used "long tail"), while steps 8–12 decide whether it's "actually usable" for ordinary use cases. If the goal is "usable" rather than 100% coverage, stopping after steps 12–14 can still be considered a success.
+
+**Generic `NdArray<T>` (deferred, on purpose)**: `NdArray` is still `f64`-only after step 16 — step 3's `DType` trait exists standalone but was never wired into the real `NdArray`/`ArrayView`/`ufunc`/`npy`/`index`/`shape` core. This surfaced concretely at step 15 (FFT output is inherently complex, worked around with `fft.rs`'s own flat `ComplexArray` type instead of a proper N-D `NdArray<Complex64>`) and step 16 (`binomial`/`poisson`/`integers` return whole-number `f64`s instead of `int64`). Asked explicitly whether to generify `NdArray<T>` now (a large refactor touching nearly every existing file) or defer it — decision: **defer to its own dedicated step**, not fold in opportunistically mid-FFT/random. The natural place to revisit it is alongside step 18's Array API standard audit, since that standard itself expects multiple dtypes to exist. Until then, complex/int needs get narrow, purpose-built workarounds (`ComplexArray`, `(re, im)` pairs, whole-number `f64`s) rather than a real generic core.
 
 ## NumPy Parts Worth Dropping When Rewriting in Rust
 
