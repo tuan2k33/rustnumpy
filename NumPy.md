@@ -278,29 +278,31 @@ Based on the actual structure map of NumPy's source (871 files: 190 Python, 653 
 | `io/` | `lib/_format_impl.py` | Convert — matches NEP 1 |
 | `random/` | `random/*.pyx` (bit_generator, _pcg64, _generator, mtrand), `random/src/pcg64/`, `philox/` | Convert the wrapper, use `rand`/`rand_pcg` crate for the core |
 | `ma/` | `ma/core.py` (18 classes, 94 functions) | Not converted 1-1 — condensed into the `validity` field (see separate note below) |
-| **BIND, not convert** | | |
-| `linalg/lapack_lite/` | F2C-translated from Fortran LAPACK/BLAS — machine-generated code, not hand-written | Bind via FFI to OpenBLAS/MKL, or use the `faer` crate |
-| `fft/pocketfft` | A separate author's (Martin Reinecke) FFT library, vendored as-is | Use the `rustfft` crate, or bind via FFI |
-| `npysort/x86-simd-sort/` | Intel's own vendored x86-simd-sort library, highly specialized SIMD kernels per CPU microarchitecture | Use standard `sort_unstable`, only bind if exact performance is truly needed |
+| **DEPEND ON A PURE-RUST CRATE, not hand-converted** | | |
+| `linalg/lapack_lite/` | F2C-translated from Fortran LAPACK/BLAS — machine-generated code, not hand-written | Use the `faer` crate (pure Rust) — readable, debuggable, no FFI/build-system boundary to reason about |
+| `fft/pocketfft` | A separate author's (Martin Reinecke) FFT library, vendored as-is | Use the `rustfft` crate (pure Rust) |
+| `npysort/x86-simd-sort/` | Intel's own vendored x86-simd-sort library, highly specialized SIMD kernels per CPU microarchitecture | Use standard `sort_unstable` (`sort_unstable_by(|a,b| a.total_cmp(b))` for floats) — no plan to bind `x86-simd-sort` |
 
-**Convert vs. bind principles:**
+**Convert vs. depend-on-a-crate principles:**
 
-| Convert when... | Bind when... |
+| Convert by hand when... | Depend on a crate when... |
 | --- | --- |
-| The code is NumPy's own design (dtype system, iterator, ufunc dispatch) — there's an idea to learn | The code is a numerical library that's been battle-tested for decades (LAPACK, FFT) |
-| It's readable, has real value for learning algorithms/OOP | The code is machine-generated (F2C) or a highly specialized SIMD kernel — reading it teaches nothing |
-| Rewriting it is a reasonable scope (hundreds to a few thousand lines) | Rewriting it properly = a separate project unto itself taking years |
+| The code is NumPy's own design (dtype system, iterator, ufunc dispatch) — there's an idea to learn | The code is a numerical library that's been battle-tested for decades (LAPACK, FFT) — reimplementing the *algorithm* teaches little that reimplementing the *design* doesn't |
+| It's readable, has real value for learning algorithms/OOP | The original is machine-generated (F2C) or a highly specialized SIMD kernel — reading *that* specific code teaches nothing, even though the math it implements is worth understanding |
+| Rewriting it is a reasonable scope (hundreds to a few thousand lines) | Writing a from-scratch LAPACK/FFT *implementation* (not just using one) would be a separate project unto itself taking years |
 
-In short: convert the parts that are "NumPy's design ideas", bind the parts that are "numerical tools NumPy merely borrows".
+In short: convert the parts that are "NumPy's design ideas" by hand; for "numerical tools NumPy merely borrows", reach for an existing implementation rather than writing one from scratch or wrapping NumPy's own copy via FFI.
 
-**Current decision**: bind directly via FFI to LAPACK/BLAS and pocketfft/x86-simd-sort (not using pure-Rust `faer`/`rustfft`/`sort_unstable` for this part) — prioritizing implementation speed first, can switch to pure Rust later if needed.
+**Current decision: native Rust from the start** — `faer` for `linalg`, `rustfft` for FFT, `sort_unstable` for sort. None of LAPACK/BLAS/pocketfft/x86-simd-sort is FFI-bound at all.
 
-**If you later switch to pure Rust** (`faer`/`rustfft`/`sort_unstable`), keep the following behavioral differences in mind (not mathematically wrong, but results may not be identical to NumPy):
+The earlier plan bound to the C/Fortran libraries first, on the theory that it's faster to ship. That traded away the thing this project is actually for: every line of the core stays pure Rust, buildable with plain `cargo build`, debuggable with normal Rust tooling, with no FFI boundary, no C build toolchain, and no linker path to reason about when something goes wrong. Worth it even though it means accepting small, well-understood behavioral deviations from NumPy (below) instead of bit-for-bit compatibility — those deviations are handled by testing with a tolerance, not by chasing exact equality.
 
-- **Sort**: `f64`/`f32` don't implement `Ord` because of NaN — you'd need `sort_unstable_by(|a,b| a.total_cmp(b))` to match NumPy's behavior of pushing NaN to the end. Neither is stable (NumPy's default `quicksort`/introsort vs. Rust's pattern-defeating quicksort), so the order of equal elements may differ — use `sort()` (stable) if you want to match NumPy's `kind='stable'`.
+**Known deviations from NumPy this decision accepts** (not mathematically wrong, just not identical to NumPy's specific implementation):
+
+- **Sort**: `f64`/`f32` don't implement `Ord` because of NaN — use `sort_unstable_by(|a,b| a.total_cmp(b))` to match NumPy's behavior of pushing NaN to the end. Neither `sort_unstable` nor NumPy's default `quicksort`/introsort is stable, so the order of equal elements may differ from NumPy's — use `sort()` (Rust's stable sort) if matching NumPy's `kind='stable'` specifically matters.
 - **FFT**: `rustfft` and `pocketfft` are both mathematically correct but not bit-for-bit identical (different floating-point summation order → ULP-level error).
-- **Linear algebra** (`faer` vs LAPACK): the clearest difference — eigenvector/singular-vector signs can flip (both are mathematically correct), degenerate (repeated) eigenvalues/singular values can come out in a different order/corresponding subspace, error handling for singular matrices follows a different API style (LAPACK's `info` code vs. faer's Rust-style `Result`/panic), and multi-threaded BLAS can produce non-deterministic results between runs at the ULP level.
-- **Testing implication**: when comparing results with NumPy, use tolerance-based comparison (`atol`/`rtol`, like `numpy.allclose`) instead of exact equality, and normalize signs before comparing eigenvectors/SVD.
+- **Linear algebra** (`faer` vs LAPACK): the clearest difference — eigenvector/singular-vector signs can flip (both are mathematically correct), degenerate (repeated) eigenvalues/singular values can come out in a different order/corresponding subspace, error handling for singular matrices follows a different API style (LAPACK's `info` code vs. faer's Rust-style `Result`/panic), and multi-threaded BLAS-backed code can produce non-deterministic results between runs at the ULP level (`faer` is less prone to this than a threaded LAPACK, but not immune).
+- **Testing implication**: when comparing results with NumPy, always use tolerance-based comparison (`atol`/`rtol`, like `numpy.allclose`) instead of exact equality, and normalize signs before comparing eigenvectors/SVD. Treat exact equality against NumPy as the wrong test to write for anything touching sort, FFT, or linalg — a tolerance check that passes is the actual spec being met; an exact-equality check that fails on a sign flip or an ULP is a broken test, not a real bug.
 
 ## Next Steps
 
@@ -324,8 +326,8 @@ Each step should pause to write a benchmark comparing against NumPy — both to 
 11. **`numpy.testing` equivalent** — `assert_array_equal`, `assert_allclose`... so you can write your own tests without depending on real NumPy.
 12. **Full reductions/statistics** — `mean`/`std`/`var`/`median`/`percentile`, `nan*` variants, `histogram`, `cov`/`corrcoef`.
 13. **`lib/`-layer utility functions** — set operations (`unique`, `intersect1d`, `union1d`), shape ops (`concatenate`, `stack`, `split`, `tile`), `interp`, `gradient` — the largest volume of functions, but built on top of the core that's already there.
-14. **Full `linalg`** — solve, eig, SVD, QR, Cholesky, det, norm, matrix_power — bind LAPACK/BLAS.
-15. **FFT module** — bind pocketfft or use `rustfft`.
+14. **Full `linalg`** — solve, eig, SVD, QR, Cholesky, det, norm, matrix_power — via the `faer` crate (native Rust; see the convert-vs-depend-on-a-crate decision above).
+15. **FFT module** — via the `rustfft` crate (native Rust).
 16. **Full `random` distributions** — binomial, poisson, gamma, beta, dirichlet... (the earlier step 6 only covers basic uniform/normal).
 17. **Masked array** — use the `validity: Option<Bitmap>` design already noted.
 18. **`polynomial`** — Chebyshev/Hermite/Laguerre/Legendre, built on the existing `linalg`.
