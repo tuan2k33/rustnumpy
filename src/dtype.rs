@@ -40,6 +40,10 @@
 //!   grow int support (currently both are `f64`-only, see their own doc
 //!   comments), not something `dtype.rs`'s cast-safety table alone could
 //!   express.
+//! - [`can_cast`] deliberately does **not** match real NumPy on one pair
+//!   (`int64`/`uint64` -> `float64`/`complex128`) where NumPy's own
+//!   cast-safety table is internally inconsistent — see `can_cast`'s own
+//!   doc comment for the evidence and the reasoning for diverging there.
 //! - No `Kind::String` (or similar) variant, so `numeric <-> string`
 //!   casting (`unsafe` both directions in real NumPy) isn't expressible
 //!   either — `strings.rs`'s `StringArray` is a wholly separate type, not
@@ -243,6 +247,25 @@ pub enum CastSafety {
 /// that can hold the value exactly is `Safe`, and anything that can
 /// silently truncate or change meaning (float -> int, int -> bool where
 /// the value isn't 0/1) is `Unsafe`.
+/// **Known, deliberate deviation from real NumPy**: NumPy's own
+/// `np.can_cast(np.int64, np.float64, casting='safe')` (and the `uint64`/
+/// `complex128` equivalents) returns `True`, even though float64's 53-bit
+/// mantissa can't represent every 64-bit integer value exactly — the same
+/// mantissa shortfall that correctly makes `int32 -> float32` `same_kind`
+/// under this function's general rule. Verified directly against real
+/// NumPy 2.5.3 (`np.can_cast(int64, float64, casting='safe') == True`,
+/// `np.promote_types(int64, float64) == float64`), so this isn't a
+/// misreading — NumPy genuinely ships this. It's also NumPy's *own*,
+/// self-acknowledged inconsistency in its cast-safety table (the 64-bit
+/// int/float pair is special-cased in NumPy's C implementation, not
+/// derived from the same mantissa reasoning applied everywhere else) —
+/// tracked as a known issue in NumPy's own bug tracker rather than
+/// intended behavior. This port deliberately does **not** replicate it:
+/// `int64`/`uint64` -> `float64`/`complex128` are classified `same_kind`
+/// here, consistently with every other integer/float(-component) pair,
+/// per this project's stated preference for internally consistent logic
+/// over bug-for-bug NumPy compatibility on a pair NumPy itself considers
+/// a mistake, not a documented guarantee.
 pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
     use Kind::*;
     if from == to {
@@ -265,8 +288,7 @@ pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
         // rule as Int->Int: safe if the signed side is wide enough to
         // hold every value of the unsigned side, same_kind otherwise
         // (verified for every width pair, including the equal-width case
-        // uint64 -> int64 == same_kind, *not* the 64-bit quirk below --
-        // that quirk is specifically about floating-point targets).
+        // uint64 -> int64 == same_kind).
         (Uint(u), Int(i)) => {
             if i > u {
                 CastSafety::Safe
@@ -274,21 +296,6 @@ pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
                 CastSafety::SameKind
             }
         }
-
-        // Special case, verified against real NumPy's own can_cast table
-        // rather than derived from the mantissa-bits reasoning below:
-        // int64/uint64 -> float64 (and -> complex128) are classified
-        // `safe` even though float64's 53-bit mantissa can't represent
-        // every 64-bit integer value exactly — a historical NumPy quirk
-        // (same total bit width as the target's real component is treated
-        // as "close enough"), not something the general rule predicts.
-        // Every other same-or-different-width pairing *does* follow the
-        // general mantissa rule below (verified: int32->float64 safe,
-        // int32/uint32->float32 and int64/uint64->float32 all same_kind,
-        // uint32->complex64 same_kind, int32->complex128 safe via the
-        // general rule with no need for this special case).
-        (Int(64), Float(64)) | (Uint(64), Float(64)) => CastSafety::Safe,
-        (Int(64), Complex(64)) | (Uint(64), Complex(64)) => CastSafety::Safe,
 
         (Int(i), Float(f)) | (Uint(i), Float(f)) => {
             if i <= float_mantissa_bits(f) {
@@ -493,17 +500,18 @@ mod tests {
     }
 
     #[test]
-    fn can_cast_int64_to_float64_is_safe_despite_the_mantissa_shortfall() {
-        // np.can_cast(np.int64, np.float64, casting='safe') -> True, even
-        // though float64's 53-bit mantissa can't hold every int64 value
-        // exactly. Verified directly against real NumPy 2.5.3 -- see this
-        // function's own comment for why the general mantissa rule
-        // (correctly used for every other int/float pair) doesn't predict
-        // this one.
-        assert_eq!(can_cast(Kind::Int(64), Kind::Float(64)), CastSafety::Safe);
-        // The general rule still applies to every other pairing, including
-        // same-width-looking ones that aren't 64/64:
+    fn can_cast_int64_to_float64_uses_the_consistent_mantissa_rule_not_numpy() {
+        // Real NumPy's np.can_cast(int64, float64, casting='safe') is
+        // True, despite float64's 53-bit mantissa not covering all of
+        // int64 -- NumPy's own acknowledged cast-table inconsistency (see
+        // can_cast's doc comment). Deliberately not replicated: this port
+        // applies the same mantissa rule uniformly, so int64 -> float64
+        // is SameKind here, exactly like the not-quirky int32 -> float32.
+        assert_eq!(can_cast(Kind::Int(64), Kind::Float(64)), CastSafety::SameKind);
+        assert_eq!(can_cast(Kind::Int(32), Kind::Float(32)), CastSafety::SameKind);
+        // Every other pairing already agreed with real NumPy and still does:
         assert_eq!(can_cast(Kind::Int(64), Kind::Float(32)), CastSafety::SameKind);
+        assert_eq!(can_cast(Kind::Int(32), Kind::Float(64)), CastSafety::Safe);
     }
 
     // -- Uint/Int mixing, verified against real NumPy 2.5.3's np.can_cast ---
@@ -539,17 +547,17 @@ mod tests {
         assert_eq!(can_cast(Kind::Uint(8), Kind::Int(8)), CastSafety::SameKind);
         // np.can_cast(uint8, int16) -> safe (int16 covers uint8's full range)
         assert_eq!(can_cast(Kind::Uint(8), Kind::Int(16)), CastSafety::Safe);
-        // np.can_cast(uint64, int64) -> same_kind, NOT the 64-bit float
-        // quirk -- that quirk is specifically about floating-point targets.
+        // np.can_cast(uint64, int64) -> same_kind (equal width, neither
+        // covers the other's full range).
         assert_eq!(can_cast(Kind::Uint(64), Kind::Int(64)), CastSafety::SameKind);
     }
 
     #[test]
-    fn can_cast_uint64_to_float64_has_the_same_64_bit_quirk_as_int64() {
-        // np.can_cast(uint64, float64) -> safe (same historical quirk as
-        // int64 -> float64); np.can_cast(uint32, float32) -> same_kind
-        // (the general mantissa rule, unaffected).
-        assert_eq!(can_cast(Kind::Uint(64), Kind::Float(64)), CastSafety::Safe);
+    fn can_cast_uint64_to_float64_also_uses_the_consistent_rule() {
+        // Real NumPy's np.can_cast(uint64, float64) is also `safe` (the
+        // same acknowledged quirk as int64 -> float64); this port applies
+        // the uniform mantissa rule here too, so it's SameKind.
+        assert_eq!(can_cast(Kind::Uint(64), Kind::Float(64)), CastSafety::SameKind);
         assert_eq!(can_cast(Kind::Uint(32), Kind::Float(32)), CastSafety::SameKind);
         assert_eq!(can_cast(Kind::Uint(32), Kind::Float(64)), CastSafety::Safe);
     }
@@ -582,17 +590,18 @@ mod tests {
     }
 
     #[test]
-    fn can_cast_int_to_complex_matches_numpy_including_the_64_bit_quirk() {
+    fn can_cast_int_to_complex_uses_the_consistent_mantissa_rule() {
         // np.can_cast(int32, complex64) -> same_kind (int32 needs float64
         // to be exact, complex64's component is only float32)
         assert_eq!(can_cast(Kind::Int(32), Kind::Complex(32)), CastSafety::SameKind);
         // np.can_cast(int64, complex64) -> same_kind, same reasoning
         assert_eq!(can_cast(Kind::Int(64), Kind::Complex(32)), CastSafety::SameKind);
-        // np.can_cast(int64, complex128) -> safe -- the same 64-bit quirk
-        // as int64 -> float64, now for a complex128 target
-        assert_eq!(can_cast(Kind::Int(64), Kind::Complex(64)), CastSafety::Safe);
+        // Real NumPy's np.can_cast(int64, complex128) is `safe` (the same
+        // acknowledged quirk, now for a complex128 target); this port
+        // applies the uniform mantissa rule instead, so it's SameKind too.
+        assert_eq!(can_cast(Kind::Int(64), Kind::Complex(64)), CastSafety::SameKind);
         // np.can_cast(int32, complex128) -> safe via the general rule (no
-        // special case needed: int32 already fits float64/complex128 exactly)
+        // quirk involved: int32 already fits float64/complex128 exactly)
         assert_eq!(can_cast(Kind::Int(32), Kind::Complex(64)), CastSafety::Safe);
     }
 
