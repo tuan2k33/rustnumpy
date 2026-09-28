@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step15_fft`
+//! Run: `cargo run --example step13_fft`
 //!
-//! Step 15: `fft` via `rustfft` (pure Rust, no FFI). Every value below was
+//! Step 13: `fft` via `rustfft` (pure Rust, no FFI). Every value below was
 //! checked against real NumPy 2.5.3 first (see `fft.rs`'s doc comment for
 //! the tolerance-not-exact-equality policy this follows).
 

@@ -213,7 +213,7 @@ pub fn frobenius_norm(a: &NdArray) -> f64 {
     a.as_slice().iter().map(|x| x * x).sum::<f64>().sqrt()
 }
 
-/// Step 18 (NEP 56 / Array API standard v2022.12) audit: the standard's
+/// Step 16 (NEP 56 / Array API standard v2022.12) audit: the standard's
 /// own linalg extension names this function `matrix_norm(x, ord='fro')`
 /// — [`vector_norm`] above already happens to match the standard's name
 /// exactly (no rename needed there), but the matrix case was named after

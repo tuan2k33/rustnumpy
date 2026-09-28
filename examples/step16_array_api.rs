@@ -1,7 +1,7 @@
-//! Run: `cargo run --example step18_array_api`
+//! Run: `cargo run --example step16_array_api`
 //!
-//! Step 18: audit this crate's public function names against the Python
-//! Array API standard (v2022.12, NEP 56). See `NumPy.md`'s "Step 18
+//! Step 16: audit this crate's public function names against the Python
+//! Array API standard (v2022.12, NEP 56). See `NumPy.md`'s "Step 16
 //! audit" section for the full comparison table. This example just shows
 //! the standard-aligned names added here are thin wrappers -- same
 //! result as the original, NumPy-flavored name each one replaces/joins.

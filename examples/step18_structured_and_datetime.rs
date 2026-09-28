@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step9_structured_and_datetime`
+//! Run: `cargo run --example step18_structured_and_datetime`
 //!
-//! Step 9: structured/record dtypes, and `datetime64`/`timedelta64`. Every
+//! Step 18: structured/record dtypes, and `datetime64`/`timedelta64`. Every
 //! value below was cross-checked against real NumPy 2.5.3 first (see the
 //! comment above each block).
 

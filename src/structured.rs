@@ -1,4 +1,4 @@
-//! Step 9 (part 1): structured / record dtypes — an ordered list of named
+//! Step 18 (part 1): structured / record dtypes — an ordered list of named
 //! fields packed into one fixed-size "row", the way `np.dtype([('x','i4'),
 //! ('y','f8')])` describes a C struct rather than a single scalar type.
 //!

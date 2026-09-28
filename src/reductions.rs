@@ -1,4 +1,4 @@
-//! Step 12: reductions/statistics — `sum`/`mean`/`var`/`std`/`median`/
+//! Step 10: reductions/statistics — `sum`/`mean`/`var`/`std`/`median`/
 //! `percentile`, their `nan*` variants, `histogram`, and `cov`/`corrcoef`.
 //!
 //! Scope: **whole-array reductions only** — no `axis=` parameter yet.
@@ -23,7 +23,7 @@
 //! and `histogram`'s bin-edge/last-bin-inclusive behavior — was checked
 //! against real NumPy 2.5.3 first, not assumed.
 //!
-//! Generic over `T` as of step 20, in two different ways depending on
+//! Generic over `T` as of this crate's full-numeric-support work (extending step 4/10), in two different ways depending on
 //! what real NumPy itself does to the *output* dtype:
 //! - `sum`/`min`/`max` (and their `nan*` counterparts) **preserve** `T` —
 //!   `np.array([1,2,3], dtype=np.int32).sum()` stays an `int32`, and so
@@ -625,7 +625,7 @@ mod tests {
     }
 
     #[test]
-    fn step_20_sum_min_max_preserve_integer_dtype_but_mean_promotes_to_f64() {
+    fn generic_numeric_sum_min_max_preserve_integer_dtype_but_mean_promotes_to_f64() {
         // np.array([1,2,3,4,5], dtype=np.int32).sum() -> 15 (still int32)
         // np.array([1,2,3,4,5], dtype=np.int32).mean() -> 3.0 (float64)
         let a = NdArray::from_vec(vec![1i32, 2, 3, 4, 5], &[5]).unwrap();

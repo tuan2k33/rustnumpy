@@ -1,4 +1,4 @@
-//! Step 13: `lib/`-layer utility functions — set operations (`unique`,
+//! Step 11: `lib/`-layer utility functions — set operations (`unique`,
 //! `intersect1d`, `union1d`), shape ops (`concatenate`, `stack`, `split`,
 //! `tile`), `interp`, and `gradient`.
 //!
@@ -100,7 +100,7 @@ pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeErr
     Ok(NdArray::from_vec(data, &out_shape).expect("data.len() == out_shape.iter().product() by construction"))
 }
 
-/// Step 18 (NEP 56 / Array API standard v2022.12) audit: the standard's
+/// Step 16 (NEP 56 / Array API standard v2022.12) audit: the standard's
 /// own manipulation function is named `concat`, not `concatenate` —
 /// NumPy itself keeps `concatenate` as the primary name even post-NEP 56,
 /// so both stay valid entry points here too, the same "old name still

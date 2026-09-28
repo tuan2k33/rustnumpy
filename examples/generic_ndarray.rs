@@ -1,4 +1,4 @@
-//! Run: `cargo run --example step18_generic_ndarray`
+//! Run: `cargo run --example generic_ndarray`
 //!
 //! `NdArray<T = f64>` is genuinely generic over its element type -- one
 //! struct definition, one set of method bodies, monomorphized per `T` at

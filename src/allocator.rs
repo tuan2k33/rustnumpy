@@ -200,7 +200,7 @@ impl Drop for BumpArena {
 // CPython. Making `BumpArena` genuinely shareable across threads would mean
 // swapping `Cell<usize>` for `AtomicUsize` and `fetch_add`/CAS in
 // `allocate` -- not done here since nothing in this crate needs a
-// cross-thread arena yet (see step 19's audit in `NumPy.md`).
+// cross-thread arena yet (see step 17's audit in `NumPy.md`).
 unsafe impl Send for BumpArena {}
 
 /// A small owned buffer of `T`, allocated through any [`Allocator`]
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(arena.used(), 0);
     }
 
-    /// Step 19 (free-threading audit): this only compiles at all *because*
+    /// Step 17 (free-threading audit): this only compiles at all *because*
     /// of the `unsafe impl Send for BumpArena` above -- before it existed,
     /// `BumpArena` was `!Send` (its raw `NonNull<u8>` field blocks the
     /// auto-trait by default), so `thread::spawn` wouldn't even accept a

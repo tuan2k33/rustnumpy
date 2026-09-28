@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step17_polynomial`
+//! Run: `cargo run --example step15_polynomial`
 //!
-//! Step 17: `polynomial` (Chebyshev/Hermite/Laguerre/Legendre). Every
+//! Step 15: `polynomial` (Chebyshev/Hermite/Laguerre/Legendre). Every
 //! value below was checked against real NumPy 2.5.3's
 //! `np.polynomial.{Chebyshev,Hermite,Laguerre,Legendre}` first (see
 //! `polynomial.rs`'s doc comment for the tolerance-not-exact-equality

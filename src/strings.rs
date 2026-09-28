@@ -1,4 +1,4 @@
-//! Step 10: `StringDType` (NEP 55) + a subset of `numpy.strings`'s
+//! Step 19: `StringDType` (NEP 55) + a subset of `numpy.strings`'s
 //! string-processing ufuncs.
 //!
 //! Scope, per `NumPy.md`'s NumPy >= 2.5 target and NEP 55's own design:

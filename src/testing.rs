@@ -1,4 +1,4 @@
-//! Step 11: a `numpy.testing` equivalent — enough of `assert_array_equal`/
+//! Step 9: a `numpy.testing` equivalent — enough of `assert_array_equal`/
 //! `assert_allclose`/`assert_array_almost_equal` to write this project's
 //! own tests without any of them depending on a running NumPy.
 //!

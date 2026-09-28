@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step13_utils`
+//! Run: `cargo run --example step11_utils`
 //!
-//! Step 13: `lib/`-layer utilities. Every value below was checked against
+//! Step 11: `lib/`-layer utilities. Every value below was checked against
 //! real NumPy 2.5.3 first (see `utils.rs`'s doc comment) -- including
 //! `unique`'s NaN-collapsing and `tile`'s bidirectional shape padding.
 

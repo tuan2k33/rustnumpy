@@ -5,7 +5,7 @@
 //! swap out the inner loop function (`resolve_descriptors`/`get_loop`/
 //! `strided_loop` from NEP 41/42, see NumPy.md).
 //!
-//! Generic over the element type `T` as of step 20 (`add`/`sub`/`mul` work
+//! Generic over the element type `T` as of this crate's full-numeric-support work (extending step 4) (`add`/`sub`/`mul` work
 //! on any numeric `T` the standard arithmetic traits are implemented for —
 //! `i8`..`i64`, `u8`..`u64`, `f32`/`f64`, `Complex<f32>`/`Complex<f64>` all
 //! monomorphize cleanly), still missing real NumPy ufunc features on
@@ -196,7 +196,7 @@ pub fn add<T: Copy + std::ops::Add<Output = T>>(
 /// `a - b`, broadcasting like NumPy.
 ///
 /// Named `sub` (not the Python Array API standard's own `subtract`) since
-/// it predates step 18's audit against that standard — [`subtract`] is
+/// it predates step 16's audit against that standard — [`subtract`] is
 /// the standard-aligned name added there, a thin wrapper around this.
 pub fn sub<T: Copy + std::ops::Sub<Output = T>>(
     a: &ArrayView<T>,
@@ -216,7 +216,7 @@ pub fn mul<T: Copy + std::ops::Mul<Output = T>>(
     zip_with(a, b, |x, y| x * y)
 }
 
-/// Step 18 (NEP 56 / Array API standard v2022.12) audit: the standard's
+/// Step 16 (NEP 56 / Array API standard v2022.12) audit: the standard's
 /// own elementwise function is named `subtract`, not `sub` — this crate
 /// kept `sub` from step 4 for its own history's sake, so `subtract` is
 /// added as the standard-named entry point instead of a disruptive rename
@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn step_20_generic_ufunc_engine_works_on_non_f64_numeric_types() {
+    fn generic_ufunc_engine_works_on_non_f64_numeric_types() {
         // The point of genericizing add/sub/mul: this is not `NdArray<f64>`
         // anywhere below, but the exact same `zip_with` engine as every
         // f64 test above -- monomorphized fresh per concrete `T`.

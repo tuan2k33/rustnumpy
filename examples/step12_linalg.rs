@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step14_linalg`
+//! Run: `cargo run --example step12_linalg`
 //!
-//! Step 14: `linalg` via `faer` (pure Rust, no LAPACK/FFI). Every value
+//! Step 12: `linalg` via `faer` (pure Rust, no LAPACK/FFI). Every value
 //! below was checked against real NumPy 2.5.3 first (see `linalg.rs`'s
 //! doc comment for the tolerance-not-exact-equality policy this follows).
 

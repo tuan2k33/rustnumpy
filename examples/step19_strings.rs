@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step10_strings`
+//! Run: `cargo run --example step19_strings`
 //!
-//! Step 10: `StringDType` (NEP 55) + a subset of `numpy.strings`. Every
+//! Step 19: `StringDType` (NEP 55) + a subset of `numpy.strings`. Every
 //! value below was checked against real NumPy 2.5.3 first (see the
 //! comment above each block) -- including the two counter-intuitive
 //! findings from that check: `numpy.strings` has no `split` at all in

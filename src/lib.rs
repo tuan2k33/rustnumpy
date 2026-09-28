@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–18 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–19 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -50,22 +50,24 @@
 //! `polynomial.rs`, plus (also generic-hardening work, and separately a
 //! `dtype.rs` extension: `Kind`/`DType` now also cover `Uint`/`Complex`,
 //! verified rule-by-rule against real NumPy's own `can_cast`/
-//! `result_type`) a step 18 audit of this crate's public function names
+//! `result_type`) a step 16 audit of this crate's public function names
 //! against the Python Array API standard (NEP 56): `subtract`/
 //! `multiply`/`concat`/`matrix_norm` added as standard-aligned aliases of
-//! `sub`/`mul`/`concatenate`/`frobenius_norm` — see `NumPy.md`'s "Step 18
+//! `sub`/`mul`/`concatenate`/`frobenius_norm` — see `NumPy.md`'s "Step 16
 //! audit" section for the full comparison table (what already matched,
-//! what got aliased, what's a genuine gap against the standard). Step 19
+//! what got aliased, what's a genuine gap against the standard). Step 17
 //! then audited thread-safety crate-wide (zero global mutable state found;
 //! `BumpArena`/`PooledVec` were found `!Send` and fixed with a documented
 //! `unsafe impl`, see `allocator.rs`) and added crates.io/PyPI packaging
 //! metadata (`LICENSE-MIT`/`LICENSE-APACHE`, `README.md`) without actually
-//! publishing — see `NumPy.md`'s "Step 19" section for what's verified vs.
+//! publishing — see `NumPy.md`'s "Step 17" section for what's verified vs.
 //! still an open gap (notably: free-threaded-CPython behavior of the
 //! `python/` PyO3 bindings isn't tested, no free-threaded interpreter is
 //! available here; the NumPy benchmark suite stays deferred).
 //!
-//! Step 20 then closed the biggest remaining gap from step 18: `ufunc`'s
+//! (Unnumbered, extending steps 4/10 — see `NumPy.md` for why this isn't
+//! its own numbered step) full numeric support then closed the biggest
+//! remaining gap from step 16: `ufunc`'s
 //! `add`/`sub`/`mul` (+ `_parallel` variants) and `reductions`'s
 //! `sum`/`min`/`max`/`mean`/`var`/`std`/`median`/`percentile`/`nan*` are
 //! now generic over `T` (any numeric type with the right `std::ops`
@@ -109,7 +111,7 @@
 //! `fft.rs`'s N-D functions still use their own `ComplexArray` type
 //! rather than `NdArray<Complex64>` — both predate `NdArray<T>` becoming
 //! generic and haven't been migrated to it yet; `NdArray<Complex64>`
-//! itself now works fine as a container, see `examples/step18_generic_ndarray.rs`),
+//! itself now works fine as a container, see `examples/generic_ndarray.rs`),
 //! and `RandomState`/
 //! the legacy `np.random.seed()` API (deliberately dropped, not a gap —
 //! see `random.rs`'s doc comment and `NumPy.md`'s "Parts Worth Dropping")

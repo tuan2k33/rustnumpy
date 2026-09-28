@@ -1,4 +1,4 @@
-//! Step 9 (part 2): `datetime64`/`timedelta64` — a signed 64-bit tick count
+//! Step 18 (part 2): `datetime64`/`timedelta64` — a signed 64-bit tick count
 //! against a fixed-ratio unit, the way real NumPy represents both types
 //! internally.
 //!

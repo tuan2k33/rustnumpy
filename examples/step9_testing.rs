@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step11_testing`
+//! Run: `cargo run --example step9_testing`
 //!
-//! Step 11: a `numpy.testing` equivalent. Every default/boundary here was
+//! Step 9: a `numpy.testing` equivalent. Every default/boundary here was
 //! checked against real NumPy 2.5.3 first (see `testing.rs`'s doc
 //! comment) -- including the two easy-to-get-wrong details demonstrated
 //! below: `assert_array_equal` treats `NaN == NaN` as equal, and

@@ -1,6 +1,6 @@
-//! Run: `cargo run --example step20_generic_numeric`
+//! Run: `cargo run --example full_numeric_support`
 //!
-//! Step 20: `ufunc`/`reductions` genericized over `T`. Same engine as
+//! Full numeric support: `ufunc`/`reductions` genericized over `T`. Same engine as
 //! every earlier `f64` example -- just called with `NdArray<i32>`,
 //! `NdArray<u64>`, and `NdArray<Complex64>` instead.
 
