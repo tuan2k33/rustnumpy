@@ -338,6 +338,8 @@ Steps 13–18 account for most of the raw workload (the rarely-used "long tail")
 
 ## NumPy Parts Worth Dropping When Rewriting in Rust
 
+**Target version: NumPy >= 2.5 semantics only.** This project matches the behavior of current NumPy (2.5.x), not the full 15-20 year history behind it. Anything NumPy itself has deprecated, or keeps only as a backward-compatibility shim for code written against an older version, is out of scope here — don't implement it, don't test against it, don't budget time for it. When in doubt about whether something is "current" or "legacy", check what real NumPy >= 2.5 actually recommends/warns about (`DeprecationWarning`, docs saying "prefer X instead") and only port the recommended side.
+
 Some designs in NumPy exist only for 15–20 years of backward-compatibility reasons — no need to carry them into the Rust version:
 
 - **Fixed-width string dtype** (`U<n>`/`S<n>`) — now that StringDType exists (NEP 55, variable-length UTF-8 + small-string optimization), it does better for most cases. Only keep fixed-width if you need to read existing old `.npy` files — no need to make it a primary dtype.
