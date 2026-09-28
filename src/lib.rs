@@ -65,12 +65,35 @@
 //! `python/` PyO3 bindings isn't tested, no free-threaded interpreter is
 //! available here; the NumPy benchmark suite stays deferred).
 //!
-//! Deliberately **not yet** present: the numeric algorithms built on top
-//! of `NdArray<T>` (`ufunc`'s `add`/`mul`, `reductions`, `linalg`, `fft`,
-//! `random`) are still each hardcoded to `f64` — `NdArray<T>` itself is
-//! generic (see above), but step 3's `DType` trait isn't wired into
-//! *those* as a bound yet, so e.g. `ufunc::add` doesn't work on
-//! `NdArray<i32>` even though the array itself now can hold `i32`.
+//! Step 20 then closed the biggest remaining gap from step 18: `ufunc`'s
+//! `add`/`sub`/`mul` (+ `_parallel` variants) and `reductions`'s
+//! `sum`/`min`/`max`/`mean`/`var`/`std`/`median`/`percentile`/`nan*` are
+//! now generic over `T` (any numeric type with the right `std::ops`
+//! bound), and `dtype.rs`'s `DType` trait was widened to cover every
+//! integer width (`i8`..`i64`, `u8`..`u64` — previously only `i32`/`u32`)
+//! and `complex64` (previously only `complex128`). `sum`/`min`/`max`
+//! preserve `T` exactly; `mean`/`var`/`std`/`median`/`percentile` always
+//! promote to `f64`, matching real NumPy's own "these always return a
+//! float" reduction rule — see `sum`'s own doc comment in `reductions.rs`
+//! for one documented, deliberate divergence from real NumPy (NumPy
+//! additionally upcasts a *narrow* integer `sum`/`mean` to a wider
+//! integer to dodge overflow; a plain Rust generic can't return a
+//! different concrete type per input type the way NumPy's runtime
+//! dispatch can, so `sum::<T>` here stays exactly `T`). `linalg`/`fft`/
+//! `random` deliberately remain `f64`/`Complex64`-only: real NumPy's own
+//! LAPACK/FFT bindings upcast every input to `float64` internally too, so
+//! genericizing those signatures wouldn't change their actual arithmetic.
+//!
+//! Deliberately **not yet** present: `cov`/`corrcoef`/`histogram` (in
+//! `reductions.rs`) stay `f64`-only (not yet generic like the rest of that
+//! module), `linalg`/`fft`/`random` stay `f64`/`Complex64`-only as noted
+//! above, and `NEP 50` mixed-type promotion still isn't wired into any of
+//! these — `ufunc::add::<i32>` requires *both* operands already be `i32`,
+//! it doesn't accept an `i32` array and an `f64` array and promote the
+//! result the way `dtype.rs`'s `common_dtype`/`can_cast` describe how it
+//! *should*; actually dispatching to the right monomorphized instance
+//! from two different runtime dtypes is a separate, harder problem (real
+//! NumPy's `resolve_descriptors`/`get_loop`) not solved here.
 //! `NdArray` isn't generic over `Allocator` yet
 //! (that's `allocator.rs`'s own standalone `PooledVec`), a cache-optimized
 //! iterator (NEP 10), generalized core-dimension ufuncs (NEP 20), boolean

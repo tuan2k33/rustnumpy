@@ -22,8 +22,85 @@
 //! for an all-`NaN` input, `percentile`'s linear-interpolation formula,
 //! and `histogram`'s bin-edge/last-bin-inclusive behavior — was checked
 //! against real NumPy 2.5.3 first, not assumed.
+//!
+//! Generic over `T` as of step 20, in two different ways depending on
+//! what real NumPy itself does to the *output* dtype:
+//! - `sum`/`min`/`max` (and their `nan*` counterparts) **preserve** `T` —
+//!   `np.array([1,2,3], dtype=np.int32).sum()` stays an `int32`, and so
+//!   does this crate's `sum::<i32>`.
+//! - `mean`/`var`/`std`/`median`/`percentile` (and `nan*`) always
+//!   **promote to `f64`**, even for integer input — matching real NumPy's
+//!   own "the default reduction dtype for these is always a float" rule
+//!   (`np.array([1,2,3], dtype=np.int32).mean()` is a `float64`, not
+//!   rounded/truncated `int32` division).
+//!
+//! `cov`/`corrcoef`/`histogram` stay `f64`-only for now (real NumPy
+//! promotes their input to float64 internally too, so genericizing their
+//! *signature* over `T` wouldn't change their actual arithmetic — not
+//! done here since nothing yet calls them with a non-`f64` array).
 
 use crate::view::ArrayView;
+
+/// Whether a value is the float "not-a-number" sentinel — `false` for
+/// every integer type (which have no such value), the real `is_nan()`
+/// check for `f32`/`f64`. Lets [`min`]/[`max`]/the `nan*` reductions share
+/// one generic implementation instead of one f64-only copy plus a
+/// separate "just do a plain `PartialOrd` compare" copy for integers.
+pub trait FloatIsh: Copy + PartialOrd {
+    fn is_nan_ish(self) -> bool {
+        false
+    }
+}
+
+macro_rules! impl_floatish_for_ints {
+    ($($t:ty),*) => {
+        $(impl FloatIsh for $t {})*
+    };
+}
+impl_floatish_for_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+impl FloatIsh for f32 {
+    fn is_nan_ish(self) -> bool {
+        self.is_nan()
+    }
+}
+
+impl FloatIsh for f64 {
+    fn is_nan_ish(self) -> bool {
+        self.is_nan()
+    }
+}
+
+/// Lossless-where-possible (lossy for `i64`/`u64` magnitudes past 2^53,
+/// exactly like real NumPy's own `int64 -> float64` conversion) numeric
+/// widening, for the reductions that always promote their result to
+/// `f64` regardless of the input's own type.
+pub trait AsF64: Copy {
+    fn as_f64(self) -> f64;
+}
+
+macro_rules! impl_as_f64_for_ints {
+    ($($t:ty),*) => {
+        $(impl AsF64 for $t {
+            fn as_f64(self) -> f64 {
+                self as f64
+            }
+        })*
+    };
+}
+impl_as_f64_for_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+impl AsF64 for f32 {
+    fn as_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+impl AsF64 for f64 {
+    fn as_f64(self) -> f64 {
+        self
+    }
+}
 
 /// Errors from a reduction that genuinely cannot produce a value (as
 /// opposed to producing `NaN`, which real NumPy does for most "unusual
@@ -53,82 +130,118 @@ impl std::fmt::Display for ReductionError {
 
 impl std::error::Error for ReductionError {}
 
-fn values(view: &ArrayView) -> Vec<f64> {
+fn values<T: Copy>(view: &ArrayView<T>) -> Vec<T> {
     crate::shape::IndexIter::new(view.shape())
         .map(|idx| view.get(&idx).expect("IndexIter only yields valid indices"))
         .collect()
 }
 
-/// `arr.sum()`. Empty input sums to `0.0` (the additive identity),
-/// matching real NumPy — except Rust's own `Sum for f64` picks `-0.0` as
-/// that identity (IEEE-754's more precisely-signed zero: `-0.0 + -0.0 ==
-/// -0.0`, whereas `0.0` would flip the sign of an all-`-0.0` sum), so an
-/// empty array here sums to `-0.0` where real NumPy prints `0.0`.
-/// Deliberately left as-is rather than special-cased: `-0.0 == 0.0` is
-/// `true` under IEEE-754, so nothing downstream can observe a difference
-/// unless it specifically inspects the sign bit — not worth the extra
-/// branch to paper over.
-pub fn sum(view: &ArrayView) -> f64 {
-    values(view).into_iter().sum()
+/// `arr.sum()`. Preserves `T` exactly — an `i32` array sums to an `i32`.
+///
+/// **Known, deliberate deviation from real NumPy**: verified real NumPy
+/// 2.5.3 does *not* preserve narrow integer widths through `sum()` —
+/// `np.array([1,2,3], dtype=np.int32).sum().dtype` is `int64`, not
+/// `int32` (it upcasts every integer narrower than the platform's default
+/// integer width to avoid the reduction silently overflowing, the same
+/// "reduction default dtype" idea that makes `.mean()` always promote to
+/// `float64`). Reproducing that exactly would mean `sum`'s *return type*
+/// depending on its *input* type in a way plain Rust generics can't
+/// express (`sum::<i32>` would need to return `i64`, a different concrete
+/// type) — not just a formula difference like the `int64->float64`
+/// `can_cast` quirk documented in `dtype.rs`. This project instead keeps
+/// the simpler, Rust-idiomatic rule "the output type is always exactly
+/// the input type", and documents the difference here rather than
+/// silently diverging.
+///
+/// Empty input sums to `T::default()` (`0`/`0.0`,
+/// the additive identity) — except for `f64`, where Rust's own `Sum for
+/// f64` picks `-0.0` as that identity (IEEE-754's more precisely-signed
+/// zero: `-0.0 + -0.0 == -0.0`, whereas `0.0` would flip the sign of an
+/// all-`-0.0` sum), so an empty `f64` array here sums to `-0.0` where real
+/// NumPy prints `0.0`. Deliberately left as-is rather than special-cased:
+/// `-0.0 == 0.0` is `true` under IEEE-754, so nothing downstream can
+/// observe a difference unless it specifically inspects the sign bit —
+/// not worth the extra branch to paper over.
+pub fn sum<T: Copy + Default + std::ops::Add<Output = T>>(view: &ArrayView<T>) -> T {
+    values(view).into_iter().fold(T::default(), |acc, x| acc + x)
 }
 
-/// `arr.mean()`. Empty input is `NaN` (matches real NumPy: `0.0 / 0`).
-pub fn mean(view: &ArrayView) -> f64 {
+/// `arr.mean()`. Always promotes to `f64` (matches real NumPy: the mean
+/// of an integer array is a `float64`, never truncated back to the
+/// input's own type). Empty input is `NaN` (matches real NumPy: `0.0 / 0`).
+pub fn mean<T: AsF64>(view: &ArrayView<T>) -> f64 {
     let v = values(view);
     if v.is_empty() {
         f64::NAN
     } else {
-        v.iter().sum::<f64>() / v.len() as f64
+        v.iter().map(|x| x.as_f64()).sum::<f64>() / v.len() as f64
     }
 }
 
 /// `arr.var(ddof=ddof)`. `n <= ddof` (including the empty-array case,
 /// `n = 0`) is `NaN` (a `0.0 / 0` division), matching real NumPy rather
 /// than erroring.
-pub fn var(view: &ArrayView, ddof: usize) -> f64 {
+pub fn var<T: AsF64>(view: &ArrayView<T>, ddof: usize) -> f64 {
     let v = values(view);
     let n = v.len();
     if n == 0 || n <= ddof {
         return f64::NAN;
     }
-    let m = v.iter().sum::<f64>() / n as f64;
-    let ss: f64 = v.iter().map(|x| (x - m).powi(2)).sum();
+    let m = v.iter().map(|x| x.as_f64()).sum::<f64>() / n as f64;
+    let ss: f64 = v.iter().map(|x| (x.as_f64() - m).powi(2)).sum();
     ss / (n - ddof) as f64
 }
 
 /// [`var`] with real NumPy's own default (`ddof=0`, the *population*
 /// variance).
-pub fn var_default(view: &ArrayView) -> f64 {
+pub fn var_default<T: AsF64>(view: &ArrayView<T>) -> f64 {
     var(view, 0)
 }
 
 /// `arr.std(ddof=ddof)`.
-pub fn std(view: &ArrayView, ddof: usize) -> f64 {
+pub fn std<T: AsF64>(view: &ArrayView<T>, ddof: usize) -> f64 {
     var(view, ddof).sqrt()
 }
 
 /// [`std`] with `ddof=0`.
-pub fn std_default(view: &ArrayView) -> f64 {
+pub fn std_default<T: AsF64>(view: &ArrayView<T>) -> f64 {
     std(view, 0)
 }
 
-/// `arr.min()`. `NaN` propagates (any `NaN` present makes the result
-/// `NaN`, matching real NumPy's plain, non-`nan`-prefixed `min`).
-pub fn min(view: &ArrayView) -> Result<f64, ReductionError> {
+/// `arr.min()`. Preserves `T`. `NaN` propagates for float `T` (any `NaN`
+/// present makes the result `NaN`, matching real NumPy's plain,
+/// non-`nan`-prefixed `min`); integer `T` has no such value, so this is
+/// just an ordinary fold by [`FloatIsh::is_nan_ish`]'s always-`false`
+/// default.
+pub fn min<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     let v = values(view);
-    if v.is_empty() {
-        return Err(ReductionError::EmptyInput);
-    }
-    Ok(v.into_iter().fold(f64::INFINITY, |acc, x| if acc.is_nan() || x.is_nan() { f64::NAN } else { acc.min(x) }))
+    let mut iter = v.into_iter();
+    let first = iter.next().ok_or(ReductionError::EmptyInput)?;
+    Ok(iter.fold(first, |acc, x| {
+        if acc.is_nan_ish() {
+            acc
+        } else if x.is_nan_ish() || x < acc {
+            x
+        } else {
+            acc
+        }
+    }))
 }
 
 /// `arr.max()`.
-pub fn max(view: &ArrayView) -> Result<f64, ReductionError> {
+pub fn max<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     let v = values(view);
-    if v.is_empty() {
-        return Err(ReductionError::EmptyInput);
-    }
-    Ok(v.into_iter().fold(f64::NEG_INFINITY, |acc, x| if acc.is_nan() || x.is_nan() { f64::NAN } else { acc.max(x) }))
+    let mut iter = v.into_iter();
+    let first = iter.next().ok_or(ReductionError::EmptyInput)?;
+    Ok(iter.fold(first, |acc, x| {
+        if acc.is_nan_ish() {
+            acc
+        } else if x.is_nan_ish() || x > acc {
+            x
+        } else {
+            acc
+        }
+    }))
 }
 
 /// The shared engine behind [`percentile`]/[`median`]: real NumPy's exact
@@ -150,12 +263,13 @@ fn percentile_sorted(sorted: &[f64], q: f64) -> f64 {
     sorted[lower] + frac * (sorted[upper] - sorted[lower])
 }
 
-/// `np.percentile(arr, q)`. `q` must be in `[0, 100]`.
-pub fn percentile(view: &ArrayView, q: f64) -> Result<f64, ReductionError> {
+/// `np.percentile(arr, q)`. `q` must be in `[0, 100]`. Always promotes to
+/// `f64`, same as [`mean`]/[`var`]/[`std`].
+pub fn percentile<T: AsF64>(view: &ArrayView<T>, q: f64) -> Result<f64, ReductionError> {
     if !(0.0..=100.0).contains(&q) {
         return Err(ReductionError::PercentileOutOfRange { q });
     }
-    let mut v = values(view);
+    let mut v: Vec<f64> = values(view).into_iter().map(|x| x.as_f64()).collect();
     if v.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
@@ -165,56 +279,57 @@ pub fn percentile(view: &ArrayView, q: f64) -> Result<f64, ReductionError> {
 
 /// `np.median(arr)` — exactly `percentile(arr, 50)`, the same relationship
 /// real NumPy's implementation has.
-pub fn median(view: &ArrayView) -> Result<f64, ReductionError> {
+pub fn median<T: AsF64>(view: &ArrayView<T>) -> Result<f64, ReductionError> {
     percentile(view, 50.0)
 }
 
-fn non_nan_values(view: &ArrayView) -> Vec<f64> {
-    values(view).into_iter().filter(|x| !x.is_nan()).collect()
+fn non_nan_values<T: FloatIsh>(view: &ArrayView<T>) -> Vec<T> {
+    values(view).into_iter().filter(|x| !x.is_nan_ish()).collect()
 }
 
 /// `np.nansum(arr)` — `NaN`s are skipped entirely; an all-`NaN` (or
-/// empty) input sums to `0.0` (Rust's own `-0.0` in practice — see
-/// [`sum`]'s comment), matching real NumPy (verified: NOT `NaN`, unlike
-/// [`nanmean`]).
-pub fn nansum(view: &ArrayView) -> f64 {
-    non_nan_values(view).into_iter().sum()
+/// empty) input sums to `T::default()` (Rust's own `-0.0` for `f64`, in
+/// practice — see [`sum`]'s comment), matching real NumPy (verified: NOT
+/// `NaN`, unlike [`nanmean`]). Preserves `T`, same as [`sum`]; for
+/// integer `T` this is identical to [`sum`] (there's no `NaN` to skip).
+pub fn nansum<T: FloatIsh + Default + std::ops::Add<Output = T>>(view: &ArrayView<T>) -> T {
+    non_nan_values(view).into_iter().fold(T::default(), |acc, x| acc + x)
 }
 
 /// `np.nanmean(arr)` — an all-`NaN` (or empty) input is `NaN`.
-pub fn nanmean(view: &ArrayView) -> f64 {
+pub fn nanmean<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> f64 {
     let v = non_nan_values(view);
     if v.is_empty() {
         f64::NAN
     } else {
-        v.iter().sum::<f64>() / v.len() as f64
+        v.iter().map(|x| x.as_f64()).sum::<f64>() / v.len() as f64
     }
 }
 
 /// `np.nanvar(arr, ddof=ddof)`.
-pub fn nanvar(view: &ArrayView, ddof: usize) -> f64 {
+pub fn nanvar<T: FloatIsh + AsF64>(view: &ArrayView<T>, ddof: usize) -> f64 {
     let v = non_nan_values(view);
     let n = v.len();
     if n == 0 || n <= ddof {
         return f64::NAN;
     }
-    let m = v.iter().sum::<f64>() / n as f64;
-    let ss: f64 = v.iter().map(|x| (x - m).powi(2)).sum();
+    let m = v.iter().map(|x| x.as_f64()).sum::<f64>() / n as f64;
+    let ss: f64 = v.iter().map(|x| (x.as_f64() - m).powi(2)).sum();
     ss / (n - ddof) as f64
 }
 
 /// [`nanvar`] with `ddof=0`.
-pub fn nanvar_default(view: &ArrayView) -> f64 {
+pub fn nanvar_default<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> f64 {
     nanvar(view, 0)
 }
 
 /// `np.nanstd(arr, ddof=ddof)`.
-pub fn nanstd(view: &ArrayView, ddof: usize) -> f64 {
+pub fn nanstd<T: FloatIsh + AsF64>(view: &ArrayView<T>, ddof: usize) -> f64 {
     nanvar(view, ddof).sqrt()
 }
 
 /// [`nanstd`] with `ddof=0`.
-pub fn nanstd_default(view: &ArrayView) -> f64 {
+pub fn nanstd_default<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> f64 {
     nanstd(view, 0)
 }
 
@@ -222,31 +337,43 @@ pub fn nanstd_default(view: &ArrayView) -> f64 {
 /// `Err`; an array that's non-empty but *entirely* `NaN` returns `Ok(NaN)`
 /// instead (verified against real NumPy: these are two different cases
 /// with two different real-NumPy behaviors — an empty array raises, an
-/// all-`NaN` array just warns and returns `NaN`).
-pub fn nanmin(view: &ArrayView) -> Result<f64, ReductionError> {
+/// all-`NaN` array just warns and returns `NaN`). Preserves `T`.
+pub fn nanmin<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     if view.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
     let v = non_nan_values(view);
-    Ok(v.into_iter().fold(f64::NAN, |acc, x| if acc.is_nan() { x } else { acc.min(x) }))
+    let mut iter = v.into_iter();
+    let Some(first) = iter.next() else {
+        // Non-empty overall but every value was NaN -- NumPy's answer here
+        // is NaN, not an error; the caller already established T's own
+        // NaN-shaped value exists (is_nan_ish() can only ever be true for
+        // a float T), so recovering one from the original view is safe.
+        return Ok(values(view)[0]);
+    };
+    Ok(iter.fold(first, |acc, x| if x < acc { x } else { acc }))
 }
 
 /// `np.nanmax(arr)`.
-pub fn nanmax(view: &ArrayView) -> Result<f64, ReductionError> {
+pub fn nanmax<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     if view.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
     let v = non_nan_values(view);
-    Ok(v.into_iter().fold(f64::NAN, |acc, x| if acc.is_nan() { x } else { acc.max(x) }))
+    let mut iter = v.into_iter();
+    let Some(first) = iter.next() else {
+        return Ok(values(view)[0]);
+    };
+    Ok(iter.fold(first, |acc, x| if x > acc { x } else { acc }))
 }
 
 /// `np.nanmedian(arr)`. Same empty-vs-all-`NaN` distinction as
-/// [`nanmin`]/[`nanmax`].
-pub fn nanmedian(view: &ArrayView) -> Result<f64, ReductionError> {
+/// [`nanmin`]/[`nanmax`]. Always promotes to `f64`.
+pub fn nanmedian<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> Result<f64, ReductionError> {
     if view.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
-    let mut v = non_nan_values(view);
+    let mut v: Vec<f64> = non_nan_values(view).into_iter().map(|x| x.as_f64()).collect();
     if v.is_empty() {
         return Ok(f64::NAN);
     }
@@ -495,5 +622,28 @@ mod tests {
         assert!((r.get(&[0, 0]).unwrap() - 1.0).abs() < 1e-9);
         assert!((r.get(&[0, 1]).unwrap() - 0.4).abs() < 1e-9);
         assert!((r.get(&[1, 1]).unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn step_20_sum_min_max_preserve_integer_dtype_but_mean_promotes_to_f64() {
+        // np.array([1,2,3,4,5], dtype=np.int32).sum() -> 15 (still int32)
+        // np.array([1,2,3,4,5], dtype=np.int32).mean() -> 3.0 (float64)
+        let a = NdArray::from_vec(vec![1i32, 2, 3, 4, 5], &[5]).unwrap();
+        let s: i32 = sum(&a.view());
+        assert_eq!(s, 15);
+        assert_eq!(mean(&a.view()), 3.0);
+        assert_eq!(min(&a.view()).unwrap(), 1);
+        assert_eq!(max(&a.view()).unwrap(), 5);
+        assert_eq!(median(&a.view()).unwrap(), 3.0);
+
+        // Same for unsigned and a wider width, and nan* variants (no NaN
+        // to skip for an integer T, so they must agree with the plain
+        // ones exactly).
+        let u = NdArray::from_vec(vec![10u64, 20, 30], &[3]).unwrap();
+        let nu: u64 = nansum(&u.view());
+        assert_eq!(nu, 60);
+        assert_eq!(nanmean(&u.view()), 20.0);
+        assert_eq!(nanmin(&u.view()).unwrap(), 10);
+        assert_eq!(nanmax(&u.view()).unwrap(), 30);
     }
 }

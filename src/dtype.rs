@@ -361,6 +361,20 @@ impl DType for bool {
     }
 }
 
+impl DType for i8 {
+    const KIND: Kind = Kind::Int(8);
+    fn type_name() -> &'static str {
+        "int8"
+    }
+}
+
+impl DType for i16 {
+    const KIND: Kind = Kind::Int(16);
+    fn type_name() -> &'static str {
+        "int16"
+    }
+}
+
 impl DType for i32 {
     const KIND: Kind = Kind::Int(32);
     fn type_name() -> &'static str {
@@ -368,10 +382,38 @@ impl DType for i32 {
     }
 }
 
+impl DType for i64 {
+    const KIND: Kind = Kind::Int(64);
+    fn type_name() -> &'static str {
+        "int64"
+    }
+}
+
+impl DType for u8 {
+    const KIND: Kind = Kind::Uint(8);
+    fn type_name() -> &'static str {
+        "uint8"
+    }
+}
+
+impl DType for u16 {
+    const KIND: Kind = Kind::Uint(16);
+    fn type_name() -> &'static str {
+        "uint16"
+    }
+}
+
 impl DType for u32 {
     const KIND: Kind = Kind::Uint(32);
     fn type_name() -> &'static str {
         "uint32"
+    }
+}
+
+impl DType for u64 {
+    const KIND: Kind = Kind::Uint(64);
+    fn type_name() -> &'static str {
+        "uint64"
     }
 }
 
@@ -389,9 +431,17 @@ impl DType for f64 {
     }
 }
 
-// `num_complex::Complex<f64>` is a foreign type, but `DType` is a local
-// trait, so this is a plain, ordinary trait impl under Rust's orphan
-// rule (`fft.rs`'s `Complex64` is the same type under a local alias).
+// `num_complex::Complex<f32>`/`<f64>` are foreign types, but `DType` is a
+// local trait, so these are plain, ordinary trait impls under Rust's
+// orphan rule (`fft.rs`'s `Complex64` is the `Complex<f64>` type under a
+// local alias).
+impl DType for num_complex::Complex<f32> {
+    const KIND: Kind = Kind::Complex(32);
+    fn type_name() -> &'static str {
+        "complex64"
+    }
+}
+
 impl DType for num_complex::Complex<f64> {
     const KIND: Kind = Kind::Complex(64);
     fn type_name() -> &'static str {
@@ -624,13 +674,23 @@ mod tests {
     #[test]
     fn dtype_trait_on_primitives() {
         assert_eq!(bool::KIND, Kind::Bool);
+        assert_eq!(i8::KIND, Kind::Int(8));
+        assert_eq!(i16::KIND, Kind::Int(16));
         assert_eq!(i32::KIND, Kind::Int(32));
+        assert_eq!(i64::KIND, Kind::Int(64));
+        assert_eq!(u8::KIND, Kind::Uint(8));
+        assert_eq!(u16::KIND, Kind::Uint(16));
         assert_eq!(u32::KIND, Kind::Uint(32));
+        assert_eq!(u64::KIND, Kind::Uint(64));
         assert_eq!(f32::KIND, Kind::Float(32));
         assert_eq!(f64::KIND, Kind::Float(64));
+        assert_eq!(<num_complex::Complex<f32> as DType>::KIND, Kind::Complex(32));
         assert_eq!(<num_complex::Complex<f64> as DType>::KIND, Kind::Complex(64));
         assert_eq!(i32::type_name(), "int32");
         assert_eq!(u32::type_name(), "uint32");
+        assert_eq!(i64::type_name(), "int64");
+        assert_eq!(u64::type_name(), "uint64");
+        assert_eq!(<num_complex::Complex<f32> as DType>::type_name(), "complex64");
     }
 
     #[test]
