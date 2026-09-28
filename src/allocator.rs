@@ -184,6 +184,25 @@ impl Drop for BumpArena {
     }
 }
 
+// SAFETY: `BumpArena` exclusively owns its `buffer` allocation the same way
+// `Box<[u8]>` owns its heap allocation -- `buffer` is never aliased by any
+// other `BumpArena`, so moving one to another thread and using/dropping it
+// there is sound. Without this impl, `NonNull<u8>` (the raw pointer field)
+// makes `BumpArena` `!Send` by default, which would rule out even the
+// ordinary "build the arena on one thread, hand it to a worker" pattern.
+//
+// Deliberately **not** `Sync`: `used: Cell<usize>` makes concurrent
+// `&BumpArena` access unsound (two threads racing on the bump offset), and
+// Rust's auto-trait rules already forbid `Sync` for any type containing a
+// `Cell` -- no explicit `impl` is needed (or possible) to block it, which is
+// exactly the "thread safety enforced by the type system, not by a code
+// review" case NumPy.md's roadmap section points to for free-threaded
+// CPython. Making `BumpArena` genuinely shareable across threads would mean
+// swapping `Cell<usize>` for `AtomicUsize` and `fetch_add`/CAS in
+// `allocate` -- not done here since nothing in this crate needs a
+// cross-thread arena yet (see step 19's audit in `NumPy.md`).
+unsafe impl Send for BumpArena {}
+
 /// A small owned buffer of `T`, allocated through any [`Allocator`]
 /// instead of always going through Rust's global allocator — the whole
 /// point of the exercise: swap `System` for `BumpArena` (or any other
@@ -237,6 +256,16 @@ impl<'a, T: Copy, A: Allocator> PooledVec<'a, T, A> {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
+
+// SAFETY: mirrors `BumpArena`'s reasoning above -- a `PooledVec` exclusively
+// owns the `ptr` allocation it got back from `allocator.allocate` (nothing
+// else holds a pointer into it), so moving one to another thread is sound
+// as long as its element type can cross threads too (`T: Send`) and the
+// borrowed allocator can be used from that other thread when `Drop` calls
+// back into `self.allocator.deallocate` (`A: Sync`, since `&'a A` is a
+// shared reference that may now be read from a different thread than the
+// one that created it).
+unsafe impl<'a, T: Send, A: Allocator + Sync> Send for PooledVec<'a, T, A> {}
 
 impl<'a, T, A: Allocator> Drop for PooledVec<'a, T, A> {
     fn drop(&mut self) {
@@ -338,5 +367,49 @@ mod tests {
         let pooled: PooledVec<f64, _> = PooledVec::from_slice(&arena, &[]).unwrap();
         assert!(pooled.is_empty());
         assert_eq!(arena.used(), 0);
+    }
+
+    /// Step 19 (free-threading audit): this only compiles at all *because*
+    /// of the `unsafe impl Send for BumpArena` above -- before it existed,
+    /// `BumpArena` was `!Send` (its raw `NonNull<u8>` field blocks the
+    /// auto-trait by default), so `thread::spawn` wouldn't even accept a
+    /// closure that moves one in. Building and draining the arena on
+    /// separate threads exercises that the ownership transfer is actually
+    /// sound, not just that it type-checks.
+    #[test]
+    fn bump_arena_can_be_built_on_one_thread_and_used_on_another() {
+        let arena = std::thread::spawn(|| {
+            let arena = BumpArena::with_capacity(64);
+            arena.allocate(Layout::array::<u8>(8).unwrap()).unwrap();
+            arena
+        })
+        .join()
+        .unwrap();
+
+        let used = std::thread::spawn(move || {
+            arena.allocate(Layout::array::<u8>(8).unwrap()).unwrap();
+            arena.used()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(used, 16);
+    }
+
+    /// Same point as above, one level up: a `PooledVec::from_slice(&alloc, ..)`
+    /// built on the main thread is *moved* (ownership transferred, not
+    /// shared) into a worker thread and read there. This needs `A: Sync`
+    /// on top of `T: Send` (see the `unsafe impl` above) -- `System` is a
+    /// zero-field marker struct, so it's trivially `Sync`. Note this only
+    /// exercises `Send` (moving), not `Sync` (sharing `&PooledVec` across
+    /// threads): `PooledVec` has no manual `Sync` impl, so its `NonNull<T>`
+    /// field keeps it `!Sync` by the auto-trait default, same as any other
+    /// raw-pointer-backed owning type (`Box`, `Vec`) would need one to
+    /// opt back in -- not needed here since nothing shares a `PooledVec`
+    /// by reference across threads.
+    #[test]
+    fn pooled_vec_can_be_moved_into_another_thread() {
+        let pooled = PooledVec::from_slice(&System, &[1.0, 2.0, 3.0]).unwrap();
+        let sum = std::thread::spawn(move || pooled.as_slice().iter().sum::<f64>()).join().unwrap();
+        assert_eq!(sum, 6.0);
     }
 }

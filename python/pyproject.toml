@@ -7,6 +7,15 @@ name = "rustnumpy-python"
 version = "0.1.0"
 description = "PyO3 bindings for rustnumpy (step 6 of NumPy.md's plan)"
 requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+]
 
 [tool.maturin]
 # Importable as `import rustnumpy_python` — must match the #[pymodule]

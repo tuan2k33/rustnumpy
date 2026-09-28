@@ -55,7 +55,15 @@
 //! `multiply`/`concat`/`matrix_norm` added as standard-aligned aliases of
 //! `sub`/`mul`/`concatenate`/`frobenius_norm` — see `NumPy.md`'s "Step 18
 //! audit" section for the full comparison table (what already matched,
-//! what got aliased, what's a genuine gap against the standard).
+//! what got aliased, what's a genuine gap against the standard). Step 19
+//! then audited thread-safety crate-wide (zero global mutable state found;
+//! `BumpArena`/`PooledVec` were found `!Send` and fixed with a documented
+//! `unsafe impl`, see `allocator.rs`) and added crates.io/PyPI packaging
+//! metadata (`LICENSE-MIT`/`LICENSE-APACHE`, `README.md`) without actually
+//! publishing — see `NumPy.md`'s "Step 19" section for what's verified vs.
+//! still an open gap (notably: free-threaded-CPython behavior of the
+//! `python/` PyO3 bindings isn't tested, no free-threaded interpreter is
+//! available here; the NumPy benchmark suite stays deferred).
 //!
 //! Deliberately **not yet** present: the numeric algorithms built on top
 //! of `NdArray<T>` (`ufunc`'s `add`/`mul`, `reductions`, `linalg`, `fft`,

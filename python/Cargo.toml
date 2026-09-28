@@ -3,6 +3,7 @@ name = "rustnumpy-python"
 version = "0.1.0"
 edition = "2021"
 description = "PyO3 bindings for rustnumpy — step 6 of NumPy.md's plan."
+license = "MIT OR Apache-2.0"
 
 [lib]
 # cdylib: what maturin builds into an importable .so/.pyd for Python.
