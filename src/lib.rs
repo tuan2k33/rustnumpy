@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–10 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–11 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -16,9 +16,11 @@
 //! methods per NEP 21's never-shipped proposal (`index.rs`), a packed
 //! structured/record dtype (`structured.rs`), fixed-ratio-unit
 //! `datetime64`/`timedelta64` with NaT semantics matching real NumPy
-//! (`datetime.rs`), and `StringDType` (NEP 55) plus a `numpy.strings`-
-//! shaped subset of string ufuncs, including its missing-data sentinel
-//! (`strings.rs`).
+//! (`datetime.rs`), `StringDType` (NEP 55) plus a `numpy.strings`-shaped
+//! subset of string ufuncs, including its missing-data sentinel
+//! (`strings.rs`), and a `numpy.testing` equivalent (`assert_array_equal`,
+//! `assert_allclose`, `assert_array_almost_equal`) so this project's own
+//! tests never depend on a running NumPy (`testing.rs`).
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -27,10 +29,11 @@
 //! iterator (NEP 10), generalized core-dimension ufuncs (NEP 20), boolean
 //! masks over a prefix of axes, non-adjacent fancy indices in `vindex`,
 //! `align=True` structured dtypes, calendar (`Y`/`M`) datetime units,
-//! ISO-8601 date-string parsing, and most of `numpy.strings` (only a
-//! representative subset is implemented) — those are later steps (or, for
-//! the deprecated/calendar-dependent pieces, explicit non-goals) in
-//! `NumPy.md`.
+//! ISO-8601 date-string parsing, most of `numpy.strings` (only a
+//! representative subset is implemented), and most of `numpy.testing`
+//! (no `assert_raises`-equivalent, no generic `assert_array_compare`) —
+//! those are later steps (or, for the deprecated/calendar-dependent
+//! pieces, explicit non-goals) in `NumPy.md`.
 
 pub mod allocator;
 pub mod datetime;
@@ -42,6 +45,7 @@ pub mod npy;
 pub mod shape;
 pub mod strings;
 pub mod structured;
+pub mod testing;
 pub mod ufunc;
 pub mod view;
 
@@ -54,6 +58,10 @@ pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
 pub use strings::{StringArray, StringError};
 pub use structured::{Field, RecordArray, RecordDType, RecordError};
+pub use testing::{
+    assert_allclose, assert_allclose_default, assert_array_almost_equal,
+    assert_array_almost_equal_default, assert_array_equal, ArrayAssertionError,
+};
 pub use ufunc::{
     add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, sub, zip_with,
     zip_with_into, zip_with_parallel,
