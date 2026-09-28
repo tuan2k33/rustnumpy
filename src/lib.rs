@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–11 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–12 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -18,9 +18,11 @@
 //! `datetime64`/`timedelta64` with NaT semantics matching real NumPy
 //! (`datetime.rs`), `StringDType` (NEP 55) plus a `numpy.strings`-shaped
 //! subset of string ufuncs, including its missing-data sentinel
-//! (`strings.rs`), and a `numpy.testing` equivalent (`assert_array_equal`,
+//! (`strings.rs`), a `numpy.testing` equivalent (`assert_array_equal`,
 //! `assert_allclose`, `assert_array_almost_equal`) so this project's own
-//! tests never depend on a running NumPy (`testing.rs`).
+//! tests never depend on a running NumPy (`testing.rs`), and whole-array
+//! reductions/statistics (`sum`/`mean`/`var`/`std`/`median`/`percentile`,
+//! their `nan*` variants, `histogram`, `cov`/`corrcoef`) in `reductions.rs`.
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -30,10 +32,11 @@
 //! masks over a prefix of axes, non-adjacent fancy indices in `vindex`,
 //! `align=True` structured dtypes, calendar (`Y`/`M`) datetime units,
 //! ISO-8601 date-string parsing, most of `numpy.strings` (only a
-//! representative subset is implemented), and most of `numpy.testing`
-//! (no `assert_raises`-equivalent, no generic `assert_array_compare`) —
-//! those are later steps (or, for the deprecated/calendar-dependent
-//! pieces, explicit non-goals) in `NumPy.md`.
+//! representative subset is implemented), most of `numpy.testing`
+//! (no `assert_raises`-equivalent, no generic `assert_array_compare`), and
+//! `axis=`-parameterized reductions (whole-array only for now) — those are
+//! later steps (or, for the deprecated/calendar-dependent pieces, explicit
+//! non-goals) in `NumPy.md`.
 
 pub mod allocator;
 pub mod datetime;
@@ -42,6 +45,7 @@ pub mod error;
 pub mod index;
 pub mod ndarray;
 pub mod npy;
+pub mod reductions;
 pub mod shape;
 pub mod strings;
 pub mod structured;
@@ -56,6 +60,11 @@ pub use error::ShapeError;
 pub use index::AxisIndex;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
+pub use reductions::{
+    cov, cov_default, corrcoef, histogram, max, mean, median, min, nanmax, nanmean, nanmedian,
+    nanmin, nanstd, nanstd_default, nansum, nanvar, nanvar_default, percentile, std, std_default,
+    sum, var, var_default, ReductionError,
+};
 pub use strings::{StringArray, StringError};
 pub use structured::{Field, RecordArray, RecordDType, RecordError};
 pub use testing::{
