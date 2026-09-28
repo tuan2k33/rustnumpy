@@ -13,8 +13,9 @@
 
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
-use crate::shape::{broadcast_shapes, IndexIter};
+use crate::shape::{broadcast_shapes, unravel_index, IndexIter};
 use crate::view::{ArrayView, ArrayViewMut};
+use rayon::prelude::*;
 
 /// The core binary ufunc engine: broadcast `a` and `b` to a common shape,
 /// then apply `f` element by element, allocating a new `NdArray` for the
@@ -92,6 +93,83 @@ pub fn map(a: &ArrayView, f: impl Fn(f64) -> f64) -> NdArray {
     NdArray::from_vec(data, a.shape()).expect("data.len() always matches a.shape().iter().product()")
 }
 
+/// Step 7: the same binary ufunc engine as [`zip_with`], but the element
+/// loop runs across a Rayon thread pool instead of one thread.
+///
+/// This is real NumPy's biggest structural weakness, and this project's
+/// clearest chance to actually beat it: outside of BLAS-backed `linalg`
+/// calls, NumPy's own ufunc loops are single-threaded C — there's no
+/// `rayon` equivalent wired into `np.add`. Rust gets safe, easy
+/// parallelism almost for free here specifically *because* `ArrayView` is
+/// `Send + Sync` by construction (it only ever hands out `f64` by value
+/// from `get`, never a reference into the buffer), so splitting the index
+/// range across threads has nothing to race on.
+///
+/// `IndexIter` (used by the sequential [`zip_with`]) can't be parallelized
+/// directly — Rayon's work-stealing needs to jump straight to a given
+/// flat index without walking every index before it, which is exactly
+/// what [`unravel_index`] provides and a plain sequential `Iterator`
+/// doesn't. So the parallel path walks `0..len` through Rayon and calls
+/// `unravel_index` per element instead of reusing `IndexIter`.
+///
+/// `f` needs `Sync` here (on top of `zip_with`'s plain `Fn`) since the
+/// *same* closure value is called concurrently from multiple threads —
+/// this bound is Rayon (and Rust's data-race prevention) surfacing
+/// directly in the function signature, not something you could forget to
+/// handle and only find out about at runtime the way a data race in C
+/// would show up as an intermittent, unreproducible bug.
+///
+/// There's no threshold here that falls back to sequential for small
+/// arrays — see `examples/step7_rayon.rs` for why that matters and what a
+/// real threshold would need to account for.
+///
+/// Known cost this shares with [`zip_with`], worth being honest about
+/// rather than hiding: every element still gets its multi-index as a
+/// freshly heap-allocated `Vec<usize>` (from [`unravel_index`], the same
+/// way [`zip_with`] gets one from `IndexIter` per step) — one allocation
+/// and one deallocation per element, on top of the actual arithmetic.
+/// Sequentially that's already wasteful; here it's worse, because the
+/// global allocator is one shared, lock-contended resource that every
+/// thread has to fight over, which is exactly why `examples/step7_rayon.rs`
+/// measures well under the 16x speedup 16 cores would suggest — this is
+/// the concrete, measured reason NEP 10's real `NpyIter` design (cache-
+/// coherent traversal, no repeated allocation) is worth having, not an
+/// abstract one.
+pub fn zip_with_parallel(
+    a: &ArrayView,
+    b: &ArrayView,
+    f: impl Fn(f64, f64) -> f64 + Sync,
+) -> Result<NdArray, ShapeError> {
+    let out_shape = broadcast_shapes(a.shape(), b.shape()).ok_or_else(|| ShapeError::NotBroadcastable {
+        lhs: a.shape().to_vec(),
+        rhs: b.shape().to_vec(),
+    })?;
+    let a_b = a.broadcast_to(&out_shape)?;
+    let b_b = b.broadcast_to(&out_shape)?;
+    let len: usize = out_shape.iter().product();
+
+    let data: Vec<f64> = (0..len)
+        .into_par_iter()
+        .map(|flat| {
+            let idx = unravel_index(flat, &out_shape);
+            f(a_b.get(&idx).unwrap(), b_b.get(&idx).unwrap())
+        })
+        .collect();
+    NdArray::from_vec(data, &out_shape)
+}
+
+/// The parallel counterpart to [`map`], for the same reason
+/// [`zip_with_parallel`] exists alongside [`zip_with`].
+pub fn map_parallel(a: &ArrayView, f: impl Fn(f64) -> f64 + Sync) -> NdArray {
+    let shape = a.shape();
+    let len: usize = shape.iter().product();
+    let data: Vec<f64> = (0..len)
+        .into_par_iter()
+        .map(|flat| f(a.get(&unravel_index(flat, shape)).unwrap()))
+        .collect();
+    NdArray::from_vec(data, shape).expect("data.len() always matches shape.iter().product()")
+}
+
 /// `a + b`, broadcasting like NumPy.
 pub fn add(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
     zip_with(a, b, |x, y| x + y)
@@ -105,6 +183,16 @@ pub fn sub(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
 /// `a * b`, broadcasting like NumPy.
 pub fn mul(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
     zip_with(a, b, |x, y| x * y)
+}
+
+/// The Rayon-parallel version of [`add`].
+pub fn add_parallel(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
+    zip_with_parallel(a, b, |x, y| x + y)
+}
+
+/// The Rayon-parallel version of [`mul`].
+pub fn mul_parallel(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
+    zip_with_parallel(a, b, |x, y| x * y)
 }
 
 /// Kept as the original step-1 name so earlier examples/tests don't need
@@ -195,5 +283,47 @@ mod tests {
         let mut out = NdArray::zeros(&[3, 3]); // wrong shape on purpose
         let err = zip_with_into(&mut out.view_mut(), &a.view(), &b.view(), |x, y| x + y).unwrap_err();
         assert!(matches!(err, ShapeError::DataShapeMismatch { .. }));
+    }
+
+    #[test]
+    fn add_parallel_matches_sequential_add() {
+        // 10_000 elements: small enough to run fast in a unit test, large
+        // enough to actually get split across more than one Rayon thread
+        // on this machine (16 cores) rather than trivially running on one.
+        let data_a: Vec<f64> = (0..10_000).map(|i| i as f64).collect();
+        let data_b: Vec<f64> = (0..10_000).map(|i| (i as f64) * 0.5).collect();
+        let a = NdArray::from_vec(data_a, &[100, 100]).unwrap();
+        let b = NdArray::from_vec(data_b, &[100, 100]).unwrap();
+
+        let sequential = add(&a.view(), &b.view()).unwrap();
+        let parallel = add_parallel(&a.view(), &b.view()).unwrap();
+        assert_eq!(sequential, parallel);
+    }
+
+    #[test]
+    fn mul_parallel_matches_sequential_mul_with_broadcasting() {
+        // Same (3,1)*(3,4) broadcast as mul_broadcasts_column_vector_over_matrix,
+        // just checked against the parallel path instead of hardcoded values.
+        let col = NdArray::from_vec(vec![1.0, 2.0, 3.0], &[3, 1]).unwrap();
+        let ones = NdArray::from_vec(vec![1.0; 12], &[3, 4]).unwrap();
+        let sequential = mul(&col.view(), &ones.view()).unwrap();
+        let parallel = mul_parallel(&col.view(), &ones.view()).unwrap();
+        assert_eq!(sequential, parallel);
+    }
+
+    #[test]
+    fn map_parallel_matches_sequential_map() {
+        let data: Vec<f64> = (0..5_000).map(|i| i as f64 * 0.1).collect();
+        let a = NdArray::from_vec(data, &[5_000]).unwrap();
+        let sequential = map(&a.view(), f64::sqrt);
+        let parallel = map_parallel(&a.view(), f64::sqrt);
+        assert_eq!(sequential, parallel);
+    }
+
+    #[test]
+    fn zip_with_parallel_propagates_shape_errors() {
+        let a = NdArray::zeros(&[2, 3]);
+        let b = NdArray::zeros(&[4]);
+        assert!(add_parallel(&a.view(), &b.view()).is_err());
     }
 }

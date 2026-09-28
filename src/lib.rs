@@ -1,11 +1,14 @@
-//! rustnumpy — steps 1–5 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–7 of the plan to port NumPy to Rust (see `NumPy.md`).
 //!
 //! Covered so far: a basic `NdArray` (shape/strides/buffer, fixed `f64`
 //! dtype), manual immutable/mutable views (slicing, broadcasting), `.npy`
 //! read/write (NEP 1) cross-checked byte-for-byte against real NumPy, a
 //! DType trait + the NEP 50 promotion algorithm, a small generic ufunc
-//! engine (broadcasting + closures + the `out=` pattern), and a custom
-//! `Allocator` trait (NEP 49) with a system and a bump-arena implementation.
+//! engine (broadcasting + closures + the `out=` pattern) with both
+//! sequential and Rayon-parallel element loops, a custom `Allocator`
+//! trait (NEP 49) with a system and a bump-arena implementation, and PyO3
+//! bindings (in the separate `python/` crate) so the array is callable
+//! from real Python.
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -28,5 +31,8 @@ pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind
 pub use error::ShapeError;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
-pub use ufunc::{add, add_broadcast, map, mul, sub, zip_with, zip_with_into};
+pub use ufunc::{
+    add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, sub, zip_with,
+    zip_with_into, zip_with_parallel,
+};
 pub use view::{ArrayView, ArrayViewMut};

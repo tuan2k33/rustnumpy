@@ -109,6 +109,28 @@ pub fn broadcast_strides(
     Some(result)
 }
 
+/// The inverse of [`offset_of`] on a C-contiguous shape: turn a single flat
+/// position (`0..shape.iter().product()`) back into a full multi-index, in
+/// the same row-major order [`IndexIter`] walks in.
+///
+/// [`IndexIter`] can't be handed to Rayon directly — Rayon's work-stealing
+/// splits a job by dividing an index *range*, which requires being able to
+/// jump straight to element `N` without having walked elements `0..N`
+/// first (an `IndexedParallelIterator`). A plain sequential `Iterator`
+/// like `IndexIter`, which only knows how to step forward one index at a
+/// time, can't do that split. `unravel_index` is what makes the split
+/// possible: any thread can compute index `N`'s coordinates on its own,
+/// with no dependency on the indices before it.
+pub fn unravel_index(mut flat: usize, shape: &[usize]) -> Vec<usize> {
+    let mut index = vec![0usize; shape.len()];
+    for axis in (0..shape.len()).rev() {
+        let dim = shape[axis];
+        index[axis] = if dim == 0 { 0 } else { flat % dim };
+        flat /= dim.max(1);
+    }
+    index
+}
+
 /// Walk every valid multi-index of a `shape` in sequence, in row-major
 /// order (trailing axis moves fastest) — the same order NumPy uses when
 /// walking a C-contiguous array with `for x in np.nditer(arr)`.
@@ -213,5 +235,28 @@ mod tests {
         let shape: Vec<usize> = vec![];
         let all: Vec<_> = IndexIter::new(&shape).collect();
         assert_eq!(all, vec![Vec::<usize>::new()]);
+    }
+
+    #[test]
+    fn unravel_index_matches_index_iter_order() {
+        // unravel_index(flat, shape) must agree with the flat-th index
+        // IndexIter would produce — that agreement is the whole reason a
+        // parallel version can split work by flat index and still land on
+        // the exact same elements as the sequential version.
+        let shape = vec![2, 3];
+        let expected: Vec<Vec<usize>> = IndexIter::new(&shape).collect();
+        for (flat, idx) in expected.iter().enumerate() {
+            assert_eq!(&unravel_index(flat, &shape), idx);
+        }
+    }
+
+    #[test]
+    fn unravel_index_roundtrips_through_offset_of() {
+        let shape = vec![4, 5, 3];
+        let strides = c_contiguous_strides(&shape);
+        for flat in 0..shape.iter().product::<usize>() {
+            let idx = unravel_index(flat, &shape);
+            assert_eq!(offset_of(&idx, &strides), flat as isize);
+        }
     }
 }

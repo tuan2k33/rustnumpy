@@ -5,3 +5,4 @@ edition = "2024"
 description = "Step-by-step Rust port of NumPy's core ideas — see NumPy.md for the plan."
 
 [dependencies]
+rayon = "1"
