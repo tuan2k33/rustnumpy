@@ -10,6 +10,35 @@
 //! instead of paying for dynamic dispatch. A real "third parties can add
 //! dtypes" story (NEP 41/42's actual point) would need `dyn DType`
 //! instead — deliberately out of scope for this step.
+//!
+//! **Known, documented gaps against real NumPy's full casting model**
+//! (found while cross-checking [`can_cast`] against `np.can_cast(...,
+//! casting=...)` directly):
+//! - `Kind` has no separate unsigned-integer variant (`Int(u8)` only,
+//!   signed) and no `Complex` variant at all, so casting rules that only
+//!   make sense between those (`int32 -> uint32` is `unsafe`, `uint32 ->
+//!   int32` is `same_kind`, `float32 -> complex64` is `safe`, `complex64
+//!   -> float32` is `unsafe`) simply can't be expressed here yet — there's
+//!   no `Kind` value to represent "unsigned" or "complex" with.
+//! - [`CastSafety`] has 4 levels, not NumPy's full 5 (`no`, `equiv`,
+//!   `safe`, `same_kind`, `unsafe`): `no` and `equiv` are collapsed into
+//!   one `Equivalent` here, since the distinction between them is entirely
+//!   about byte-order (`equiv` allows a byte-swap, `no` doesn't), and this
+//!   project has no byte-order/endianness model at all (`npy.rs` only
+//!   reads/writes native-order files, explicitly refusing big-endian).
+//! - This module only classifies *whether a cast is allowed* — there's no
+//!   function anywhere in this crate that actually performs one
+//!   (`NdArray<T>` has no `astype::<U>()` yet, even though `NdArray<T>`
+//!   becoming generic makes one straightforward to add). Nothing here
+//!   converts real data.
+//! - Real NumPy's weak-scalar-overflow behavior (`np.int8(1) + 1000`
+//!   raising `OverflowError` instead of silently upcasting) and its
+//!   reduction-specific default-dtype rule (`sum()`/`prod()` on a narrow
+//!   int always accumulates in at least `int64`) both depend on actually
+//!   *running* int arithmetic — out of scope until `ufunc`/`reductions`
+//!   grow int support (currently both are `f64`-only, see their own doc
+//!   comments), not something `dtype.rs`'s cast-safety table alone could
+//!   express.
 
 /// A dtype's "kind" plus bit width, ordered exactly per NEP 50:
 /// `boolean < integral < inexact (float)`, and within the same kind, wider
@@ -181,6 +210,16 @@ pub fn can_cast(from: Kind, to: Kind) -> CastSafety {
                 CastSafety::SameKind
             }
         }
+        // Special case, verified against real NumPy's own can_cast table
+        // rather than derived from the mantissa-bits reasoning below:
+        // int64 -> float64 is classified `safe` even though float64's
+        // 53-bit mantissa can't represent every int64 value exactly — a
+        // historical NumPy quirk (same total bit width is treated as
+        // "close enough"), not something the general rule predicts. Every
+        // other same-or-different-width int/float pair *does* follow the
+        // general mantissa rule (verified: int32->float64 safe,
+        // int32->float32 and int64->float32 both same_kind).
+        (Int(64), Float(64)) => CastSafety::Safe,
         (Int(i), Float(f)) => {
             if i <= float_mantissa_bits(f) {
                 CastSafety::Safe
@@ -331,6 +370,20 @@ mod tests {
         assert_eq!(can_cast(Kind::Float(32), Kind::Int(32)), CastSafety::Unsafe);
         assert_eq!(can_cast(Kind::Int(16), Kind::Float(32)), CastSafety::Safe);
         assert_eq!(can_cast(Kind::Int(32), Kind::Float(32)), CastSafety::SameKind);
+    }
+
+    #[test]
+    fn can_cast_int64_to_float64_is_safe_despite_the_mantissa_shortfall() {
+        // np.can_cast(np.int64, np.float64, casting='safe') -> True, even
+        // though float64's 53-bit mantissa can't hold every int64 value
+        // exactly. Verified directly against real NumPy 2.5.3 -- see this
+        // function's own comment for why the general mantissa rule
+        // (correctly used for every other int/float pair) doesn't predict
+        // this one.
+        assert_eq!(can_cast(Kind::Int(64), Kind::Float(64)), CastSafety::Safe);
+        // The general rule still applies to every other pairing, including
+        // same-width-looking ones that aren't 64/64:
+        assert_eq!(can_cast(Kind::Int(64), Kind::Float(32)), CastSafety::SameKind);
     }
 
     #[test]
