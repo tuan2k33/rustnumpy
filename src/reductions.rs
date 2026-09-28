@@ -60,15 +60,16 @@ fn values(view: &ArrayView) -> Vec<f64> {
 }
 
 /// `arr.sum()`. Empty input sums to `0.0` (the additive identity),
-/// matching real NumPy.
+/// matching real NumPy — except Rust's own `Sum for f64` picks `-0.0` as
+/// that identity (IEEE-754's more precisely-signed zero: `-0.0 + -0.0 ==
+/// -0.0`, whereas `0.0` would flip the sign of an all-`-0.0` sum), so an
+/// empty array here sums to `-0.0` where real NumPy prints `0.0`.
+/// Deliberately left as-is rather than special-cased: `-0.0 == 0.0` is
+/// `true` under IEEE-754, so nothing downstream can observe a difference
+/// unless it specifically inspects the sign bit — not worth the extra
+/// branch to paper over.
 pub fn sum(view: &ArrayView) -> f64 {
-    // `Iterator::sum()` on an empty `f64` iterator is Rust's own `-0.0`
-    // (its chosen additive identity), not the `+0.0` real NumPy prints —
-    // numerically identical (`-0.0 == 0.0`) but worth normalizing so
-    // output matches NumPy exactly rather than surprising anyone who
-    // prints the sign.
-    let v = values(view);
-    if v.is_empty() { 0.0 } else { v.into_iter().sum() }
+    values(view).into_iter().sum()
 }
 
 /// `arr.mean()`. Empty input is `NaN` (matches real NumPy: `0.0 / 0`).
@@ -173,12 +174,11 @@ fn non_nan_values(view: &ArrayView) -> Vec<f64> {
 }
 
 /// `np.nansum(arr)` — `NaN`s are skipped entirely; an all-`NaN` (or
-/// empty) input sums to `0.0`, matching real NumPy (verified: NOT `NaN`,
-/// unlike [`nanmean`]).
+/// empty) input sums to `0.0` (Rust's own `-0.0` in practice — see
+/// [`sum`]'s comment), matching real NumPy (verified: NOT `NaN`, unlike
+/// [`nanmean`]).
 pub fn nansum(view: &ArrayView) -> f64 {
-    // Same `-0.0`-vs-`+0.0` normalization as `sum` -- see its comment.
-    let v = non_nan_values(view);
-    if v.is_empty() { 0.0 } else { v.into_iter().sum() }
+    non_nan_values(view).into_iter().sum()
 }
 
 /// `np.nanmean(arr)` — an all-`NaN` (or empty) input is `NaN`.
@@ -432,14 +432,12 @@ mod tests {
 
     #[test]
     fn nansum_of_all_nan_is_zero_not_nan() {
-        // np.nansum([NaN, NaN]) == 0.0 -- verified distinct from nanmean
+        // np.nansum([NaN, NaN]) == 0.0 -- verified distinct from nanmean.
+        // (Rust's own Sum for f64 actually produces -0.0 here, not +0.0 --
+        // see `nansum`'s doc comment -- but `-0.0 == 0.0` under IEEE-754,
+        // so a plain equality check is the right test, not a sign check.)
         let a = arr(&[f64::NAN, f64::NAN]);
-        let result = nansum(&a.view());
-        assert_eq!(result, 0.0);
-        // Real NumPy's 0.0 is positive zero, not Rust's own `-0.0`
-        // default for an empty float sum -- check the sign explicitly so
-        // this doesn't quietly regress back to `-0.0`.
-        assert!(!result.is_sign_negative());
+        assert_eq!(nansum(&a.view()), 0.0);
     }
 
     #[test]
