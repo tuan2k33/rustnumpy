@@ -7,5 +7,8 @@ description = "Step-by-step Rust port of NumPy's core ideas — see NumPy.md for
 [dependencies]
 faer = "0.24.4"
 num-complex = "0.4.6"
+rand = "0.10.3"
+rand_distr = "0.6.0"
+rand_pcg = "0.10.2"
 rayon = "1"
 rustfft = "6.4.1"

@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–15 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–16 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -29,9 +29,14 @@
 //! `svd`/norms/`matrix_power`) in `linalg.rs`, delegating the actual
 //! numerics to the pure-Rust `faer` crate (no LAPACK/FFI) per NumPy.md's
 //! "depend on a crate, don't hand-convert" decision for numerical tools
-//! NumPy merely borrows, and `fft` (`fft`/`ifft`/`rfft`/`irfft`/
+//! NumPy merely borrows, `fft` (`fft`/`ifft`/`rfft`/`irfft`/
 //! `fftfreq`/`rfftfreq`/`fftshift`/`ifftshift`) in `fft.rs`, delegating to
-//! the pure-Rust `rustfft` crate the same way.
+//! the pure-Rust `rustfft` crate the same way, and a NEP 19 `Generator`
+//! (`random`/`uniform`/`integers`/`standard_normal`/`normal`/
+//! `exponential`/`gamma`/`beta`/`binomial`/`poisson`/`dirichlet`) in
+//! `random.rs`, mapping BitGenerator/Generator onto `rand_pcg::Pcg64` +
+//! `rand_distr` (statistically, not bit-stream, equivalent to NumPy's own
+//! `Generator` — see `random.rs`'s doc comment).
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -49,9 +54,11 @@
 //! complex dtype yet — `linalg::eigvals` returns `(re, im)` pairs instead
 //! of full `eig`, see `linalg.rs`'s doc comment), and `fft2`/`fftn`
 //! (`fft.rs` is 1-D only, and works on `Vec<Complex64>`/`Vec<f64>` rather
-//! than `NdArray` for the same no-complex-dtype reason) — those are later
-//! steps (or, for the deprecated/calendar-dependent pieces, explicit
-//! non-goals) in `NumPy.md`.
+//! than `NdArray` for the same no-complex-dtype reason), and `RandomState`/
+//! the legacy `np.random.seed()` API (deliberately dropped, not a gap —
+//! see `random.rs`'s doc comment and `NumPy.md`'s "Parts Worth Dropping")
+//! — those are later steps (or, for the deprecated/calendar-dependent
+//! pieces, explicit non-goals) in `NumPy.md`.
 
 pub mod allocator;
 pub mod datetime;
@@ -62,6 +69,7 @@ pub mod index;
 pub mod linalg;
 pub mod ndarray;
 pub mod npy;
+pub mod random;
 pub mod reductions;
 pub mod shape;
 pub mod strings;
@@ -83,6 +91,7 @@ pub use linalg::{
 };
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
+pub use random::{Generator, RandomError};
 pub use reductions::{
     cov, cov_default, corrcoef, histogram, max, mean, median, min, nanmax, nanmean, nanmedian,
     nanmin, nanstd, nanstd_default, nansum, nanvar, nanvar_default, percentile, std, std_default,
