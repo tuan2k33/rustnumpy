@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rustnumpy-python"
+version = "0.1.0"
+description = "PyO3 bindings for rustnumpy (step 6 of NumPy.md's plan)"
+requires-python = ">=3.9"
+
+[tool.maturin]
+# Importable as `import rustnumpy_python` — must match the #[pymodule]
+# function name in src/lib.rs.
+module-name = "rustnumpy_python"

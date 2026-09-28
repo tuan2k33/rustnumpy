@@ -1,0 +1,16 @@
+[package]
+name = "rustnumpy-python"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 bindings for rustnumpy — step 6 of NumPy.md's plan."
+
+[lib]
+# cdylib: what maturin builds into an importable .so/.pyd for Python.
+# rlib: kept so `cargo test`/`cargo check` in this directory still work
+# as a normal Rust crate without going through Python at all.
+name = "rustnumpy_python"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustnumpy = { path = ".." }
+pyo3 = { version = "0.26", features = ["extension-module"] }

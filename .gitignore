@@ -1,1 +1,6 @@
 /target
+python/target
+python/dist
+python/*.egg-info
+__pycache__/
+*.pyc
