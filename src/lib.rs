@@ -29,9 +29,12 @@
 //! `svd`/norms/`matrix_power`) in `linalg.rs`, delegating the actual
 //! numerics to the pure-Rust `faer` crate (no LAPACK/FFI) per NumPy.md's
 //! "depend on a crate, don't hand-convert" decision for numerical tools
-//! NumPy merely borrows, `fft` (`fft`/`ifft`/`rfft`/`irfft`/
-//! `fftfreq`/`rfftfreq`/`fftshift`/`ifftshift`) in `fft.rs`, delegating to
-//! the pure-Rust `rustfft` crate the same way, and a NEP 19 `Generator`
+//! NumPy merely borrows, `fft` (`fft`/`ifft`/`rfft`/`irfft`/`fftn`/`ifftn`/
+//! `fft2`/`ifft2`/`fftfreq`/`rfftfreq`/`fftshift`/`ifftshift`) in `fft.rs`,
+//! delegating to the pure-Rust `rustfft` crate the same way (the N-D
+//! variants auto-detect dimensionality and loop a 1-D FFT over every
+//! axis, the same separable-transform trick pocketfft itself uses), and a
+//! NEP 19 `Generator`
 //! (`random`/`uniform`/`integers`/`standard_normal`/`normal`/
 //! `exponential`/`gamma`/`beta`/`binomial`/`poisson`/`dirichlet`) in
 //! `random.rs`, mapping BitGenerator/Generator onto `rand_pcg::Pcg64` +
@@ -52,9 +55,9 @@
 //! `array_split` (uneven splitting; `utils.rs`'s `split` requires an exact
 //! division), and complex eigenvectors for a non-symmetric matrix (no
 //! complex dtype yet — `linalg::eigvals` returns `(re, im)` pairs instead
-//! of full `eig`, see `linalg.rs`'s doc comment), and `fft2`/`fftn`
-//! (`fft.rs` is 1-D only, and works on `Vec<Complex64>`/`Vec<f64>` rather
-//! than `NdArray` for the same no-complex-dtype reason), and `RandomState`/
+//! of full `eig`, see `linalg.rs`'s doc comment; `fft.rs`'s N-D functions
+//! work around the same gap with their own `ComplexArray` type rather
+//! than `NdArray`), and `RandomState`/
 //! the legacy `np.random.seed()` API (deliberately dropped, not a gap —
 //! see `random.rs`'s doc comment and `NumPy.md`'s "Parts Worth Dropping")
 //! — those are later steps (or, for the deprecated/calendar-dependent
@@ -83,7 +86,10 @@ pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
 pub use datetime::{Datetime64, TimeError, TimeUnit, Timedelta64};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
 pub use error::ShapeError;
-pub use fft::{fft, fftfreq, fftshift, ifft, ifftshift, irfft, rfft, rfftfreq, Complex64, FftError};
+pub use fft::{
+    fft, fft2, fftfreq, fftn, fftshift, ifft, ifft2, ifftn, ifftshift, irfft, rfft, rfftfreq,
+    Complex64, ComplexArray, FftError,
+};
 pub use index::AxisIndex;
 pub use linalg::{
     cholesky, det, eigh, eigvals, eigvalsh, frobenius_norm, inv, matrix_power, qr, solve, svd,

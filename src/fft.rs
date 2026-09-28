@@ -6,11 +6,16 @@
 //! `linalg.rs` follows for `faer`/LAPACK: `pocketfft` is a numerical
 //! *tool* NumPy vendors, not one of NumPy's own design ideas.
 //!
-//! **Scope note**: these functions operate on plain `Vec<Complex64>`/
-//! `Vec<f64>`, not `NdArray` — `NdArray` is f64-only (no complex dtype
-//! yet, see `lib.rs`'s doc comment), and a spectrum is inherently complex,
-//! so there's no lossless way to hand it back as an `NdArray` today. Only
-//! 1-D transforms are implemented (no `fft2`/`fftn`).
+//! **Scope note**: the 1-D functions (`fft`/`ifft`/`rfft`/`irfft`) operate
+//! on plain `Vec<Complex64>`/`Vec<f64>`; the N-D functions (`fftn`/`ifftn`/
+//! `fft2`/`ifft2`) operate on this module's own [`ComplexArray`] (shape +
+//! flat `Vec<Complex64>`) rather than `NdArray` -- `NdArray` is f64-only
+//! (no complex dtype yet, see `lib.rs`'s doc comment), and a spectrum is
+//! inherently complex, so there's no lossless way to hand it back as an
+//! `NdArray` today. `fftn` auto-detects the input's dimensionality and
+//! transforms every axis (NumPy's own `fftn`/`pocketfft` do the same
+//! thing under the hood: a separable N-D DFT is just a 1-D FFT applied
+//! along each axis in turn).
 //!
 //! **Known, accepted deviation from NumPy**: `rustfft` and `pocketfft` are
 //! both mathematically correct but not bit-for-bit identical (different
@@ -21,17 +26,67 @@
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
 
+use crate::ndarray::NdArray;
+use crate::shape::{c_contiguous_strides, offset_of, IndexIter};
+
 /// A complex sample/spectrum value — `f64` real and imaginary parts.
 pub type Complex64 = Complex<f64>;
 
 /// Any error from an `fft` operation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FftError {
-    /// `fft`/`ifft`/`rfft`/`irfft` were given a zero-length input.
+    /// `fft`/`ifft`/`rfft`/`irfft`/`fftn`/`ifftn` were given a zero-length
+    /// input, or a shape with a zero-length axis.
     EmptyInput,
     /// `irfft`'s input doesn't have the `n / 2 + 1` entries a real
     /// spectrum of output length `n` requires.
     LengthMismatch { expected: usize, got: usize },
+    /// [`ComplexArray::from_vec`]'s `data` doesn't have `shape.iter().product()` elements.
+    ShapeMismatch { data_len: usize, shape: Vec<usize> },
+    /// [`fft2`]/[`ifft2`] require exactly 2 dimensions.
+    Not2D { ndim: usize },
+}
+
+/// A dense N-D array of complex values, row-major (C-contiguous) layout --
+/// a separate type from [`NdArray`] because a spectrum is inherently
+/// complex and `NdArray` has no complex dtype yet (see this module's own
+/// and `lib.rs`'s doc comments).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComplexArray {
+    data: Vec<Complex64>,
+    shape: Vec<usize>,
+}
+
+impl ComplexArray {
+    /// Build from flat (row-major) data plus a declared shape.
+    pub fn from_vec(data: Vec<Complex64>, shape: &[usize]) -> Result<Self, FftError> {
+        let expected: usize = shape.iter().product();
+        if data.len() != expected {
+            return Err(FftError::ShapeMismatch { data_len: data.len(), shape: shape.to_vec() });
+        }
+        Ok(Self { data, shape: shape.to_vec() })
+    }
+
+    /// Lift a real [`NdArray`] into a [`ComplexArray`] with the same shape
+    /// (each value's imaginary part is `0`).
+    pub fn from_real(a: &NdArray) -> Self {
+        Self {
+            data: a.as_slice().iter().map(|&x| Complex64::new(x, 0.0)).collect(),
+            shape: a.shape().to_vec(),
+        }
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
+    pub fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    pub fn as_slice(&self) -> &[Complex64] {
+        &self.data
+    }
 }
 
 /// `np.fft.fft(a)`: the discrete Fourier transform of a complex sequence.
@@ -91,6 +146,86 @@ pub fn irfft(input: &[Complex64], n: usize) -> Result<Vec<f64>, FftError> {
     let full: Vec<Complex64> =
         (0..n).map(|k| if k <= n / 2 { input[k] } else { input[n - k].conj() }).collect();
     Ok(ifft(&full)?.iter().map(|c| c.re).collect())
+}
+
+/// `np.fft.fftn(a)`: the N-D discrete Fourier transform, computed the same
+/// way NumPy's own `fftn`/`pocketfft` do it -- a separable transform is
+/// just a 1-D [`fft`] applied along every axis in turn (the order doesn't
+/// matter: each axis's transform is independent of the others, verified
+/// against real NumPy for both a 2-D and a 3-D input). Auto-detects
+/// `input.ndim()` and loops over every axis; there's no separate "which
+/// axes" parameter to get wrong.
+pub fn fftn(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+    transform_every_axis(input, fft)
+}
+
+/// `np.fft.ifftn(a)`: the inverse of [`fftn`], one [`ifft`] per axis.
+pub fn ifftn(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+    transform_every_axis(input, ifft)
+}
+
+/// `np.fft.fft2(a)`: [`fftn`] restricted to exactly 2 dimensions (matching
+/// NumPy's own `fft2`, which is really just `fftn` over the last two axes
+/// -- since this only supports whole-array transforms, that's every axis
+/// for a 2-D input).
+pub fn fft2(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+    require_2d(input)?;
+    fftn(input)
+}
+
+/// `np.fft.ifft2(a)`: the inverse of [`fft2`].
+pub fn ifft2(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+    require_2d(input)?;
+    ifftn(input)
+}
+
+fn require_2d(input: &ComplexArray) -> Result<(), FftError> {
+    if input.ndim() != 2 {
+        return Err(FftError::Not2D { ndim: input.ndim() });
+    }
+    Ok(())
+}
+
+fn transform_every_axis(
+    input: &ComplexArray,
+    per_line: impl Fn(&[Complex64]) -> Result<Vec<Complex64>, FftError>,
+) -> Result<ComplexArray, FftError> {
+    if input.shape.is_empty() || input.shape.contains(&0) {
+        return Err(FftError::EmptyInput);
+    }
+    let mut data = input.data.clone();
+    for axis in 0..input.ndim() {
+        transform_axis_in_place(&mut data, &input.shape, axis, &per_line)?;
+    }
+    Ok(ComplexArray { data, shape: input.shape.clone() })
+}
+
+/// Applies `per_line` to every 1-D "line" of `data` running along `axis`,
+/// in place. Walks the line-start positions with [`IndexIter`] over a copy
+/// of `shape` with `axis` pinned to size 1 -- exactly the set of flat
+/// offsets whose `axis` coordinate is `0`, one per line.
+fn transform_axis_in_place(
+    data: &mut [Complex64],
+    shape: &[usize],
+    axis: usize,
+    per_line: &impl Fn(&[Complex64]) -> Result<Vec<Complex64>, FftError>,
+) -> Result<(), FftError> {
+    let strides = c_contiguous_strides(shape);
+    let axis_stride = strides[axis] as usize;
+    let axis_len = shape[axis];
+
+    let mut line_start_shape = shape.to_vec();
+    line_start_shape[axis] = 1;
+
+    for start_index in IndexIter::new(&line_start_shape) {
+        let start = offset_of(&start_index, &strides) as usize;
+        let line: Vec<Complex64> = (0..axis_len).map(|k| data[start + k * axis_stride]).collect();
+        let transformed = per_line(&line)?;
+        for (k, value) in transformed.into_iter().enumerate() {
+            data[start + k * axis_stride] = value;
+        }
+    }
+    Ok(())
 }
 
 /// `np.fft.fftfreq(n, d)`: the sample frequencies for an `n`-point `fft`
@@ -251,6 +386,73 @@ mod tests {
         assert_eq!(ifftshift(&fftshift(&x)), x.to_vec());
         let y = [0, 1, 2, 3];
         assert_eq!(ifftshift(&fftshift(&y)), y.to_vec());
+    }
+
+    #[test]
+    fn fft2_matches_numpy() {
+        // np.fft.fft2([[1,2,3],[4,5,6]])
+        let a = ComplexArray::from_vec(
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(|r| Complex64::new(r, 0.0)).to_vec(),
+            &[2, 3],
+        )
+        .unwrap();
+        let expected = [
+            (21.0, 0.0),
+            (-3.0, 1.732_050_807_568_877),
+            (-3.0, -1.732_050_807_568_877),
+            (-9.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ]
+        .map(|(re, im)| Complex64::new(re, im));
+        assert_complex_close(fft2(&a).unwrap().as_slice(), &expected);
+    }
+
+    #[test]
+    fn fft2_rejects_non_2d() {
+        let a = ComplexArray::from_vec(vec![Complex64::new(1.0, 0.0)], &[1, 1, 1]).unwrap();
+        assert_eq!(fft2(&a).unwrap_err(), FftError::Not2D { ndim: 3 });
+    }
+
+    #[test]
+    fn ifft2_of_fft2_roundtrips() {
+        let a = ComplexArray::from_vec(
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(|r| Complex64::new(r, 0.0)).to_vec(),
+            &[2, 3],
+        )
+        .unwrap();
+        let back = ifft2(&fft2(&a).unwrap()).unwrap();
+        assert_complex_close(back.as_slice(), a.as_slice());
+    }
+
+    #[test]
+    fn fftn_matches_numpy_for_3d_input() {
+        // np.fft.fftn(np.arange(24.0).reshape(2, 3, 4))
+        let data: Vec<Complex64> = (0..24).map(|i| Complex64::new(i as f64, 0.0)).collect();
+        let a = ComplexArray::from_vec(data, &[2, 3, 4]).unwrap();
+        let result = fftn(&a).unwrap();
+        assert_eq!(result.shape(), &[2, 3, 4]);
+        // Spot-check a handful of entries against real NumPy's output.
+        assert_complex_close(&result.as_slice()[0..1], &[Complex64::new(276.0, 0.0)]);
+        assert_complex_close(&result.as_slice()[1..2], &[Complex64::new(-12.0, 12.0)]);
+        assert_complex_close(&result.as_slice()[4..5], &[Complex64::new(-48.0, 27.712_812_921_102_04)]);
+        assert_complex_close(&result.as_slice()[12..13], &[Complex64::new(-144.0, 0.0)]);
+    }
+
+    #[test]
+    fn ifftn_of_fftn_roundtrips_for_3d_input() {
+        let data: Vec<Complex64> = (0..24).map(|i| Complex64::new(i as f64, 0.0)).collect();
+        let a = ComplexArray::from_vec(data, &[2, 3, 4]).unwrap();
+        let back = ifftn(&fftn(&a).unwrap()).unwrap();
+        assert_complex_close(back.as_slice(), a.as_slice());
+    }
+
+    #[test]
+    fn complex_array_from_vec_rejects_mismatched_shape() {
+        assert_eq!(
+            ComplexArray::from_vec(vec![Complex64::new(1.0, 0.0)], &[2, 2]).unwrap_err(),
+            FftError::ShapeMismatch { data_len: 1, shape: vec![2, 2] }
+        );
     }
 
     #[test]
