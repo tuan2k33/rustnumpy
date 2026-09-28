@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–16 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–17 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -39,7 +39,11 @@
 //! `exponential`/`gamma`/`beta`/`binomial`/`poisson`/`dirichlet`) in
 //! `random.rs`, mapping BitGenerator/Generator onto `rand_pcg::Pcg64` +
 //! `rand_distr` (statistically, not bit-stream, equivalent to NumPy's own
-//! `Generator` — see `random.rs`'s doc comment).
+//! `Generator` — see `random.rs`'s doc comment), and `polynomial`
+//! (`Polynomial` over `Chebyshev`/`Hermite`/`Laguerre`/`Legendre` bases:
+//! `evaluate` via each family's three-term recurrence, `roots` via a
+//! power-basis companion matrix fed into `linalg::eigvals`) in
+//! `polynomial.rs`.
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -72,6 +76,7 @@ pub mod index;
 pub mod linalg;
 pub mod ndarray;
 pub mod npy;
+pub mod polynomial;
 pub mod random;
 pub mod reductions;
 pub mod shape;
@@ -97,6 +102,7 @@ pub use linalg::{
 };
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
+pub use polynomial::{Polynomial, PolynomialKind};
 pub use random::{Generator, RandomError};
 pub use reductions::{
     cov, cov_default, corrcoef, histogram, max, mean, median, min, nanmax, nanmean, nanmedian,
