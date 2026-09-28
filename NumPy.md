@@ -252,14 +252,22 @@ Note: only NEP 41/42/43 are still being shaped (43 remains Draft); NEP 21 is a r
 
 `numpy.ma` is a separate subclass of `ndarray`, not integrated into the dtype or ufunc dispatch system — leading to poor performance and inconsistent semantics. There was once a proposal to bring missing-data support into the dtype layer, but it stalled due to design disagreement (the specific NEP number hasn't been re-verified in this research session).
 
-**Design decision for the Rust version** (when this is tackled): prefer extending the container rather than creating a separate dtype for "possibly missing value":
+**Design decision for the Rust version** (when this is tackled), revised: a **separate `MaskedArray<T>` struct that wraps `NdArray<T>`** (composition, a newtype-with-extra-field), not a `validity` field bolted onto `NdArray<T>` itself:
 
-- Add a `validity: Option<Bitmap>` field to `NdArray<T>` — separating "what the `T` value looks like" (dtype) from "whether the value exists" (container) — the same design Arrow/Polars/DataFusion have already proven at production scale.
-- Avoid making `Nullable<T>` a separate DType per type (`Nullable<i32>`, `Nullable<f64>`...), since that would duplicate the entire casting-rule/ufunc-dispatch machinery for every combination.
-- `validity: None` = zero runtime cost; kernels skip the bitmap check entirely.
+```rust
+struct NdArray<T> { ... }               // no validity field at all — always "clean"
+struct MaskedArray<T> {
+    data: NdArray<T>,
+    validity: Bitmap,                    // not Option -- MaskedArray always has a mask
+}
+```
+
+- `NdArray<T>` stays exactly as pure as it is today — it never grows a `validity` field, so there is nothing to "reserve from the start" and no risk of a later refactor touching it. Every `linalg` function (`solve`/`eig`/`det`/...) is implemented only for `NdArray<T>`, never for `MaskedArray<T>` — so passing a `MaskedArray<T>` where `linalg` expects an array is a plain **compile error** ("method not found" / "expected `NdArray<T>`, found `MaskedArray<T>`"), for free, with no runtime check anywhere. This is a stronger, simpler version of the "unsupported ops shouldn't exist as a method" rule below — it isn't even a rule `MaskedArray<T>` has to deliberately enforce by omission, it falls out of the two types just being different types.
+- `MaskedArray<T>` implements its own reduction/elementwise ops, reading its own `validity` bitmap to decide what to skip — see the op-level breakdown below. Its `validity: Bitmap` is **not** `Option<Bitmap>`: a `MaskedArray` unconditionally has a mask (an all-ones bitmap is the "nothing is actually masked" case), since "maybe no mask at all" is exactly what having a separate, plain `NdArray<T>` type is already for. `Option` on the field would just re-introduce the two-states-in-one-type problem this split was meant to avoid.
+- The fill-first ops (`dot`/`trace`/matmul-style) get an explicit, honestly-named method on `MaskedArray<T>` — e.g. `.filled_zero() -> NdArray<T>` to materialize the fill, or a method like `.dot_fill_zero(&other)` built on top of it — never a `Dot`/`Mul` trait impl that fills silently (same naming-over-runtime-notification principle as below).
+- Trade-off worth naming: this does duplicate a little logic between `NdArray<T>` and `MaskedArray<T>` for ops both support in their own way (reductions, elementwise arithmetic) — mitigated cheaply with a shared generic trait (e.g. `trait Reducible { fn sum(&self) -> T; ... }`) implemented for both, where only the loop body differs (skip-if-masked vs. no check at all). Small, worth it for the compile-time guarantee above.
+- Avoid making `Nullable<T>` a separate DType per type (`Nullable<i32>`, `Nullable<f64>`...), since that would duplicate the entire casting-rule/ufunc-dispatch machinery for every combination — the `NdArray<T>`/`MaskedArray<T>` split above already gets the same separation of "value" from "is it missing" without touching the dtype system at all.
 - A NaN-style sentinel still makes sense as a float-specific optimization, but shouldn't be used as the general architecture since it doesn't generalize to int/string/bool.
-
-Not needed in the early stage (the basic `NdArray` struct) — but the `validity` field should be reserved from the start when designing the struct, to avoid a large refactor later.
 
 **Op-level scope for masked array** (when this is eventually built — lowest priority, see step 20) — split by whether the op can just skip masked entries, or needs a filled (full) array first:
 
@@ -272,7 +280,7 @@ Not needed in the early stage (the basic `NdArray` struct) — but the `validity
 
 - **Skip-mask ops** need no notification at all beyond the type signature/doc comment. `MaskedArray<T>::sum()` returning "the sum of the visible elements" *is* the contract — that's documented behavior, not an edge case, so printing/logging on every call would be pure noise (every reduction and every `+` "announcing itself") and a real perf cost (a check-and-log inside the hottest loop in the whole module, for a fact the caller already agreed to by calling this method on this type).
 - **Fill = 0 ops** do deserve a warning, but the idiomatic Rust place for it is the function *name*, not a runtime side effect: `masked.dot_fill_zero(&other)` rather than a `Dot` trait impl that silently fills — the caller sees the fill behavior by reading the call site or during code review, at zero runtime cost, instead of only finding out by running it (or not finding out at all, if nobody's watching stdout/logs that day). If an optional debug-time sanity check is ever wanted, that's what `debug_assert!` or a feature flag is for — never on by default in a release build.
-- **Unsupported ops** (`solve`/`eig`/`det`/`inv`/SVD) shouldn't exist as a callable method on `MaskedArray<T>` at all — not implementing the trait/method means calling `masked.solve(...)` is a compile error ("method not found"), not a runtime panic or an `Err` the caller has to remember to check. A mistake caught at `cargo build` beats one caught in production, and Rust's type system makes "this operation just isn't offered" free to enforce.
+- **Unsupported ops** (`solve`/`eig`/`det`/`inv`/SVD) shouldn't exist as a callable method on `MaskedArray<T>` at all — and with `MaskedArray<T>` as its own separate struct (not `NdArray<T>` plus a field, see above), this isn't even something to remember to omit: `linalg` is only ever implemented for `NdArray<T>`, so `masked.solve(...)` is a compile error ("no method named `solve` found for `MaskedArray<T>`") automatically, not a runtime panic or an `Err` the caller has to remember to check. A mistake caught at `cargo build` beats one caught in production.
 
 General rule for step 20: reach for the type system, method naming, and doc comments first; reserve any actual runtime mechanism (return values, `Result`, `debug_assert!`) for cases doc comments genuinely can't cover, and never use a runtime print/log as the *primary* way of communicating well-documented, contractual behavior.
 
@@ -347,7 +355,7 @@ Each step should pause to write a benchmark comparing against NumPy — both to 
 17. **`polynomial`** — Chebyshev/Hermite/Laguerre/Legendre, built on the existing `linalg`.
 18. **Array API standard audit** (NEP 56) — reconcile the final namespace/function names to match the standard.
 19. **Free-threading audit + packaging** — review thread safety, publish to crates.io/PyPI, a benchmark suite against real NumPy.
-20. **Masked array** (lowest priority) — use the `validity: Option<Bitmap>` design already noted; scoped down to reduction-style ops only — see the op-level breakdown in the "Missing Data / numpy.ma" section. Pushed to the very end since it's the least load-bearing piece for a usable core.
+20. **Masked array** (lowest priority) — a separate `MaskedArray<T>` struct wrapping `NdArray<T>` (`validity: Bitmap`, not `Option`), per the design already noted; scoped down to reduction-style ops only — see the op-level breakdown in the "Missing Data / numpy.ma" section. Pushed to the very end since it's the least load-bearing piece for a usable core.
 
 Steps 13–17 account for most of the raw workload (the rarely-used "long tail"), while steps 8–12 decide whether it's "actually usable" for ordinary use cases. If the goal is "usable" rather than 100% coverage, stopping after steps 12–14 can still be considered a success.
 
@@ -382,6 +390,6 @@ The general principle above is easy to state but easy to under-apply without a c
 
 Two related items tracked but **not** yet actual deprecations (don't drop, just don't over-invest until NumPy itself settles them):
 - **`np.matrix`** — on the long-term roadmap for deprecation, but explicitly gated on SciPy finishing its own migration off sparse *matrix* onto sparse *array* first. Still fine to drop from this port now per the entry above (this project has no SciPy-style backward-compat obligation to wait for), just noting *why* real NumPy hasn't pulled the trigger yet.
-- **`numpy.ma` (masked arrays)** — NumPy considers the current design "poorly designed and undermaintained" and is weighing a rewrite (not inheriting from `ndarray`, becoming a duck-array, or moving missing-value support into the dtype system itself) but hasn't committed to a direction. Step 20 of this project already plans a `validity: Option<Bitmap>` design rather than copying `numpy.ma`'s structure — keep that plan; if NumPy lands a concrete redesign before step 20 is reached, re-check this section against it then.
+- **`numpy.ma` (masked arrays)** — NumPy considers the current design "poorly designed and undermaintained" and is weighing a rewrite (not inheriting from `ndarray`, becoming a duck-array, or moving missing-value support into the dtype system itself) but hasn't committed to a direction. Step 20 of this project already plans a separate `MaskedArray<T>` struct (wrapping `NdArray<T>`, `validity: Bitmap`) rather than copying `numpy.ma`'s structure — keep that plan; if NumPy lands a concrete redesign before step 20 is reached, re-check this section against it then.
 
 General principle: if something in NumPy exists only to avoid breaking code from decades past (a backward-compat sentinel), you don't carry that burden — just implement the most modern "correct" version (the latest NEP) directly from the start, without needing to implement-then-deprecate the way NumPy had to.
