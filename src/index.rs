@@ -58,7 +58,7 @@ enum AxisPlan {
     Lookup { axis: usize, table: Vec<usize>, out_axis: usize },
 }
 
-impl NdArray {
+impl<T: Copy> NdArray<T> {
     /// Outer (orthogonal) advanced indexing: each `Fancy` axis's index
     /// array applies independently to its own axis, with no broadcasting
     /// between axes — matching `numpy.ix_(...)`, not `arr[...]` directly.
@@ -66,7 +66,7 @@ impl NdArray {
     /// Example: `a.oindex(&[Fancy(vec![0,2]), Fancy(vec![1,3,4])])` on a
     /// `(4,6)` array picks rows `{0,2}` × columns `{1,3,4}`, giving a
     /// `(2,3)` result — equivalent to `a[np.ix_([0,2],[1,3,4])]`.
-    pub fn oindex(&self, spec: &[AxisIndex]) -> Result<NdArray, ShapeError> {
+    pub fn oindex(&self, spec: &[AxisIndex]) -> Result<NdArray<T>, ShapeError> {
         if spec.len() != self.ndim() {
             return Err(ShapeError::IndexRankMismatch { expected: self.ndim(), got: spec.len() });
         }
@@ -115,7 +115,7 @@ impl NdArray {
     /// rule this port intentionally does not implement; use
     /// [`NdArray::oindex`] instead for that shape of query, or reorder axes
     /// so the fancy ones are next to each other.
-    pub fn vindex(&self, spec: &[AxisIndex]) -> Result<NdArray, ShapeError> {
+    pub fn vindex(&self, spec: &[AxisIndex]) -> Result<NdArray<T>, ShapeError> {
         if spec.len() != self.ndim() {
             return Err(ShapeError::IndexRankMismatch { expected: self.ndim(), got: spec.len() });
         }
@@ -207,14 +207,14 @@ impl NdArray {
     /// combine [`NdArray::vindex`]/[`NdArray::oindex`] with your own
     /// nonzero-index computation, or select whole rows via [`NdArray::slice`]
     /// in a loop.
-    pub fn boolean_index(&self, mask: &[bool]) -> Result<NdArray, ShapeError> {
+    pub fn boolean_index(&self, mask: &[bool]) -> Result<NdArray<T>, ShapeError> {
         if mask.len() != self.len() {
             return Err(ShapeError::BooleanMaskShapeMismatch {
                 mask_len: mask.len(),
                 array_shape: self.shape().to_vec(),
             });
         }
-        let selected: Vec<f64> = IndexIter::new(self.shape())
+        let selected: Vec<T> = IndexIter::new(self.shape())
             .zip(mask.iter())
             .filter_map(|(idx, &keep)| {
                 keep.then(|| self.get(&idx).expect("IndexIter only yields valid indices"))
@@ -228,8 +228,8 @@ impl NdArray {
     /// map each output multi-index back to a source multi-index, and
     /// collect the gathered values into a new owned array. Shared by
     /// `oindex` and `vindex` — both only differ in how `plans` is built.
-    fn gather(&self, out_shape: &[usize], plans: &[AxisPlan]) -> NdArray {
-        let data: Vec<f64> = IndexIter::new(out_shape)
+    fn gather(&self, out_shape: &[usize], plans: &[AxisPlan]) -> NdArray<T> {
+        let data: Vec<T> = IndexIter::new(out_shape)
             .map(|out_idx| {
                 let mut src_idx = vec![0usize; self.ndim()];
                 for plan in plans {

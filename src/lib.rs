@@ -3,8 +3,12 @@
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
 //!
-//! Covered so far: a basic `NdArray` (shape/strides/buffer, fixed `f64`
-//! dtype), manual immutable/mutable views (slicing, broadcasting), `.npy`
+//! Covered so far: a generic `NdArray<T = f64>` (shape/strides/buffer,
+//! monomorphized per concrete `T` at compile time — the same idea NumPy's
+//! own per-dtype `.c.src` templates express at build time, see
+//! `ndarray.rs`'s doc comment; every other module still only writes the
+//! bare, default-`f64` name in its own signatures, unchanged), manual
+//! immutable/mutable views (slicing, broadcasting), `.npy`
 //! read/write (NEP 1) cross-checked byte-for-byte against real NumPy, a
 //! DType trait + the NEP 50 promotion algorithm, a small generic ufunc
 //! engine (broadcasting + closures + the `out=` pattern) with both
@@ -45,9 +49,13 @@
 //! power-basis companion matrix fed into `linalg::eigvals`) in
 //! `polynomial.rs`.
 //!
-//! Deliberately **not yet** present: the ufunc engine dispatching over
-//! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
-//! `NdArray` yet), `NdArray` itself isn't generic over `Allocator` yet
+//! Deliberately **not yet** present: the numeric algorithms built on top
+//! of `NdArray<T>` (`ufunc`'s `add`/`mul`, `reductions`, `linalg`, `fft`,
+//! `random`) are still each hardcoded to `f64` — `NdArray<T>` itself is
+//! generic (see above), but step 3's `DType` trait isn't wired into
+//! *those* as a bound yet, so e.g. `ufunc::add` doesn't work on
+//! `NdArray<i32>` even though the array itself now can hold `i32`.
+//! `NdArray` isn't generic over `Allocator` yet
 //! (that's `allocator.rs`'s own standalone `PooledVec`), a cache-optimized
 //! iterator (NEP 10), generalized core-dimension ufuncs (NEP 20), boolean
 //! masks over a prefix of axes, non-adjacent fancy indices in `vindex`,
@@ -57,11 +65,13 @@
 //! (no `assert_raises`-equivalent, no generic `assert_array_compare`),
 //! `axis=`-parameterized reductions (whole-array only for now),
 //! `array_split` (uneven splitting; `utils.rs`'s `split` requires an exact
-//! division), and complex eigenvectors for a non-symmetric matrix (no
-//! complex dtype yet — `linalg::eigvals` returns `(re, im)` pairs instead
-//! of full `eig`, see `linalg.rs`'s doc comment; `fft.rs`'s N-D functions
-//! work around the same gap with their own `ComplexArray` type rather
-//! than `NdArray`), and `RandomState`/
+//! division), and complex eigenvectors for a non-symmetric matrix
+//! (`linalg::eigvals` returns `(re, im)` pairs instead of full `eig`, and
+//! `fft.rs`'s N-D functions still use their own `ComplexArray` type
+//! rather than `NdArray<Complex64>` — both predate `NdArray<T>` becoming
+//! generic and haven't been migrated to it yet; `NdArray<Complex64>`
+//! itself now works fine as a container, see `examples/step18_generic_ndarray.rs`),
+//! and `RandomState`/
 //! the legacy `np.random.seed()` API (deliberately dropped, not a gap —
 //! see `random.rs`'s doc comment and `NumPy.md`'s "Parts Worth Dropping")
 //! — those are later steps (or, for the deprecated/calendar-dependent

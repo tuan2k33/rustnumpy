@@ -1,5 +1,7 @@
-//! `ArrayView`/`ArrayViewMut`: borrow data from an `NdArray`, without
-//! owning the buffer, only holding their own `shape`/`strides`/`offset`.
+//! `ArrayView<T>`/`ArrayViewMut<T>`: borrow data from an `NdArray<T>`,
+//! without owning the buffer, only holding their own `shape`/`strides`/
+//! `offset`. Generic over `T`, defaulted to `f64`, for the same reason
+//! `NdArray<T>` is — see `ndarray.rs`'s doc comment.
 //!
 //! This is Rust's answer to the problem NumPy.md raises: "multiple views
 //! aliasing the same buffer". Instead of letting every view freely
@@ -16,10 +18,10 @@ use crate::ndarray::NdArray;
 use crate::shape::{broadcast_strides, index_in_bounds, offset_of, IndexIter};
 use std::ops::Range;
 
-/// An immutable view: borrows `&'a [f64]`, cannot write.
+/// An immutable view: borrows `&'a [T]`, cannot write.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ArrayView<'a> {
-    data: &'a [f64],
+pub struct ArrayView<'a, T = f64> {
+    data: &'a [T],
     shape: Vec<usize>,
     strides: Vec<isize>,
     /// Offset (in elements) from the start of `data` to this view's
@@ -29,8 +31,8 @@ pub struct ArrayView<'a> {
     offset: usize,
 }
 
-impl<'a> ArrayView<'a> {
-    pub(crate) fn new(data: &'a [f64], shape: Vec<usize>, strides: Vec<isize>, offset: usize) -> Self {
+impl<'a, T> ArrayView<'a, T> {
+    pub(crate) fn new(data: &'a [T], shape: Vec<usize>, strides: Vec<isize>, offset: usize) -> Self {
         Self { data, shape, strides, offset }
     }
 
@@ -54,26 +56,11 @@ impl<'a> ArrayView<'a> {
         self.len() == 0
     }
 
-    /// Read one element by a full-dimensional index (coordinates on this
-    /// view, not the original array — after slicing, `[0, 0]` is the
-    /// first element of the *view*, not of the original array).
-    pub fn get(&self, index: &[usize]) -> Option<f64> {
-        if !index_in_bounds(index, &self.shape) {
-            return None;
-        }
-        let rel = offset_of(index, &self.strides);
-        let abs = self.offset as isize + rel;
-        if abs < 0 {
-            return None;
-        }
-        self.data.get(abs as usize).copied()
-    }
-
     /// Basic indexing: cut each axis by a half-open `Range<usize>`,
     /// returning a new view on the **same buffer** (only `shape` +
     /// `offset` change, strides stay the same) — no copy, matching
     /// NumPy's "view" semantics.
-    pub fn slice(&self, ranges: &[Range<usize>]) -> Result<ArrayView<'a>, ShapeError> {
+    pub fn slice(&self, ranges: &[Range<usize>]) -> Result<ArrayView<'a, T>, ShapeError> {
         if ranges.len() != self.shape.len() {
             return self.invalid_slice(ranges);
         }
@@ -96,7 +83,7 @@ impl<'a> ArrayView<'a> {
         })
     }
 
-    fn invalid_slice(&self, ranges: &[Range<usize>]) -> Result<ArrayView<'a>, ShapeError> {
+    fn invalid_slice(&self, ranges: &[Range<usize>]) -> Result<ArrayView<'a, T>, ShapeError> {
         Err(ShapeError::InvalidSlice {
             shape: self.shape.clone(),
             ranges: ranges.iter().map(|r| (r.start, r.end)).collect(),
@@ -107,7 +94,7 @@ impl<'a> ArrayView<'a> {
     /// rule, without copying data: a stretched axis gets stride 0 (every
     /// coordinate on that axis reads the same memory cell). Returns `Err`
     /// if the shapes can't be broadcast.
-    pub fn broadcast_to(&self, target_shape: &[usize]) -> Result<ArrayView<'a>, ShapeError> {
+    pub fn broadcast_to(&self, target_shape: &[usize]) -> Result<ArrayView<'a, T>, ShapeError> {
         match broadcast_strides(&self.shape, &self.strides, target_shape) {
             Some(new_strides) => Ok(ArrayView {
                 data: self.data,
@@ -121,49 +108,13 @@ impl<'a> ArrayView<'a> {
             }),
         }
     }
-
-    /// Materialize the view into an `NdArray` that owns its own data
-    /// (C-contiguous), by walking every logical index and copying the
-    /// value — necessary because after `slice`/`broadcast_to`, the
-    /// underlying buffer may no longer be contiguous (it may have "gaps"
-    /// between elements, or a stride of 0 reading the same cell multiple
-    /// times).
-    pub fn to_owned(&self) -> NdArray {
-        let data: Vec<f64> = IndexIter::new(&self.shape)
-            .map(|idx| self.get(&idx).expect("IndexIter only produces valid indices"))
-            .collect();
-        NdArray::from_vec(data, &self.shape).expect("data.len() always matches shape.iter().product()")
-    }
 }
 
-/// A writable view: borrows `&'a mut [f64]`, exclusive at any one time.
-#[derive(Debug, PartialEq)]
-pub struct ArrayViewMut<'a> {
-    data: &'a mut [f64],
-    shape: Vec<usize>,
-    strides: Vec<isize>,
-    offset: usize,
-}
-
-impl<'a> ArrayViewMut<'a> {
-    pub(crate) fn new(
-        data: &'a mut [f64],
-        shape: Vec<usize>,
-        strides: Vec<isize>,
-        offset: usize,
-    ) -> Self {
-        Self { data, shape, strides, offset }
-    }
-
-    pub fn shape(&self) -> &[usize] {
-        &self.shape
-    }
-
-    /// Reborrow an immutable view from a mutable view — valid because
-    /// `&self` (not `&mut self`) only lends *short-term*, shorter than the
-    /// original `'a` lifetime; this is a textbook example of "reborrowing"
-    /// in Rust.
-    pub fn get(&self, index: &[usize]) -> Option<f64> {
+impl<'a, T: Copy> ArrayView<'a, T> {
+    /// Read one element by a full-dimensional index (coordinates on this
+    /// view, not the original array — after slicing, `[0, 0]` is the
+    /// first element of the *view*, not of the original array).
+    pub fn get(&self, index: &[usize]) -> Option<T> {
         if !index_in_bounds(index, &self.shape) {
             return None;
         }
@@ -175,10 +126,47 @@ impl<'a> ArrayViewMut<'a> {
         self.data.get(abs as usize).copied()
     }
 
+    /// Materialize the view into an `NdArray` that owns its own data
+    /// (C-contiguous), by walking every logical index and copying the
+    /// value — necessary because after `slice`/`broadcast_to`, the
+    /// underlying buffer may no longer be contiguous (it may have "gaps"
+    /// between elements, or a stride of 0 reading the same cell multiple
+    /// times).
+    pub fn to_owned(&self) -> NdArray<T> {
+        let data: Vec<T> = IndexIter::new(&self.shape)
+            .map(|idx| self.get(&idx).expect("IndexIter only produces valid indices"))
+            .collect();
+        NdArray::from_vec(data, &self.shape).expect("data.len() always matches shape.iter().product()")
+    }
+}
+
+/// A writable view: borrows `&'a mut [T]`, exclusive at any one time.
+#[derive(Debug, PartialEq)]
+pub struct ArrayViewMut<'a, T = f64> {
+    data: &'a mut [T],
+    shape: Vec<usize>,
+    strides: Vec<isize>,
+    offset: usize,
+}
+
+impl<'a, T> ArrayViewMut<'a, T> {
+    pub(crate) fn new(
+        data: &'a mut [T],
+        shape: Vec<usize>,
+        strides: Vec<isize>,
+        offset: usize,
+    ) -> Self {
+        Self { data, shape, strides, offset }
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        &self.shape
+    }
+
     /// Write one element. Takes `&mut self` so the compiler guarantees no
     /// other immutable view can be alive at the same time pointing into
     /// this buffer.
-    pub fn set(&mut self, index: &[usize], value: f64) -> Result<(), ShapeError> {
+    pub fn set(&mut self, index: &[usize], value: T) -> Result<(), ShapeError> {
         if !index_in_bounds(index, &self.shape) {
             return Err(ShapeError::IndexOutOfBounds {
                 index: index.to_vec(),
@@ -189,6 +177,24 @@ impl<'a> ArrayViewMut<'a> {
         let abs = self.offset as isize + rel;
         self.data[abs as usize] = value;
         Ok(())
+    }
+}
+
+impl<'a, T: Copy> ArrayViewMut<'a, T> {
+    /// Reborrow an immutable view from a mutable view — valid because
+    /// `&self` (not `&mut self`) only lends *short-term*, shorter than the
+    /// original `'a` lifetime; this is a textbook example of "reborrowing"
+    /// in Rust.
+    pub fn get(&self, index: &[usize]) -> Option<T> {
+        if !index_in_bounds(index, &self.shape) {
+            return None;
+        }
+        let rel = offset_of(index, &self.strides);
+        let abs = self.offset as isize + rel;
+        if abs < 0 {
+            return None;
+        }
+        self.data.get(abs as usize).copied()
     }
 }
 
@@ -268,5 +274,13 @@ mod tests {
             vm.set(&[0, 1], 42.0).unwrap();
         } // vm goes out of scope here -> the borrow is returned to `a`
         assert_eq!(a.get(&[0, 1]), Some(42.0));
+    }
+
+    #[test]
+    fn view_is_generic_over_non_f64_element_types() {
+        let a = NdArray::from_vec(vec![1i32, 2, 3, 4], &[2, 2]).unwrap();
+        let v = a.view();
+        assert_eq!(v.get(&[1, 1]), Some(4));
+        assert_eq!(v.slice(&[0..1, 0..2]).unwrap().to_owned().as_slice(), &[1, 2]);
     }
 }
