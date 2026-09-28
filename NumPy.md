@@ -322,7 +322,7 @@ Each step should pause to write a benchmark comparing against NumPy — both to 
 
 8. **Full advanced indexing** — fancy indexing (integer arrays), boolean mask indexing; decide whether to add explicit `.oindex()`/`.vindex()` (NEP 21) or not.
 9. **Structured/record dtype + datetime64/timedelta64** — multi-field dtypes, and the specialized time-related type pair.
-10. **StringDType + string ufuncs** — per NEP 55, plus a set of string-processing ufuncs (`upper`, `strip`, `split`...).
+10. **StringDType + string ufuncs** — per NEP 55, plus a subset of `numpy.strings` (`upper`, `strip`, `str_len`, `add`, `replace`, `startswith`/`endswith`...). Note: `numpy.strings` has no `split` in NumPy 2.5 (`split` only exists on the legacy, fixed-width `numpy.char` side, which this project already drops) — checked directly against the stock venv rather than assumed, so not implemented here.
 11. **`numpy.testing` equivalent** — `assert_array_equal`, `assert_allclose`... so you can write your own tests without depending on real NumPy.
 12. **Full reductions/statistics** — `mean`/`std`/`var`/`median`/`percentile`, `nan*` variants, `histogram`, `cov`/`corrcoef`.
 13. **`lib/`-layer utility functions** — set operations (`unique`, `intersect1d`, `union1d`), shape ops (`concatenate`, `stack`, `split`, `tile`), `interp`, `gradient` — the largest volume of functions, but built on top of the core that's already there.

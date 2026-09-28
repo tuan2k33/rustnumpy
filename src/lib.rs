@@ -1,4 +1,4 @@
-//! rustnumpy — steps 1–9 of the plan to port NumPy to Rust (see `NumPy.md`).
+//! rustnumpy — steps 1–10 of the plan to port NumPy to Rust (see `NumPy.md`).
 //! Targets NumPy >= 2.5 semantics only — deprecated/backward-compat-only
 //! NumPy behavior is out of scope by design (see `NumPy.md`'s "NumPy Parts
 //! Worth Dropping" section).
@@ -14,9 +14,11 @@
 //! from real Python, advanced indexing (fancy integer-array indexing,
 //! boolean mask indexing) split into explicit `.oindex()`/`.vindex()`
 //! methods per NEP 21's never-shipped proposal (`index.rs`), a packed
-//! structured/record dtype (`structured.rs`), and fixed-ratio-unit
+//! structured/record dtype (`structured.rs`), fixed-ratio-unit
 //! `datetime64`/`timedelta64` with NaT semantics matching real NumPy
-//! (`datetime.rs`).
+//! (`datetime.rs`), and `StringDType` (NEP 55) plus a `numpy.strings`-
+//! shaped subset of string ufuncs, including its missing-data sentinel
+//! (`strings.rs`).
 //!
 //! Deliberately **not yet** present: the ufunc engine dispatching over
 //! multiple dtypes (still f64-only — step 3's `DType` isn't wired into
@@ -24,9 +26,10 @@
 //! (that's `allocator.rs`'s own standalone `PooledVec`), a cache-optimized
 //! iterator (NEP 10), generalized core-dimension ufuncs (NEP 20), boolean
 //! masks over a prefix of axes, non-adjacent fancy indices in `vindex`,
-//! `align=True` structured dtypes, calendar (`Y`/`M`) datetime units, and
-//! ISO-8601 date-string parsing — those are later steps (or, for the
-//! deprecated/calendar-dependent pieces, explicit non-goals) in
+//! `align=True` structured dtypes, calendar (`Y`/`M`) datetime units,
+//! ISO-8601 date-string parsing, and most of `numpy.strings` (only a
+//! representative subset is implemented) — those are later steps (or, for
+//! the deprecated/calendar-dependent pieces, explicit non-goals) in
 //! `NumPy.md`.
 
 pub mod allocator;
@@ -37,6 +40,7 @@ pub mod index;
 pub mod ndarray;
 pub mod npy;
 pub mod shape;
+pub mod strings;
 pub mod structured;
 pub mod ufunc;
 pub mod view;
@@ -48,6 +52,7 @@ pub use error::ShapeError;
 pub use index::AxisIndex;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
+pub use strings::{StringArray, StringError};
 pub use structured::{Field, RecordArray, RecordDType, RecordError};
 pub use ufunc::{
     add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, sub, zip_with,
