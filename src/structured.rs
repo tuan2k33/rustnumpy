@@ -73,7 +73,11 @@ pub struct RecordDType {
 fn kind_size_bytes(kind: Kind) -> usize {
     match kind {
         Kind::Bool => 1,
-        Kind::Int(bits) | Kind::Float(bits) => bits as usize / 8,
+        Kind::Int(bits) | Kind::Uint(bits) | Kind::Float(bits) => bits as usize / 8,
+        // A complex value is stored as two components of its own width
+        // (e.g. `complex128` = two `f64`s), matching NumPy's own
+        // `itemsize` for a complex dtype.
+        Kind::Complex(component_bits) => 2 * (component_bits as usize / 8),
     }
 }
 
