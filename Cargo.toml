@@ -1,0 +1,7 @@
+[package]
+name = "rustnumpy"
+version = "0.1.0"
+edition = "2024"
+description = "Step-by-step Rust port of NumPy's core ideas — see NumPy.md for the plan."
+
+[dependencies]
