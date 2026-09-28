@@ -9,6 +9,7 @@
 //! ufunc dispatch, a cache-optimized iterator (NEP 10), a custom
 //! allocator (NEP 49) — those are later steps in `NumPy.md`.
 
+pub mod dtype;
 pub mod error;
 pub mod ndarray;
 pub mod npy;
@@ -16,6 +17,7 @@ pub mod ops;
 pub mod shape;
 pub mod view;
 
+pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
 pub use error::ShapeError;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
