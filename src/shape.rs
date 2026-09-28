@@ -1,17 +1,17 @@
-//! Tiện ích thuần về shape/strides, dùng chung cho `NdArray` và `ArrayView`.
+//! Pure shape/stride utilities, shared by `NdArray` and `ArrayView`.
 //!
-//! Ghi chú đơn giản hóa so với NumPy thật: ở đây `strides` tính theo **số
-//! phần tử** (element count), không theo byte — vì bước 1 chỉ có một dtype
-//! cố định (`f64`) nên không cần biết `size_of::<T>()`. Khi thêm hệ dtype đa
-//! kiểu (NEP 41/42), stride sẽ phải đổi sang byte để mỗi mảng tự biết cách
-//! nhảy con trỏ theo kích thước phần tử thật của nó.
+//! Simplification compared to real NumPy: here `strides` are counted in
+//! **elements**, not bytes — since step 1 only has one fixed dtype
+//! (`f64`) there's no need to know `size_of::<T>()`. Once a multi-dtype
+//! system is added (NEP 41/42), strides will have to switch to bytes so
+//! each array knows how to advance the pointer by its own element size.
 
-/// Tính strides C-contiguous (row-major) cho một `shape` cho trước.
+/// Compute C-contiguous (row-major) strides for a given `shape`.
 ///
-/// Quy tắc: trục cuối luôn có stride 1; mỗi trục trước đó có stride bằng
-/// stride của trục liền sau nhân với kích thước trục đó.
+/// Rule: the trailing axis always has stride 1; each preceding axis has
+/// a stride equal to the stride of the next axis times that axis's size.
 ///
-/// Ví dụ shape `[2, 3, 4]` → strides `[12, 4, 1]`.
+/// Example: shape `[2, 3, 4]` → strides `[12, 4, 1]`.
 pub fn c_contiguous_strides(shape: &[usize]) -> Vec<isize> {
     let mut strides = vec![0isize; shape.len()];
     let mut acc: isize = 1;
@@ -22,11 +22,12 @@ pub fn c_contiguous_strides(shape: &[usize]) -> Vec<isize> {
     strides
 }
 
-/// Offset (tính bằng phần tử) của một index đầy đủ chiều, theo `strides`.
+/// Offset (in elements) of a full-dimensional index, according to `strides`.
 ///
-/// Đây chính là phép toán lõi biến `(i, j, k, ...)` logic thành một vị trí
-/// phẳng trong buffer — không quan tâm buffer có C-contiguous hay không,
-/// vì mọi thông tin layout đã nằm trong `strides`.
+/// This is the core operation turning a logical `(i, j, k, ...)` into a
+/// flat position in the buffer — it doesn't care whether the buffer is
+/// C-contiguous or not, since all the layout information already lives
+/// in `strides`.
 pub fn offset_of(index: &[usize], strides: &[isize]) -> isize {
     index
         .iter()
@@ -35,24 +36,24 @@ pub fn offset_of(index: &[usize], strides: &[isize]) -> isize {
         .sum()
 }
 
-/// Kiểm tra `index` có hợp lệ với `shape` không: đúng số chiều và mỗi tọa
-/// độ nằm trong `[0, shape[axis])`.
+/// Check whether `index` is valid for `shape`: same number of dimensions,
+/// and each coordinate falls within `[0, shape[axis])`.
 pub fn index_in_bounds(index: &[usize], shape: &[usize]) -> bool {
     index.len() == shape.len() && index.iter().zip(shape.iter()).all(|(&i, &s)| i < s)
 }
 
-/// Áp quy tắc broadcasting của NumPy cho hai shape, trả về shape kết quả
-/// nếu tương thích.
+/// Apply NumPy's broadcasting rule to two shapes, returning the resulting
+/// shape if they're compatible.
 ///
-/// Quy tắc (so từ trục cuối lên đầu): mỗi cặp kích thước phải bằng nhau,
-/// hoặc một trong hai bằng 1 (khi đó "giãn" theo kích thước còn lại), hoặc
-/// một bên đã hết trục (coi như kích thước 1). Kết quả có số chiều bằng
-/// `max(a.len(), b.len())`.
+/// Rule (compared from the trailing axis backwards): each pair of sizes
+/// must be equal, or one of them must be 1 (in which case it "stretches"
+/// to match the other), or one side has run out of axes (treated as size
+/// 1). The result has `max(a.len(), b.len())` dimensions.
 pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
     let ndim = a.len().max(b.len());
     let mut result = vec![0usize; ndim];
     for i in 0..ndim {
-        // Đi từ trục cuối lên: trục thứ `i` tính từ phải sang.
+        // Walk from the trailing axis backwards: axis `i` is counted from the right.
         let da = a.len().checked_sub(1 + i).map(|idx| a[idx]).unwrap_or(1);
         let db = b.len().checked_sub(1 + i).map(|idx| b[idx]).unwrap_or(1);
         let out = match (da, db) {
@@ -66,15 +67,17 @@ pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
     Some(result)
 }
 
-/// Tính strides để "broadcast" một mảng có `shape`/`strides` gốc sang
-/// `target_shape` (đã tương thích qua [`broadcast_shapes`]), theo đúng
-/// cách NumPy làm: trục bị giãn (kích thước gốc 1, đích > 1) nhận
-/// **stride 0** — nghĩa là mọi chỉ số trên trục đó đọc cùng một vị trí bộ
-/// nhớ, không copy dữ liệu. Trục thiếu ở đầu (mảng ít chiều hơn) coi như
-/// kích thước 1 và cũng nhận stride 0.
+/// Compute strides to "broadcast" an array with the given original
+/// `shape`/`strides` to `target_shape` (already checked compatible via
+/// [`broadcast_shapes`]), exactly the way NumPy does it: a stretched axis
+/// (original size 1, target size > 1) gets **stride 0** — meaning every
+/// index on that axis reads the same memory location, with no data copy.
+/// A missing leading axis (the array has fewer dimensions) is treated as
+/// size 1 and also gets stride 0.
 ///
-/// Trả về `None` nếu `target_shape` không phải kết quả broadcast hợp lệ
-/// của `shape` (tức có trục mà kích thước gốc khác 1 và khác đích).
+/// Returns `None` if `target_shape` isn't a valid broadcast result of
+/// `shape` (i.e. there's an axis whose original size is neither 1 nor
+/// equal to the target).
 pub fn broadcast_strides(
     shape: &[usize],
     strides: &[isize],
@@ -88,7 +91,7 @@ pub fn broadcast_strides(
     let mut result = vec![0isize; ndim];
     for i in 0..ndim {
         if i < offset {
-            // Trục "ảo" thêm vào phía trước — luôn stride 0.
+            // "Virtual" leading axis — always stride 0.
             result[i] = 0;
         } else {
             let orig_dim = shape[i - offset];
@@ -106,13 +109,14 @@ pub fn broadcast_strides(
     Some(result)
 }
 
-/// Duyệt tuần tự mọi multi-index hợp lệ của một `shape`, theo thứ tự
-/// row-major (trục cuối chạy nhanh nhất) — đúng thứ tự NumPy dùng khi
-/// duyệt một mảng C-contiguous bằng `for x in np.nditer(arr)`.
+/// Walk every valid multi-index of a `shape` in sequence, in row-major
+/// order (trailing axis moves fastest) — the same order NumPy uses when
+/// walking a C-contiguous array with `for x in np.nditer(arr)`.
 ///
-/// Dùng cho các thao tác cần "duyệt hết mảng theo logic shape" mà không
-/// quan tâm buffer bên dưới có liền mạch hay không (ví dụ vật chất hóa
-/// một view có stride bất kỳ thành `NdArray` mới trong `to_owned()`).
+/// Used by operations that need to "walk the whole array by shape logic"
+/// regardless of whether the underlying buffer is contiguous (for example
+/// materializing a view with arbitrary strides into a new `NdArray` in
+/// `to_owned()`).
 pub struct IndexIter<'a> {
     shape: &'a [usize],
     current: Option<Vec<usize>>,
@@ -121,7 +125,7 @@ pub struct IndexIter<'a> {
 impl<'a> IndexIter<'a> {
     pub fn new(shape: &'a [usize]) -> Self {
         let start = if shape.contains(&0) {
-            None // một trục kích thước 0 -> mảng rỗng, không có index nào
+            None // an axis of size 0 -> empty array, no indices at all
         } else {
             Some(vec![0usize; shape.len()])
         };
@@ -135,7 +139,7 @@ impl<'a> Iterator for IndexIter<'a> {
     fn next(&mut self) -> Option<Vec<usize>> {
         let current = self.current.take()?;
         if self.shape.is_empty() {
-            // Mảng 0 chiều: đúng một index rỗng `[]`, rồi dừng.
+            // 0-dimensional array: exactly one empty index `[]`, then done.
             self.current = None;
             return Some(current);
         }
@@ -148,7 +152,7 @@ impl<'a> Iterator for IndexIter<'a> {
             }
             next[axis] = 0;
         }
-        // Mọi trục đều "tràn" về 0 -> đã duyệt hết.
+        // Every axis "overflowed" back to 0 -> fully walked.
         self.current = None;
         Some(current)
     }
@@ -176,11 +180,11 @@ mod tests {
 
     #[test]
     fn broadcast_strides_zeroes_stretched_axes() {
-        // shape (3,1) strides (1,1) -> broadcast to (3,4): trục cuối (size 1->4) stride 0
+        // shape (3,1) strides (1,1) -> broadcast to (3,4): trailing axis (size 1->4) gets stride 0
         let strides = broadcast_strides(&[3, 1], &[1, 1], &[3, 4]).unwrap();
         assert_eq!(strides, vec![1, 0]);
 
-        // shape (4,) strides (1,) -> broadcast to (3,4): trục đầu thêm mới, stride 0
+        // shape (4,) strides (1,) -> broadcast to (3,4): new leading axis, stride 0
         let strides = broadcast_strides(&[4], &[1], &[3, 4]).unwrap();
         assert_eq!(strides, vec![0, 1]);
     }

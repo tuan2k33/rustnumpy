@@ -1,29 +1,31 @@
-//! `ArrayView`/`ArrayViewMut`: mượn dữ liệu từ một `NdArray`, không sở hữu
-//! buffer, chỉ giữ `shape`/`strides`/`offset` riêng.
+//! `ArrayView`/`ArrayViewMut`: borrow data from an `NdArray`, without
+//! owning the buffer, only holding their own `shape`/`strides`/`offset`.
 //!
-//! Đây là câu trả lời của Rust cho vấn đề NumPy.md nêu: "nhiều view alias
-//! cùng một buffer". Thay vì để mọi view tự do đọc/ghi một buffer dùng
-//! chung (như C con trỏ thô), Rust tách bạch bằng lifetime + borrow
-//! checker: `ArrayView<'a>` mượn bất biến (nhiều view cùng lúc, không ai
-//! ghi), `ArrayViewMut<'a>` mượn độc quyền (đúng một view, được ghi). Cả
-//! hai không thể tồn tại cùng lúc trên cùng dữ liệu — compiler chặn ngay
-//! lúc biên dịch, NumPy C phải tự kỷ luật bằng tay (và thỉnh thoảng có bug
-//! alias).
+//! This is Rust's answer to the problem NumPy.md raises: "multiple views
+//! aliasing the same buffer". Instead of letting every view freely
+//! read/write a shared buffer (like a raw C pointer), Rust separates
+//! things via lifetimes + the borrow checker: `ArrayView<'a>` borrows
+//! immutably (many views at once, none writing), `ArrayViewMut<'a>`
+//! borrows exclusively (exactly one view, allowed to write). The two can
+//! never coexist on the same data — the compiler blocks it at compile
+//! time, whereas NumPy's C core has to enforce that discipline by hand
+//! (and occasionally has aliasing bugs).
 
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 use crate::shape::{broadcast_strides, index_in_bounds, offset_of, IndexIter};
 use std::ops::Range;
 
-/// View bất biến: mượn `&'a [f64]`, không thể ghi.
+/// An immutable view: borrows `&'a [f64]`, cannot write.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrayView<'a> {
     data: &'a [f64],
     shape: Vec<usize>,
     strides: Vec<isize>,
-    /// Offset (phần tử) tính từ đầu `data` tới phần tử `index = [0, 0, ...]`
-    /// của view này. Basic indexing (slice) chỉ cần đổi `offset` + `shape`,
-    /// không đụng tới `data` — đó là lý do slice không bao giờ copy.
+    /// Offset (in elements) from the start of `data` to this view's
+    /// `index = [0, 0, ...]` element. Basic indexing (slicing) only needs
+    /// to change `offset` + `shape`, never touching `data` — that's why
+    /// slicing never copies.
     offset: usize,
 }
 
@@ -52,9 +54,9 @@ impl<'a> ArrayView<'a> {
         self.len() == 0
     }
 
-    /// Đọc một phần tử theo index đầy đủ chiều (tọa độ tính trên view này,
-    /// không phải trên mảng gốc — sau khi slice, `[0, 0]` là phần tử đầu
-    /// của *view*, không phải của mảng ban đầu).
+    /// Read one element by a full-dimensional index (coordinates on this
+    /// view, not the original array — after slicing, `[0, 0]` is the
+    /// first element of the *view*, not of the original array).
     pub fn get(&self, index: &[usize]) -> Option<f64> {
         if !index_in_bounds(index, &self.shape) {
             return None;
@@ -67,9 +69,10 @@ impl<'a> ArrayView<'a> {
         self.data.get(abs as usize).copied()
     }
 
-    /// Basic indexing: cắt mỗi trục theo `Range<usize>` nửa-mở, trả về
-    /// view mới trên **cùng buffer** (chỉ đổi `shape` + `offset`, strides
-    /// giữ nguyên) — không copy, đúng ngữ nghĩa "view" của NumPy.
+    /// Basic indexing: cut each axis by a half-open `Range<usize>`,
+    /// returning a new view on the **same buffer** (only `shape` +
+    /// `offset` change, strides stay the same) — no copy, matching
+    /// NumPy's "view" semantics.
     pub fn slice(&self, ranges: &[Range<usize>]) -> Result<ArrayView<'a>, ShapeError> {
         if ranges.len() != self.shape.len() {
             return self.invalid_slice(ranges);
@@ -100,9 +103,10 @@ impl<'a> ArrayView<'a> {
         })
     }
 
-    /// Giãn view sang `target_shape` theo quy tắc broadcasting của NumPy,
-    /// không copy dữ liệu: trục bị giãn nhận stride 0 (mọi tọa độ trên
-    /// trục đó đọc cùng một ô nhớ). Trả `Err` nếu không broadcast được.
+    /// Stretch a view to `target_shape` following NumPy's broadcasting
+    /// rule, without copying data: a stretched axis gets stride 0 (every
+    /// coordinate on that axis reads the same memory cell). Returns `Err`
+    /// if the shapes can't be broadcast.
     pub fn broadcast_to(&self, target_shape: &[usize]) -> Result<ArrayView<'a>, ShapeError> {
         match broadcast_strides(&self.shape, &self.strides, target_shape) {
             Some(new_strides) => Ok(ArrayView {
@@ -118,20 +122,21 @@ impl<'a> ArrayView<'a> {
         }
     }
 
-    /// Vật chất hóa view thành một `NdArray` sở hữu dữ liệu riêng
-    /// (C-contiguous), bằng cách duyệt qua từng index logic và copy giá
-    /// trị — cần thiết vì sau `slice`/`broadcast_to`, buffer bên dưới có
-    /// thể không còn liền mạch (có "lỗ" giữa các phần tử, hoặc stride 0
-    /// lặp lại cùng ô nhớ nhiều lần).
+    /// Materialize the view into an `NdArray` that owns its own data
+    /// (C-contiguous), by walking every logical index and copying the
+    /// value — necessary because after `slice`/`broadcast_to`, the
+    /// underlying buffer may no longer be contiguous (it may have "gaps"
+    /// between elements, or a stride of 0 reading the same cell multiple
+    /// times).
     pub fn to_owned(&self) -> NdArray {
         let data: Vec<f64> = IndexIter::new(&self.shape)
-            .map(|idx| self.get(&idx).expect("IndexIter chỉ sinh index hợp lệ"))
+            .map(|idx| self.get(&idx).expect("IndexIter only produces valid indices"))
             .collect();
-        NdArray::from_vec(data, &self.shape).expect("data.len() luôn khớp shape.iter().product()")
+        NdArray::from_vec(data, &self.shape).expect("data.len() always matches shape.iter().product()")
     }
 }
 
-/// View có thể ghi: mượn `&'a mut [f64]`, độc quyền tại một thời điểm.
+/// A writable view: borrows `&'a mut [f64]`, exclusive at any one time.
 #[derive(Debug, PartialEq)]
 pub struct ArrayViewMut<'a> {
     data: &'a mut [f64],
@@ -154,9 +159,10 @@ impl<'a> ArrayViewMut<'a> {
         &self.shape
     }
 
-    /// Mượn lại view bất biến từ view có thể ghi — hợp lệ vì `&self` (không
-    /// phải `&mut self`) chỉ cho mượn *ngắn hạn*, nhỏ hơn lifetime `'a` gốc;
-    /// đây là ví dụ điển hình về "reborrow" trong Rust.
+    /// Reborrow an immutable view from a mutable view — valid because
+    /// `&self` (not `&mut self`) only lends *short-term*, shorter than the
+    /// original `'a` lifetime; this is a textbook example of "reborrowing"
+    /// in Rust.
     pub fn get(&self, index: &[usize]) -> Option<f64> {
         if !index_in_bounds(index, &self.shape) {
             return None;
@@ -169,8 +175,9 @@ impl<'a> ArrayViewMut<'a> {
         self.data.get(abs as usize).copied()
     }
 
-    /// Ghi một phần tử. Nhận `&mut self` để compiler đảm bảo không có view
-    /// bất biến nào khác đang sống cùng lúc trỏ vào buffer này.
+    /// Write one element. Takes `&mut self` so the compiler guarantees no
+    /// other immutable view can be alive at the same time pointing into
+    /// this buffer.
     pub fn set(&mut self, index: &[usize], value: f64) -> Result<(), ShapeError> {
         if !index_in_bounds(index, &self.shape) {
             return Err(ShapeError::IndexOutOfBounds {
@@ -206,7 +213,7 @@ mod tests {
         assert_eq!(v.get(&[0, 1]), Some(6.0));
         assert_eq!(v.get(&[1, 0]), Some(9.0));
         assert_eq!(v.get(&[1, 1]), Some(10.0));
-        // strides không đổi so với mảng gốc -> bằng chứng đây là view, không copy
+        // strides unchanged from the original array -> proof this is a view, not a copy
         assert_eq!(v.strides(), a.strides());
     }
 
@@ -219,7 +226,7 @@ mod tests {
 
     #[test]
     fn broadcast_to_repeats_without_copying() {
-        // shape (3,1) broadcast to (3,4): mỗi hàng lặp lại giá trị cột duy nhất
+        // shape (3,1) broadcast to (3,4): each row repeats its single column value
         let a = arange(&[3, 1]); // [[0],[1],[2]]
         let v = a.view().broadcast_to(&[3, 4]).unwrap();
         assert_eq!(v.shape(), &[3, 4]);
@@ -228,7 +235,7 @@ mod tests {
             assert_eq!(v.get(&[1, col]), Some(1.0));
             assert_eq!(v.get(&[2, col]), Some(2.0));
         }
-        // trục bị giãn phải có stride 0
+        // the stretched axis must have stride 0
         assert_eq!(v.strides()[1], 0);
     }
 
@@ -259,7 +266,7 @@ mod tests {
         {
             let mut vm = a.view_mut();
             vm.set(&[0, 1], 42.0).unwrap();
-        } // vm hết scope ở đây -> trả quyền mượn lại cho `a`
+        } // vm goes out of scope here -> the borrow is returned to `a`
         assert_eq!(a.get(&[0, 1]), Some(42.0));
     }
 }

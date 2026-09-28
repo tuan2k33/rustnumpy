@@ -1,12 +1,13 @@
-//! rustnumpy — bước 1 của plan port NumPy sang Rust (xem `NumPy.md`).
+//! rustnumpy — steps 1–2 of the plan to port NumPy to Rust (see `NumPy.md`).
 //!
-//! Nội dung bước này: `NdArray` cơ bản (shape/strides/buffer, dtype cố
-//! định `f64`), view bất biến/khả biến thủ công (slicing, broadcasting),
-//! và một phép cộng element-wise mini để chứng minh mọi thứ ăn khớp.
+//! Covered so far: a basic `NdArray` (shape/strides/buffer, fixed `f64`
+//! dtype), manual immutable/mutable views (slicing, broadcasting), a mini
+//! element-wise add to prove it all fits together, and `.npy` read/write
+//! (NEP 1) cross-checked byte-for-byte against real NumPy.
 //!
-//! Cố tình **chưa** có: đa dtype (NEP 41/42), ufunc dispatch thật, iterator
-//! tối ưu cache (NEP 10), allocator tùy biến (NEP 49) — những phần đó là
-//! các bước sau trong `NumPy.md`.
+//! Deliberately **not yet** present: multiple dtypes (NEP 41/42), real
+//! ufunc dispatch, a cache-optimized iterator (NEP 10), a custom
+//! allocator (NEP 49) — those are later steps in `NumPy.md`.
 
 pub mod error;
 pub mod ndarray;

@@ -1,11 +1,12 @@
-//! `NdArray`: mảng N-chiều sở hữu dữ liệu (owned), dtype cố định `f64`.
+//! `NdArray`: an owned N-dimensional array, fixed dtype `f64`.
 //!
-//! Đây là struct "chủ" giữ buffer thật — mọi `ArrayView`/`ArrayViewMut` chỉ
-//! mượn (`&`/`&mut`) dữ liệu từ đây, không bao giờ copy khi tạo view. Đây
-//! chính là bài học ownership đầu tiên: `NdArray` là chủ sở hữu duy nhất
-//! của `Vec<f64>`; view chỉ là tham chiếu có lifetime ràng buộc vào nó, nên
-//! compiler đảm bảo view không thể tồn tại lâu hơn mảng gốc (không cần
-//! garbage collector hay refcount như CPython phải làm với `PyArrayObject`).
+//! This is the "owner" struct holding the real buffer — every
+//! `ArrayView`/`ArrayViewMut` only borrows (`&`/`&mut`) data from it, never
+//! copying when a view is created. This is the first ownership lesson:
+//! `NdArray` is the sole owner of the `Vec<f64>`; a view is just a
+//! reference whose lifetime is tied to it, so the compiler guarantees a
+//! view can't outlive the original array (no need for a garbage collector
+//! or refcounting the way CPython has to with `PyArrayObject`).
 
 use crate::error::ShapeError;
 use crate::shape::{c_contiguous_strides, index_in_bounds, offset_of};
@@ -13,16 +14,17 @@ use crate::view::{ArrayView, ArrayViewMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NdArray {
-    /// Buffer dữ liệu thật, luôn C-contiguous (row-major) vì `NdArray` là
-    /// mảng "gốc" — chỉ view mới có thể mang stride khác thường (ví dụ
-    /// stride 0 sau broadcast, hoặc stride không liên tục sau slice).
+    /// The real data buffer, always C-contiguous (row-major) since
+    /// `NdArray` is the "root" array — only a view can carry unusual
+    /// strides (e.g. stride 0 after broadcasting, or non-contiguous
+    /// strides after slicing).
     data: Vec<f64>,
     shape: Vec<usize>,
     strides: Vec<isize>,
 }
 
 impl NdArray {
-    /// Tạo mảng toàn số 0 với `shape` cho trước.
+    /// Create an array filled with zeros for the given `shape`.
     pub fn zeros(shape: &[usize]) -> Self {
         let len = shape.iter().product();
         Self {
@@ -32,11 +34,12 @@ impl NdArray {
         }
     }
 
-    /// Tạo mảng từ dữ liệu phẳng (row-major) + shape đã khai.
+    /// Create an array from flat (row-major) data plus a declared shape.
     ///
-    /// Trả `Err` nếu `data.len()` không khớp tích các chiều trong `shape` —
-    /// giống NumPy raise `ValueError: cannot reshape array of size X into
-    /// shape Y`, nhưng ở đây là lỗi tường minh thay vì exception runtime.
+    /// Returns `Err` if `data.len()` doesn't match the product of `shape`
+    /// — similar to NumPy raising `ValueError: cannot reshape array of
+    /// size X into shape Y`, but here as an explicit error instead of a
+    /// runtime exception.
     pub fn from_vec(data: Vec<f64>, shape: &[usize]) -> Result<Self, ShapeError> {
         let expected: usize = shape.iter().product();
         if data.len() != expected {
@@ -72,16 +75,18 @@ impl NdArray {
         self.data.is_empty()
     }
 
-    /// `NdArray` do chính nó cấp phát nên luôn C-contiguous; giữ method này
-    /// (thay vì hằng `true`) để `ArrayView` có thể dùng chung logic khi cả
-    /// hai đều cần kiểm tra "buffer có liền mạch theo row-major không".
+    /// An `NdArray` allocates its own buffer so it's always C-contiguous;
+    /// this method is kept (instead of a `true` constant) so `ArrayView`
+    /// can share the same logic when both need to check "is the buffer
+    /// contiguous in row-major order".
     pub fn is_c_contiguous(&self) -> bool {
         self.strides == c_contiguous_strides(&self.shape)
     }
 
-    /// Đọc một phần tử theo index đầy đủ chiều, ví dụ `get(&[1, 2])` cho
-    /// mảng 2 chiều. Trả `None` nếu index sai số chiều hoặc vượt biên —
-    /// dùng `Option` thay vì panic để caller tự quyết định xử lý lỗi.
+    /// Read one element by a full-dimensional index, e.g. `get(&[1, 2])`
+    /// for a 2-D array. Returns `None` if the index has the wrong number
+    /// of dimensions or is out of bounds — using `Option` instead of a
+    /// panic lets the caller decide how to handle the error.
     pub fn get(&self, index: &[usize]) -> Option<f64> {
         if !index_in_bounds(index, &self.shape) {
             return None;
@@ -90,10 +95,11 @@ impl NdArray {
         self.data.get(off as usize).copied()
     }
 
-    /// Ghi một phần tử theo index đầy đủ chiều. Nhận `&mut self` — đây là
-    /// điểm học `&mut`: compiler đảm bảo tại một thời điểm chỉ một nơi
-    /// trong code có quyền ghi vào `self.data`, không có chuyện hai luồng
-    /// cùng sửa buffer mà không qua đồng bộ như C phải tự lo bằng tay.
+    /// Write one element by a full-dimensional index. Takes `&mut self` —
+    /// this is the `&mut` lesson: the compiler guarantees only one place
+    /// in the code can write to `self.data` at a time, so there's no way
+    /// for two threads to mutate the buffer without synchronization the
+    /// way C has to be manually disciplined about.
     pub fn set(&mut self, index: &[usize], value: f64) -> Result<(), ShapeError> {
         if !index_in_bounds(index, &self.shape) {
             return Err(ShapeError::IndexOutOfBounds {
@@ -106,39 +112,40 @@ impl NdArray {
         Ok(())
     }
 
-    /// Mượn bất biến toàn bộ mảng dưới dạng `ArrayView`.
+    /// Borrow the whole array immutably as an `ArrayView`.
     ///
-    /// Lifetime `'_` của view bị compiler ràng buộc vào `&self` — không
-    /// thể giữ view sống lâu hơn `NdArray` gốc, đây là cách Rust giải
-    /// quyết "cả rổ view alias cùng buffer" của NumPy mà không cần
-    /// runtime refcounting: sai lifetime là lỗi biên dịch, không phải bug
-    /// runtime (use-after-free) như C.
+    /// The view's lifetime `'_` is tied by the compiler to `&self` — it
+    /// can't be kept alive longer than the original `NdArray`. This is
+    /// how Rust solves NumPy's "a whole basket of views aliasing the same
+    /// buffer" problem without runtime refcounting: a wrong lifetime is a
+    /// compile error, not a runtime bug (use-after-free) like in C.
     pub fn view(&self) -> ArrayView<'_> {
         ArrayView::new(&self.data, self.shape.clone(), self.strides.clone(), 0)
     }
 
-    /// Mượn có thể ghi toàn bộ mảng. Vì Rust chỉ cho **một** `&mut`
-    /// tại một thời điểm, gọi `view_mut()` sẽ khóa `self` khỏi mọi truy
-    /// cập khác (kể cả `view()` bất biến) cho tới khi view này hết scope —
-    /// đây chính là giới hạn "&mut uniqueness" mà tài liệu NumPy.md nhắc
-    /// tới khi so với việc NumPy C cho phép nhiều view cùng ghi (`out=`).
+    /// Borrow the whole array mutably. Since Rust only allows **one**
+    /// `&mut` at a time, calling `view_mut()` locks `self` out of every
+    /// other access (including an immutable `view()`) until this view
+    /// goes out of scope — this is exactly the "&mut uniqueness"
+    /// constraint NumPy.md calls out when comparing against NumPy's C
+    /// core, which allows multiple views to write at once (`out=`).
     pub fn view_mut(&mut self) -> ArrayViewMut<'_> {
         ArrayViewMut::new(&mut self.data, self.shape.clone(), self.strides.clone(), 0)
     }
 
-    /// Buffer thô, theo đúng thứ tự row-major của `shape` — luôn hợp lệ vì
-    /// `NdArray` được đảm bảo C-contiguous ngay từ constructor. Dùng bởi
-    /// `npy::write_npy` để ghi thẳng bytes ra file mà không cần duyệt
-    /// từng index qua `IndexIter` (chỉ view có stride bất thường mới cần
-    /// duyệt kiểu đó).
+    /// The raw buffer, in the row-major order implied by `shape` — always
+    /// valid since `NdArray` is guaranteed C-contiguous from the
+    /// constructor onwards. Used by `npy::write_npy` to write bytes
+    /// straight out to a file without walking each index through
+    /// `IndexIter` (only a view with unusual strides needs that kind of walk).
     pub fn as_slice(&self) -> &[f64] {
         &self.data
     }
 
-    /// Basic indexing dạng slice theo range nửa-mở trên mỗi trục, ví dụ
-    /// `arr.slice(&[0..2, 1..3])`. Luôn trả về **view** (không copy) —
-    /// đúng ngữ nghĩa "basic indexing" của NumPy: chỉ đổi `shape`/offset
-    /// trên cùng buffer.
+    /// Basic indexing via a half-open range per axis, e.g.
+    /// `arr.slice(&[0..2, 1..3])`. Always returns a **view** (no copy) —
+    /// matching NumPy's "basic indexing" semantics: only `shape`/offset
+    /// change, on the same buffer.
     pub fn slice(&self, ranges: &[std::ops::Range<usize>]) -> Result<ArrayView<'_>, ShapeError> {
         self.view().slice(ranges)
     }
@@ -172,7 +179,7 @@ mod tests {
         a.set(&[1, 0], 7.0).unwrap();
         assert_eq!(a.get(&[1, 0]), Some(7.0));
         assert_eq!(a.get(&[0, 0]), Some(0.0));
-        assert_eq!(a.get(&[9, 9]), None); // out of bounds -> None, không panic
+        assert_eq!(a.get(&[9, 9]), None); // out of bounds -> None, no panic
     }
 
     #[test]

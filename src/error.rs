@@ -1,21 +1,21 @@
 use std::fmt;
 
-/// Mọi lỗi liên quan tới shape: shape/data không khớp số phần tử,
-/// index vượt biên, hoặc hai shape không broadcast được với nhau.
+/// Any shape-related error: shape/data element count mismatch,
+/// out-of-bounds index, or two shapes that can't be broadcast together.
 ///
-/// NumPy thật raise `ValueError` với message runtime; ở Rust ta có
-/// enum lỗi tường minh để caller match theo từng trường hợp thay vì
-/// parse string.
+/// Real NumPy raises a `ValueError` with a runtime message; in Rust we
+/// have an explicit error enum so the caller can match on each case
+/// instead of parsing a string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapeError {
-    /// Số phần tử trong buffer không khớp tích các chiều trong `shape`.
+    /// The number of elements in the buffer doesn't match the product of `shape`.
     DataShapeMismatch { data_len: usize, shape: Vec<usize> },
-    /// Index có số chiều khác `ndim`, hoặc một tọa độ vượt quá kích thước trục đó.
+    /// The index has a different number of dimensions than `ndim`, or a coordinate exceeds that axis's size.
     IndexOutOfBounds { index: Vec<usize>, shape: Vec<usize> },
-    /// Hai shape không thể broadcast theo quy tắc NumPy (so từ trục cuối,
-    /// mỗi cặp phải bằng nhau hoặc một trong hai bằng 1).
+    /// Two shapes can't be broadcast under NumPy's rule (compared from the
+    /// trailing axis, each pair must be equal or one of them must be 1).
     NotBroadcastable { lhs: Vec<usize>, rhs: Vec<usize> },
-    /// Slice range vượt quá kích thước trục, hoặc số range khác `ndim`.
+    /// A slice range exceeds the axis size, or the number of ranges differs from `ndim`.
     InvalidSlice { shape: Vec<usize>, ranges: Vec<(usize, usize)> },
 }
 

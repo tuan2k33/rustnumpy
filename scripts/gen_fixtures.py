@@ -1,5 +1,5 @@
-"""Sinh fixture .npy bằng NumPy thật, dùng để test tính tương thích của
-bộ đọc/ghi .npy trong rustnumpy. Chạy lại nếu cần tạo thêm fixture:
+"""Generate .npy fixtures with real NumPy, used to test the compatibility
+of rustnumpy's .npy reader/writer. Re-run this if you need more fixtures:
 
     /home/tuannq/venvs/numpy-upstream/bin/python scripts/gen_fixtures.py
 """

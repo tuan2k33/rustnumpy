@@ -1,18 +1,18 @@
-//! Phép toán element-wise đầu tiên: cộng hai mảng có broadcasting.
+//! The first element-wise operation: adding two arrays with broadcasting.
 //!
-//! Đây là bản mini của `np.add` — chưa phải ufunc thật (không có dispatch
-//! theo dtype, không có `out=`/`where=`), chỉ đủ để chứng minh
-//! shape → broadcast → duyệt phần tử hoạt động đúng, làm nền cho bước 4
-//! (ufunc tổng quát) trong plan.
+//! This is a mini version of `np.add` — not yet a real ufunc (no dtype
+//! dispatch, no `out=`/`where=`), just enough to prove shape → broadcast
+//! → element walk works correctly, laying the ground for step 4 (a
+//! general ufunc) in the plan.
 
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 use crate::shape::{broadcast_shapes, IndexIter};
 use crate::view::ArrayView;
 
-/// `result[idx] = a[idx] + b[idx]` sau khi broadcast `a` và `b` về shape
-/// chung — giống hệt `a + b` của NumPy khi cả hai đều là mảng thật (chưa
-/// tính trường hợp scalar Python "weak type" của NEP 50).
+/// `result[idx] = a[idx] + b[idx]` after broadcasting `a` and `b` to a
+/// common shape — exactly like NumPy's `a + b` when both are real arrays
+/// (not accounting for the Python scalar "weak type" case from NEP 50 yet).
 pub fn add_broadcast(a: &ArrayView, b: &ArrayView) -> Result<NdArray, ShapeError> {
     let out_shape = broadcast_shapes(a.shape(), b.shape()).ok_or_else(|| ShapeError::NotBroadcastable {
         lhs: a.shape().to_vec(),
@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn add_broadcasts_row_vector_over_matrix() {
-        // (2,3) + (3,) -> mỗi hàng cộng cùng một vector, giống NumPy
+        // (2,3) + (3,) -> each row adds the same vector, just like NumPy
         let a = NdArray::from_vec(vec![0.0, 0.0, 0.0, 10.0, 10.0, 10.0], &[2, 3]).unwrap();
         let b = NdArray::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap();
         let out = add_broadcast(&a.view(), &b.view()).unwrap();

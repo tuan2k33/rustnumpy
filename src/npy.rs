@@ -1,23 +1,23 @@
-//! Đọc/ghi định dạng `.npy` (NEP 1), giới hạn ở dtype `float64` little-endian
-//! (`<f8`), thứ tự C (row-major) — đúng dtype cố định mà `NdArray` bước 1
-//! đang hỗ trợ.
+//! Read/write the `.npy` format (NEP 1), restricted to the `float64`
+//! little-endian dtype (`<f8`), C order (row-major) — exactly the fixed
+//! dtype `NdArray` supports since step 1.
 //!
-//! Cấu trúc file (xem NumPy.md, mục "Định dạng file .npy/.npz"):
+//! File layout (see NumPy.md, "Định dạng file .npy/.npz" section):
 //!
 //! ```text
-//! offset  size            nội dung
-//! 0       6 byte          magic string \x93NUMPY
-//! 6       2 byte          version (major, minor) — ở đây luôn ghi 1.0
-//! 8       2 hoặc 4 byte   header_len (u16 cho v1.x, u32 cho v2.x/v3.x)
-//! 10/12   header_len byte header dict dạng literal Python, đệm space + '\n'
-//!                         sao cho (offset header + header_len) chia hết 64
-//! ...     data_len byte   dữ liệu thô, row-major, đúng dtype đã khai
+//! offset  size            content
+//! 0       6 bytes         magic string \x93NUMPY
+//! 6       2 bytes         version (major, minor) — always written as 1.0 here
+//! 8       2 or 4 bytes    header_len (u16 for v1.x, u32 for v2.x/v3.x)
+//! 10/12   header_len byte header dict as a Python literal, padded with spaces + '\n'
+//!                         so that (header offset + header_len) is a multiple of 64
+//! ...     data_len bytes  raw data, row-major, in the declared dtype
 //! ```
 //!
-//! Bộ đọc header **không** dùng full Python parser — chỉ tách 3 khóa cố
-//! định (`descr`, `fortran_order`, `shape`) bằng string scanning thủ công,
-//! vì đây là format do chính NumPy sinh ra với cấu trúc dict biết trước,
-//! không phải Python literal tùy ý.
+//! The header reader **doesn't** use a full Python parser — it just picks
+//! out the 3 fixed keys (`descr`, `fortran_order`, `shape`) via manual
+//! string scanning, since this format is produced by NumPy itself with a
+//! known dict shape, not an arbitrary Python literal.
 
 use std::fmt;
 use std::fs::File;
@@ -28,8 +28,9 @@ use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 
 const MAGIC: &[u8; 6] = b"\x93NUMPY";
-/// NumPy căn header theo bội số 64 byte kể từ đầu file (tốt cho SIMD/mmap
-/// đọc dữ liệu sau header) — hằng số này gọi là `ARRAY_ALIGN` trong C core.
+/// NumPy aligns the header to a multiple of 64 bytes from the start of the
+/// file (good for SIMD/mmap reads of the data that follows) — this
+/// constant is called `ARRAY_ALIGN` in the C core.
 const ALIGN: usize = 64;
 
 #[derive(Debug)]
@@ -78,30 +79,30 @@ impl From<ShapeError> for NpyError {
     }
 }
 
-/// Ghi `arr` ra `path` theo định dạng `.npy` v1.0.
+/// Write `arr` to `path` in `.npy` v1.0 format.
 pub fn save_npy<P: AsRef<Path>>(path: P, arr: &NdArray) -> Result<(), NpyError> {
     let file = File::create(path)?;
     write_npy(BufWriter::new(file), arr)
 }
 
-/// Đọc một mảng `.npy` từ `path`.
+/// Read an array from a `.npy` file at `path`.
 pub fn load_npy<P: AsRef<Path>>(path: P) -> Result<NdArray, NpyError> {
     let file = File::open(path)?;
     read_npy(BufReader::new(file))
 }
 
-/// Ghi `arr` theo định dạng `.npy` v1.0 vào một `Write` bất kỳ (file, buffer
-/// trong bộ nhớ, ...) — tách khỏi `save_npy` để test có thể ghi vào
-/// `Vec<u8>` và so sánh byte-for-byte mà không cần chạm filesystem.
+/// Write `arr` in `.npy` v1.0 format to any `Write` (file, in-memory
+/// buffer, ...) — kept separate from `save_npy` so tests can write to a
+/// `Vec<u8>` and compare byte-for-byte without touching the filesystem.
 pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
     let header_dict = format!(
         "{{'descr': '<f8', 'fortran_order': False, 'shape': {}, }}",
         format_shape_tuple(arr.shape())
     );
 
-    // Prefix cho version 1.0: magic(6) + version(2) + header_len field(2) = 10.
+    // Prefix for version 1.0: magic(6) + version(2) + header_len field(2) = 10.
     const PREFIX_LEN: usize = 10;
-    let unpadded_len = header_dict.len() + 1; // +1 cho '\n' bắt buộc ở cuối
+    let unpadded_len = header_dict.len() + 1; // +1 for the mandatory trailing '\n'
     let total_before_pad = PREFIX_LEN + unpadded_len;
     let pad = (ALIGN - total_before_pad % ALIGN) % ALIGN;
 
@@ -112,7 +113,7 @@ pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
     let header_len: u16 = header
         .len()
         .try_into()
-        .expect("header quá dài cho field u16 (shape có quá nhiều chiều?)");
+        .expect("header too long for the u16 field (shape with too many dimensions?)");
 
     w.write_all(MAGIC)?;
     w.write_all(&[1, 0])?; // version 1.0
@@ -125,7 +126,7 @@ pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
     Ok(())
 }
 
-/// Đọc một mảng `.npy` từ một `Read` bất kỳ.
+/// Read an array from any `Read`.
 pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
     let mut magic = [0u8; 6];
     r.read_exact(&mut magic)?;
@@ -157,10 +158,10 @@ pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
 
     let descr = extract_str_field(&header, "descr")?;
     if descr != "<f8" && descr != "=f8" {
-        // '=f8' nghĩa là "native byte order" — trên hầu hết máy (x86/ARM
-        // hiện đại) native là little-endian nên coi như tương đương '<f8'.
-        // '>f8' (big-endian) cố tình chưa hỗ trợ: cần byte-swap mà bước
-        // này chưa làm.
+        // '=f8' means "native byte order" — on most machines (modern
+        // x86/ARM) native is little-endian, so we treat it as equivalent
+        // to '<f8'. '>f8' (big-endian) is deliberately unsupported: it
+        // would need byte-swapping, which this step doesn't do.
         return Err(NpyError::UnsupportedDtype(descr));
     }
 
@@ -181,9 +182,10 @@ pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
     Ok(NdArray::from_vec(data, &shape)?)
 }
 
-/// In shape thành literal tuple Python đúng 3 quy ước NumPy dùng:
-/// `()` cho 0-D, `(N,)` cho 1-D (dấu phẩy bắt buộc để Python không hiểu
-/// nhầm thành số trong ngoặc đơn), `(a, b, ...)` cho từ 2-D trở lên.
+/// Print a shape as a Python tuple literal, matching NumPy's own 3
+/// conventions exactly: `()` for 0-D, `(N,)` for 1-D (the trailing comma
+/// is mandatory so Python doesn't mistake it for a number in parens),
+/// `(a, b, ...)` for 2-D and up.
 fn format_shape_tuple(shape: &[usize]) -> String {
     match shape.len() {
         0 => "()".to_string(),
@@ -195,9 +197,9 @@ fn format_shape_tuple(shape: &[usize]) -> String {
     }
 }
 
-/// Tìm `'key': <phần sau dấu ':'>` trong header, trả về phần chuỗi còn lại
-/// sau dấu hai chấm (đã trim khoảng trắng đầu) để các hàm `extract_*_field`
-/// tự parse tiếp theo kiểu dữ liệu mong đợi.
+/// Find `'key': <rest after the ':'>` in the header, returning the
+/// remaining string after the colon (leading whitespace trimmed) so each
+/// `extract_*_field` function can parse the expected value type from there.
 fn value_after_key<'a>(header: &'a str, key: &str) -> Result<&'a str, NpyError> {
     let needle = format!("'{key}'");
     let key_pos = header
@@ -302,7 +304,7 @@ mod tests {
         assert!(matches!(err, NpyError::BadMagic(_)));
     }
 
-    // --- Cross-check với file .npy do NumPy thật sinh ra (scripts/gen_fixtures.py) ---
+    // --- Cross-check against .npy files produced by real NumPy (scripts/gen_fixtures.py) ---
 
     fn fixture(name: &str) -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
@@ -328,7 +330,7 @@ mod tests {
     fn reads_real_numpy_cube_and_scalar() {
         let cube = load_npy(fixture("cube_f64.npy")).unwrap();
         assert_eq!(cube.shape(), &[2, 3, 4]);
-        assert_eq!(cube.get(&[1, 2, 3]), Some(23.0)); // phần tử cuối np.arange(24)
+        assert_eq!(cube.get(&[1, 2, 3]), Some(23.0)); // last element of np.arange(24)
 
         let scalar = load_npy(fixture("scalar_f64.npy")).unwrap();
         assert_eq!(scalar.shape(), &[] as &[usize]);
@@ -337,9 +339,9 @@ mod tests {
 
     #[test]
     fn writer_output_is_byte_identical_to_real_numpy() {
-        // Cùng dữ liệu np.arange(12, dtype='<f8').reshape(3, 4) đã dùng để
-        // sinh fixture — nếu bytes khớp 100%, bộ ghi tương thích thật sự
-        // với NumPy, không chỉ "đọc lại được chính nó".
+        // Same data as np.arange(12, dtype='<f8').reshape(3, 4) used to
+        // generate the fixture — if the bytes match 100%, the writer is
+        // genuinely compatible with NumPy, not just "reads back its own output".
         let arr = NdArray::from_vec((0..12).map(|i| i as f64).collect(), &[3, 4]).unwrap();
         let mut ours = Vec::new();
         write_npy(&mut ours, &arr).unwrap();
