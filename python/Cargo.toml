@@ -2,7 +2,7 @@
 name = "rustnumpy-python"
 version = "0.1.0"
 edition = "2021"
-description = "PyO3 bindings for rustnumpy — step 6 of NumPy.md's plan."
+description = "Python package `rustnumpy`: a standalone NumPy-style array library built on the rustnumpy core."
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -16,4 +16,4 @@ crate-type = ["cdylib", "rlib"]
 rustnumpy = { path = ".." }
 num-complex = "0.4"
 num-traits = "0.2"
-pyo3 = { version = "0.26", features = ["extension-module"] }
+pyo3 = { version = "0.26", features = ["extension-module", "multiple-pymethods"] }

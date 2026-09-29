@@ -176,6 +176,41 @@ pub fn sign<T: Arith>(a: &ArrayView<T>) -> NdArray<T> {
     map(a, T::sign_)
 }
 
+pub trait Divide: Copy {
+    fn divide(self, rhs: Self) -> Self;
+}
+
+macro_rules! divide_float {
+    ($($t:ty),*) => {$(
+        impl Divide for $t {
+            fn divide(self, rhs: Self) -> Self { self / rhs }
+        }
+        impl Divide for num_complex::Complex<$t> {
+            fn divide(self, b: Self) -> Self {
+                let (ar, ai, br, bi) = (self.re, self.im, b.re, b.im);
+                let (abs_br, abs_bi) = (br.abs(), bi.abs());
+                if abs_br >= abs_bi {
+                    if abs_br == 0.0 && abs_bi == 0.0 {
+                        return num_complex::Complex::new(ar / abs_br, ai / abs_bi);
+                    }
+                    let rat = bi / br;
+                    let scl = 1.0 / (br + bi * rat);
+                    num_complex::Complex::new((ar + ai * rat) * scl, (ai - ar * rat) * scl)
+                } else {
+                    let rat = br / bi;
+                    let scl = 1.0 / (bi + br * rat);
+                    num_complex::Complex::new((ar * rat + ai) * scl, (ai * rat - ar) * scl)
+                }
+            }
+        }
+    )*};
+}
+divide_float!(f32, f64);
+
+pub fn divide<T: Divide>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+    zip_with(a, b, T::divide)
+}
+
 pub fn arctan2<T: Float>(y: &ArrayView<T>, x: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
     zip_with(y, x, |a, b| a.atan2(b))
 }
@@ -361,6 +396,19 @@ mod tests {
         assert_eq!(power(&arr(vec![0i16, 5]).view(), &arr(vec![0i16, 3]).view()).unwrap().as_slice(), &[1, 125]);
         assert_eq!(power(&arr(vec![0i32, 2]).view(), &arr(vec![0i32, 31]).view()).unwrap().as_slice(), &[1, i32::MIN]);
         assert_eq!(power(&arr(vec![0u8, 2]).view(), &arr(vec![0u8, 9]).view()).unwrap().as_slice(), &[1, 0]);
+    }
+
+    #[test]
+    fn complex_division_uses_smiths_algorithm_like_numpy() {
+        use num_complex::Complex;
+        let a = arr(vec![Complex::new(1.0, 1.0), Complex::new(1.0, 0.0), Complex::new(0.0, 0.0), Complex::new(f64::INFINITY, 1.0)]);
+        let b = arr(vec![Complex::new(1.0, -1.0), Complex::new(0.0, 0.0), Complex::new(0.0, 0.0), Complex::new(2.0, 0.0)]);
+        let r = divide(&a.view(), &b.view()).unwrap();
+        assert_eq!(r.as_slice()[0], Complex::new(0.0, 1.0));
+        assert!(r.as_slice()[1].re == f64::INFINITY && r.as_slice()[1].im.is_nan());
+        assert!(r.as_slice()[2].re.is_nan() && r.as_slice()[2].im.is_nan());
+        assert_eq!(r.as_slice()[3].re, f64::INFINITY);
+        assert_eq!(divide(&arr(vec![1.0f32]).view(), &arr(vec![4.0]).view()).unwrap().as_slice(), &[0.25f32]);
     }
 
     #[test]

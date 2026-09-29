@@ -20,6 +20,24 @@ impl<'a, T> ArrayView<'a, T> {
         Self { data, shape, strides, offset }
     }
 
+    pub fn from_raw_parts(data: &'a [T], shape: Vec<usize>, strides: Vec<isize>, offset: usize) -> Result<Self, ShapeError> {
+        if shape.len() != strides.len() {
+            return Err(ShapeError::IndexRankMismatch { expected: shape.len(), got: strides.len() });
+        }
+        if shape.contains(&0) {
+            return Ok(Self { data, shape, strides, offset });
+        }
+        let (mut lo, mut hi) = (offset as isize, offset as isize);
+        for (&n, &s) in shape.iter().zip(&strides) {
+            let reach = (n as isize - 1) * s;
+            if reach < 0 { lo += reach } else { hi += reach }
+        }
+        if lo < 0 || hi as usize >= data.len() {
+            return Err(ShapeError::InvalidSlice { shape: shape.clone(), ranges: vec![(lo.max(0) as usize, hi.max(0) as usize)] });
+        }
+        Ok(Self { data, shape, strides, offset })
+    }
+
     pub fn shape(&self) -> &[usize] {
         &self.shape
     }
@@ -72,6 +90,10 @@ impl<'a, T> ArrayView<'a, T> {
 
     pub(crate) fn relayout(&self, shape: Vec<usize>, strides: Vec<isize>, offset: isize) -> ArrayView<'a, T> {
         ArrayView { data: self.data, shape, strides, offset: offset as usize }
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
     }
 
     pub(crate) fn raw(&self) -> (&'a [T], usize) {
@@ -387,6 +409,19 @@ mod tests {
         assert_eq!(scalar.view().iter().collect::<Vec<_>>(), vec![7.0]);
         let empty: NdArray = NdArray::zeros(&[2, 0]);
         assert_eq!(empty.view().iter().count(), 0);
+    }
+
+    #[test]
+    fn from_raw_parts_validates_that_every_reachable_element_is_in_bounds() {
+        let data: Vec<i32> = (0..12).collect();
+        let v = ArrayView::from_raw_parts(&data, vec![3, 2], vec![4, 2], 1).unwrap();
+        assert_eq!(v.iter().collect::<Vec<_>>(), vec![1, 3, 5, 7, 9, 11]);
+        let neg = ArrayView::from_raw_parts(&data, vec![4], vec![-3], 9).unwrap();
+        assert_eq!(neg.iter().collect::<Vec<_>>(), vec![9, 6, 3, 0]);
+        assert!(ArrayView::from_raw_parts(&data, vec![4], vec![4], 0).is_err());
+        assert!(ArrayView::from_raw_parts(&data, vec![4], vec![-3], 8).is_err());
+        assert!(ArrayView::from_raw_parts(&data, vec![2], vec![1, 1], 0).is_err());
+        assert!(ArrayView::from_raw_parts(&data, vec![0, 5], vec![100, 1], 999).is_ok());
     }
 
     #[test]

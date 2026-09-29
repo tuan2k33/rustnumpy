@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use rustnumpy::linalg::{self, MatNormOrd, VecNormOrd};
 use rustnumpy::{Complex64, NdArray};
 
-pyo3::create_exception!(rustnumpy_python, LinAlgError, PyValueError);
+pyo3::create_exception!(rustnumpy, LinAlgError, PyValueError);
 
 fn la_err(e: linalg::LinalgError) -> PyErr {
     if matches!(e, linalg::LinalgError::Empty) {
@@ -261,7 +261,7 @@ pub fn norm(py: Python<'_>, x: &Bound<'_, PyAny>, ord: Option<&Bound<'_, PyAny>>
 
 #[pyfunction]
 pub fn matrix_power(py: Python<'_>, a: &Bound<'_, PyAny>, n: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let raw = Arr::from_numpy(py, a)?;
+    let raw = Arr::from_object(py, a)?;
     if !matches!(raw, Arr::F32(_) | Arr::F64(_)) {
         return Err(unsupported("matrix_power is bound for float32/float64 matrices only"));
     }

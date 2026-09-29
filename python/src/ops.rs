@@ -33,30 +33,27 @@ impl Operand {
         if obj.is_exact_instance_of::<PyFloat>() {
             return Ok(Operand::WeakFloat(obj.extract::<f64>()?));
         }
-        Ok(Operand::Arr(Arr::from_numpy(py, obj)?))
+        Ok(Operand::Arr(Arr::from_object(py, obj)?))
     }
 
-    pub fn into_arr(self, py: Python<'_>) -> PyResult<Arr> {
+    pub fn into_arr(self, _py: Python<'_>) -> PyResult<Arr> {
         match self {
             Operand::Arr(a) => Ok(a),
-            Operand::WeakInt(v) => {
-                let np = py.import("numpy")?;
-                Arr::from_numpy(py, &np.call_method1("asarray", (v,))?)
-            }
-            Operand::WeakFloat(v) => {
-                let np = py.import("numpy")?;
-                Arr::from_numpy(py, &np.call_method1("asarray", (v,))?)
-            }
+            Operand::WeakInt(v) => Ok(Arr::scalar(v)),
+            Operand::WeakFloat(v) => Ok(Arr::scalar(v)),
         }
     }
 }
 
 pub fn out(py: Python<'_>, a: Arr) -> PyResult<Py<PyAny>> {
-    Ok(a.to_numpy(py, true)?.unbind())
+    if let Some(v) = a.to_py_scalar(py)? {
+        return Ok(v);
+    }
+    out_array(py, a)
 }
 
 pub fn out_array(py: Python<'_>, a: Arr) -> PyResult<Py<PyAny>> {
-    Ok(a.to_numpy(py, false)?.unbind())
+    crate::pyarray::wrap(py, crate::pyarray::PyArray::from_arr(a))
 }
 
 pub trait BSub: Copy {
@@ -150,16 +147,16 @@ arith_fn!(
 );
 
 #[pyfunction]
-pub fn astype_(py: Python<'_>, a: &Bound<'_, PyAny>, dtype: &str) -> PyResult<Py<PyAny>> {
-    let arr = Arr::from_numpy(py, a)?;
-    out_array(py, astype(&arr, dtype)?)
+pub fn astype_(py: Python<'_>, a: &Bound<'_, PyAny>, dtype: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let arr = Arr::from_object(py, a)?;
+    out_array(py, astype(&arr, crate::dtypes::parse_dtype(dtype)?)?)
 }
 
 macro_rules! unary_float {
     ($($name:ident => $f:path),* $(,)?) => {$(
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = Arr::from_numpy(py, a)?;
+            let arr = Arr::from_object(py, a)?;
             let result = match &arr {
                 Arr::F32(x) => Arr::from($f(&x.view())),
                 Arr::F64(x) => Arr::from($f(&x.view())),
@@ -185,7 +182,7 @@ macro_rules! unary_arith {
     ($($name:ident => $f:path),* $(,)?) => {$(
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = Arr::from_numpy(py, a)?;
+            let arr = Arr::from_object(py, a)?;
             let result = match &arr {
                 Arr::I8(x) => Arr::from($f(&x.view())),
                 Arr::I16(x) => Arr::from($f(&x.view())),
@@ -204,7 +201,42 @@ macro_rules! unary_arith {
     )*};
 }
 
-unary_arith! { absolute => mathfunc::abs, negative => mathfunc::negative, square => mathfunc::square, sign => mathfunc::sign }
+unary_arith! { sign => mathfunc::sign }
+
+macro_rules! unary_arith_complex {
+    ($name:ident, $real:path, $c32:expr, $c64:expr) => {
+        #[pyfunction]
+        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+            let arr = Arr::from_object(py, a)?;
+            let result = match &arr {
+                Arr::I8(x) => Arr::from($real(&x.view())),
+                Arr::I16(x) => Arr::from($real(&x.view())),
+                Arr::I32(x) => Arr::from($real(&x.view())),
+                Arr::I64(x) => Arr::from($real(&x.view())),
+                Arr::U8(x) => Arr::from($real(&x.view())),
+                Arr::U16(x) => Arr::from($real(&x.view())),
+                Arr::U32(x) => Arr::from($real(&x.view())),
+                Arr::U64(x) => Arr::from($real(&x.view())),
+                Arr::F32(x) => Arr::from($real(&x.view())),
+                Arr::F64(x) => Arr::from($real(&x.view())),
+                Arr::C64(x) => ($c32)(x),
+                Arr::C128(x) => ($c64)(x),
+                Arr::Bool(_) => return Err(unsupported("boolean input is not bound for this function")),
+            };
+            out(py, result)
+        }
+    };
+}
+
+unary_arith_complex!(negative, mathfunc::negative,
+    |x: &NdArray<C32>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| -c)),
+    |x: &NdArray<C64>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| -c)));
+unary_arith_complex!(square, mathfunc::square,
+    |x: &NdArray<C32>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c * c)),
+    |x: &NdArray<C64>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c * c)));
+unary_arith_complex!(absolute, mathfunc::abs,
+    |x: &NdArray<C32>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c.norm())),
+    |x: &NdArray<C64>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c.norm())));
 
 fn int_range(dtype: &str) -> Option<(i128, i128)> {
     Some(match dtype {
@@ -221,9 +253,7 @@ fn int_range(dtype: &str) -> Option<(i128, i128)> {
 }
 
 fn weak_scalar_like(py: Python<'_>, target: &str, value: &Bound<'_, PyAny>) -> PyResult<Arr> {
-    let np = py.import("numpy")?;
-    let scalar = Arr::from_numpy(py, &np.call_method1("asarray", (value,))?)?;
-    astype(&scalar, target)
+    astype(&Arr::from_object(py, value)?, target)
 }
 
 pub fn resolve_binary(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(Arr, Arr)> {
@@ -335,7 +365,31 @@ binary_float_only! {
     fmod => mathfunc::fmod;
 }
 
+#[pyfunction]
+pub fn real(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let arr = Arr::from_object(py, a)?;
+    let result = match &arr {
+        Arr::C64(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.re).collect(), x.shape()).map_err(shape_err)?),
+        Arr::C128(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.re).collect(), x.shape()).map_err(shape_err)?),
+        _ => return crate::pyarray::wrap(py, crate::pyarray::as_array(py, a)?),
+    };
+    out_array(py, result)
+}
+
+#[pyfunction]
+pub fn imag(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let arr = Arr::from_object(py, a)?;
+    let result = match &arr {
+        Arr::C64(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.im).collect(), x.shape()).map_err(shape_err)?),
+        Arr::C128(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.im).collect(), x.shape()).map_err(shape_err)?),
+        other => astype(&Arr::from(NdArray::<f64>::zeros(&other.shape())), other.dtype_name())?,
+    };
+    out_array(py, result)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(real, m)?)?;
+    m.add_function(wrap_pyfunction!(imag, m)?)?;
     macro_rules! reg {
         ($($f:ident),* $(,)?) => {$( m.add_function(wrap_pyfunction!($f, m)?)?; )*};
     }

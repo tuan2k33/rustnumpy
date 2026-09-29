@@ -21,7 +21,7 @@ Two facts that shape everything else in this repo:
   1–17: container, views, dtype/casting, ufuncs, allocator, PyO3 binding,
   indexing, reductions, `lib`-utilities, `linalg`, `fft`,
   `random`, `polynomial`, the Array API audit, and the free-threading +
-  packaging audit). Steps 26–28 (structured/datetime dtypes, StringDType,
+  packaging audit). Steps 27–29 (structured/datetime dtypes, StringDType,
   masked arrays) exist in `NumPy.md`'s plan and in git history, but their
   source files aren't part of this snapshot. Step 18 (core array
   mechanics: reshape, sorting, selection, math ufuncs, matmul/einsum,
@@ -55,7 +55,7 @@ path-dependency on the root crate) specifically so the core crate's
 cd python
 cargo build                                    # builds as a plain rlib too, no Python needed
 python -m maturin develop --release            # build + install into the active venv
-python -m pytest tests -q                       # in-process differential tests against real NumPy
+python -m pytest tests -q                       # ~2100 tests; NumPy is only the oracle here, the package never imports it
 ```
 
 There is no top-level test runner beyond `cargo test --lib` — every
@@ -128,6 +128,19 @@ panicking — the PyO3 layer (`python/src/lib.rs`) maps each of these to a
 specific Python exception type (`ValueError`, `OSError`, ...) rather than
 letting a Rust panic cross the FFI boundary.
 
+### The Python package (`python/`, importable as `rustnumpy`)
+
+A standalone array library, not a NumPy accessory: it has its own `ndarray`
+(`Arc<Storage>` + signed element strides + offset, so slicing/transposing/
+reshaping are real views) and `dtype` types, and **never imports NumPy**
+(`python/tests/test_ndarray.py` proves it by blocking the import). Other
+libraries reach it only through the buffer protocol / `__array_interface__`.
+Function modules turn any input into the core's `Arr` (a 13-variant enum of
+`NdArray<T>`), call the core, and wrap the result; `pyarray.rs` holds the
+few `unsafe` blocks (each has a SAFETY comment, and the `Sync` claim assumes
+the GIL). NumPy is used only by the pytest suites and `numpy_suite/` as the
+oracle. Don't add `import numpy` to `python/src/`.
+
 ### Testing convention
 
 Tests are **tolerance-based, not exact-equality**, throughout — every
@@ -173,6 +186,9 @@ rustnumpy/
 ├── tests/fixtures/*.npy       .npy files written by real NumPy, read back by npy.rs's tests
 ├── scripts/gen_fixtures.py    regenerates tests/fixtures/ (needs a real NumPy install)
 └── python/                    separate PyO3 binding crate (own Cargo.toml, path-deps on root)
-    ├── src/lib.rs               PyNdArray + add/sub/mul/save_npy/load_npy exposed to Python
-    └── tests/                   pytest differential suite against a real NumPy install (~1900 cases)
+    ├── src/pyarray.rs           `rustnumpy.ndarray`: Arc<Storage> + shape/strides/offset, views, buffer protocol
+    ├── src/{pyops,pyindex}.rs   operators/methods and __getitem__/__setitem__ on that type
+    ├── src/{ops,arrayfns,shapefns,viewfns,logicfns,createfns,linalgfns,rngfns}.rs   the function surface
+    ├── numpy_suite/             rnp_shim: runs NumPy's own test files against the package (shadow/serve modes)
+    └── tests/                   pytest suite (~2100 cases) comparing against a real NumPy install
 ```

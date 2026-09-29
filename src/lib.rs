@@ -1,5 +1,6 @@
 pub mod allocator;
 pub mod contraction;
+pub mod creation;
 pub mod dispatch;
 pub mod dtype;
 pub mod error;
@@ -7,6 +8,7 @@ pub mod fft;
 pub mod gufunc;
 pub mod index;
 pub mod linalg;
+pub mod logic;
 pub mod manipulation;
 pub mod mathfunc;
 pub mod ndarray;

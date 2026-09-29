@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import rustnumpy_python as rnp
+import rustnumpy as rnp
 from conftest import DTYPES, FLOAT_DTYPES, INT_DTYPES, REAL_DTYPES, assert_same, sample
 
 AXES = [None, 0, 1, -1]

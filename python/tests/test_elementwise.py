@@ -3,7 +3,7 @@ import itertools
 import numpy as np
 import pytest
 
-import rustnumpy_python as rnp
+import rustnumpy as rnp
 from conftest import DTYPES, FLOAT_DTYPES, INT_DTYPES, REAL_DTYPES, assert_same, sample
 
 PAIRS = list(itertools.product(DTYPES, DTYPES))
@@ -59,15 +59,21 @@ def test_bool_array_with_python_scalars():
     assert_same(rnp.multiply(a, 2.5), np.multiply(a, 2.5))
 
 
-def test_scalar_results_are_numpy_scalars():
+def test_zero_dim_results_are_python_scalars_or_0d_arrays():
+    r = rnp.add(np.float64(1.5), np.float64(2.0))
+    assert type(r) is float and r == 3.5
+    r = rnp.add(np.int64(1), np.int64(2))
+    assert type(r) is int and r == 3
+    assert type(rnp.add(True, True)) is bool
     r = rnp.add(np.float32(1.5), np.float32(2.0))
-    assert isinstance(r, np.float32) and r == 3.5
-    assert isinstance(rnp.add(np.int8(1), np.int8(2)), np.int8)
+    assert isinstance(r, rnp.ndarray) and r.shape == () and r.dtype == rnp.float32 and float(r) == 3.5
+    r = rnp.add(np.int8(1), np.int8(2))
+    assert isinstance(r, rnp.ndarray) and r.dtype == "int8" and int(r) == 3
 
 
 def test_unsupported_dtypes_raise_not_implemented():
     for arr in (np.zeros(2, np.float16), np.array(["a"]), np.array([1], dtype=object)):
-        with pytest.raises(NotImplementedError):
+        with pytest.raises((NotImplementedError, TypeError)):
             rnp.add(arr, arr)
 
 

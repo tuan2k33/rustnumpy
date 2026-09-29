@@ -42,7 +42,7 @@ pub fn ints(obj: &Bound<'_, PyAny>) -> PyResult<Vec<isize>> {
     obj.extract::<Vec<isize>>()
 }
 
-fn arr_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
+pub fn arr_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
     Operand::parse(py, obj)?.into_arr(py)
 }
 
@@ -50,7 +50,7 @@ fn zero_d_axis(arr: &Arr, axis: Option<isize>) -> Option<isize> {
     if arr.ndim() == 0 && matches!(axis, Some(0) | Some(-1)) { None } else { axis }
 }
 
-fn accumulator_name(a: &Arr) -> &'static str {
+pub fn accumulator_name(a: &Arr) -> &'static str {
     match a {
         Arr::Bool(_) | Arr::I8(_) | Arr::I16(_) | Arr::I32(_) => "int64",
         Arr::U8(_) | Arr::U16(_) | Arr::U32(_) => "uint64",
@@ -58,7 +58,7 @@ fn accumulator_name(a: &Arr) -> &'static str {
     }
 }
 
-fn reduced_shape(shape: &[usize], axis: Option<usize>, keepdims: bool) -> Vec<usize> {
+pub fn reduced_shape(shape: &[usize], axis: Option<usize>, keepdims: bool) -> Vec<usize> {
     match axis {
         None if keepdims => vec![1; shape.len()],
         None => vec![],
@@ -75,7 +75,7 @@ fn reduced_shape(shape: &[usize], axis: Option<usize>, keepdims: bool) -> Vec<us
     }
 }
 
-fn scalar_nd<T>(v: T, shape: &[usize]) -> NdArray<T> {
+pub fn scalar_nd<T>(v: T, shape: &[usize]) -> NdArray<T> {
     NdArray::from_vec(vec![v], shape).expect("a single element fits any all-ones shape")
 }
 
@@ -83,7 +83,7 @@ fn flat<T: Copy>(a: &NdArray<T>) -> NdArray<T> {
     a.view().to_owned().into_shape(&[a.len() as isize]).expect("flattening always works")
 }
 
-fn fold_axis<T: Copy>(
+pub fn fold_axis<T: Copy>(
     a: &NdArray<T>,
     axis: Option<isize>,
     keepdims: bool,

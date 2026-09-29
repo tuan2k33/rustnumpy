@@ -29,7 +29,7 @@ fn check_axis(axis: usize, ndim: usize) -> Result<(), ShapeError> {
     }
 }
 
-pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
+pub fn concatenate<T: Copy>(arrays: &[&NdArray<T>], axis: usize) -> Result<NdArray<T>, ShapeError> {
     let first = arrays.first().ok_or(ShapeError::EmptyArrayList)?;
     check_axis(axis, first.ndim())?;
     for a in arrays {
@@ -53,7 +53,7 @@ pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeErr
         acc += a.shape()[axis];
     }
 
-    let data: Vec<f64> = IndexIter::new(&out_shape)
+    let data: Vec<T> = IndexIter::new(&out_shape)
         .map(|mut idx| {
             let target = idx[axis];
             let (array_index, offset) = offsets
@@ -69,11 +69,11 @@ pub fn concatenate(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeErr
     Ok(NdArray::from_vec(data, &out_shape).expect("data.len() == out_shape.iter().product() by construction"))
 }
 
-pub fn concat(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
+pub fn concat<T: Copy>(arrays: &[&NdArray<T>], axis: usize) -> Result<NdArray<T>, ShapeError> {
     concatenate(arrays, axis)
 }
 
-pub fn stack(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
+pub fn stack<T: Copy>(arrays: &[&NdArray<T>], axis: usize) -> Result<NdArray<T>, ShapeError> {
     let first = arrays.first().ok_or(ShapeError::EmptyArrayList)?;
     let out_ndim = first.ndim() + 1;
     check_axis(axis, out_ndim)?;
@@ -86,7 +86,7 @@ pub fn stack(arrays: &[&NdArray], axis: usize) -> Result<NdArray, ShapeError> {
     let mut out_shape = first.shape().to_vec();
     out_shape.insert(axis, arrays.len());
 
-    let data: Vec<f64> = IndexIter::new(&out_shape)
+    let data: Vec<T> = IndexIter::new(&out_shape)
         .map(|idx| {
             let array_index = idx[axis];
             let mut source_idx = idx.clone();
@@ -160,7 +160,7 @@ pub fn array_split_at<T: Copy>(arr: &NdArray<T>, indices: &[usize], axis: usize)
         .collect()
 }
 
-pub fn tile(arr: &NdArray, reps: &[usize]) -> NdArray {
+pub fn tile<T: Copy>(arr: &NdArray<T>, reps: &[usize]) -> NdArray<T> {
 
     let out_ndim = arr.ndim().max(reps.len());
     let mut padded_shape = vec![1usize; out_ndim - arr.ndim()];
@@ -170,7 +170,7 @@ pub fn tile(arr: &NdArray, reps: &[usize]) -> NdArray {
 
     let out_shape: Vec<usize> =
         padded_shape.iter().zip(padded_reps.iter()).map(|(&d, &r)| d * r).collect();
-    let data: Vec<f64> = IndexIter::new(&out_shape)
+    let data: Vec<T> = IndexIter::new(&out_shape)
         .map(|idx| {
 
             let padded_source_idx: Vec<usize> =

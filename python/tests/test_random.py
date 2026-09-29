@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import rustnumpy_python as rnp
+import rustnumpy as rnp
 
 SEEDS = [0, 1, 42, 12345, 2**32 + 5, 2**63]
 
@@ -43,14 +43,16 @@ def test_raw_stream_and_basic_draws_are_bit_identical(seed):
 @pytest.mark.parametrize("seed", SEEDS)
 def test_shuffle_permutation_choice_are_bit_identical(seed):
     g, n = rnp.default_rng(seed), np.random.default_rng(seed)
-    x, y = np.arange(20), np.arange(20)
+    x, y = rnp.arange(20), np.arange(20)
     g.shuffle(x)
     n.shuffle(y)
     np.testing.assert_array_equal(x, y)
-    m1, m2 = np.arange(24).reshape(6, 4), np.arange(24).reshape(6, 4)
+    m1, m2 = rnp.arange(24).reshape(6, 4), np.arange(24).reshape(6, 4)
     g.shuffle(m1)
     n.shuffle(m2)
     np.testing.assert_array_equal(m1, m2)
+    with pytest.raises(TypeError):
+        g.shuffle(np.arange(4))
     np.testing.assert_array_equal(g.permutation(11), n.permutation(11))
     np.testing.assert_array_equal(g.permutation(np.arange(12.0).reshape(4, 3)), n.permutation(np.arange(12.0).reshape(4, 3)))
     np.testing.assert_array_equal(g.choice(10, 5), n.choice(10, 5))
@@ -87,16 +89,16 @@ def test_spawned_generators_match_numpy(seed):
 
 def test_normal_family_is_statistically_correct_not_bit_identical():
     g = rnp.default_rng(5)
-    x = g.standard_normal(200_000)
+    x = np.asarray(g.standard_normal(200_000))
     assert abs(x.mean()) < 0.01 and abs(x.std() - 1) < 0.01
-    y = g.normal(3.0, 2.0, 200_000)
+    y = np.asarray(g.normal(3.0, 2.0, 200_000))
     assert abs(y.mean() - 3) < 0.03 and abs(y.std() - 2) < 0.03
-    assert abs(g.exponential(2.0, 200_000).mean() - 2.0) < 0.03
-    assert abs(g.gamma(3.0, 2.0, 200_000).mean() - 6.0) < 0.06
-    assert abs(g.beta(2.0, 3.0, 200_000).mean() - 0.4) < 0.01
-    assert abs(g.binomial(20, 0.3, 100_000).mean() - 6.0) < 0.05
-    assert abs(g.poisson(4.5, 100_000).mean() - 4.5) < 0.05
-    d = g.dirichlet([1.0, 2.0, 3.0], 50_000)
+    assert abs(np.asarray(g.exponential(2.0, 200_000)).mean() - 2.0) < 0.03
+    assert abs(np.asarray(g.gamma(3.0, 2.0, 200_000)).mean() - 6.0) < 0.06
+    assert abs(np.asarray(g.beta(2.0, 3.0, 200_000)).mean() - 0.4) < 0.01
+    assert abs(np.asarray(g.binomial(20, 0.3, 100_000)).mean() - 6.0) < 0.05
+    assert abs(np.asarray(g.poisson(4.5, 100_000)).mean() - 4.5) < 0.05
+    d = np.asarray(g.dirichlet([1.0, 2.0, 3.0], 50_000))
     np.testing.assert_allclose(d.mean(0), [1 / 6, 2 / 6, 3 / 6], atol=0.01)
     assert g.binomial(5, 0.5, 4).dtype == np.int64 and g.poisson(2.0, 3).dtype == np.int64
 
@@ -105,7 +107,7 @@ def test_normal_family_is_statistically_correct_not_bit_identical():
 def test_multivariate_normal_moments(method):
     g = rnp.default_rng(3)
     cov = np.array([[2.0, 1.0], [1.0, 2.0]])
-    x = g.multivariate_normal([1.0, -1.0], cov, 100_000, method=method)
+    x = np.asarray(g.multivariate_normal([1.0, -1.0], cov, 100_000, method=method))
     np.testing.assert_allclose(x.mean(0), [1, -1], atol=0.03)
     np.testing.assert_allclose(np.cov(x.T), cov, atol=0.06)
     with pytest.raises(ValueError):

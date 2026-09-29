@@ -91,87 +91,6 @@ fn to_list(py: Python<'_>, items: Vec<Arr>, scalar: bool) -> PyResult<Py<PyAny>>
     Ok(PyList::new(py, objs)?.into_any().unbind())
 }
 
-fn to_tuple(py: Python<'_>, items: Vec<Arr>) -> PyResult<Py<PyAny>> {
-    let objs: Vec<Py<PyAny>> = items.into_iter().map(|a| out_array(py, a)).collect::<PyResult<_>>()?;
-    Ok(pyo3::types::PyTuple::new(py, objs)?.into_any().unbind())
-}
-
-fn shape_arg(obj: &Bound<'_, PyAny>) -> PyResult<Vec<isize>> {
-    ints(obj)
-}
-
-#[pyfunction]
-pub fn reshape(py: Python<'_>, a: &Bound<'_, PyAny>, shape: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let dims = shape_arg(shape)?;
-    let result = with_arr!(&arr, x => Arr::from(x.view().to_owned().into_shape(&dims).map_err(shape_err)?));
-    out_array(py, result)
-}
-
-#[pyfunction]
-pub fn ravel(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let result = with_arr!(&arr, x => Arr::from(x.view().to_owned().into_shape(&[-1]).map_err(shape_err)?));
-    out_array(py, result)
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, axes=None))]
-pub fn transpose(py: Python<'_>, a: &Bound<'_, PyAny>, axes: Option<Vec<isize>>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let result = with_arr!(&arr, x => {
-        let v = match &axes {
-            None => x.view().transpose(),
-            Some(ax) => x.view().permute_dims(ax).map_err(shape_err)?,
-        };
-        Arr::from(v.to_owned())
-    });
-    out_array(py, result)
-}
-
-#[pyfunction]
-pub fn permute_dims(py: Python<'_>, a: &Bound<'_, PyAny>, axes: Vec<isize>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().permute_dims(&axes).map_err(shape_err)?.to_owned())))
-}
-
-#[pyfunction]
-pub fn swapaxes(py: Python<'_>, a: &Bound<'_, PyAny>, axis1: isize, axis2: isize) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let (a1, a2) = (norm_axis(axis1, arr.ndim())?, norm_axis(axis2, arr.ndim())?);
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().swap_axes(a1, a2).map_err(shape_err)?.to_owned())))
-}
-
-#[pyfunction]
-pub fn moveaxis(py: Python<'_>, a: &Bound<'_, PyAny>, source: &Bound<'_, PyAny>, destination: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let (s, d) = (ints(source)?, ints(destination)?);
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().moveaxis(&s, &d).map_err(shape_err)?.to_owned())))
-}
-
-#[pyfunction]
-pub fn expand_dims(py: Python<'_>, a: &Bound<'_, PyAny>, axis: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let axes = ints(axis)?;
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().expand_dims(&axes).map_err(shape_err)?.to_owned())))
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, axis=None))]
-pub fn squeeze(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let axes = axis.map(ints).transpose()?;
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().squeeze(axes.as_deref()).map_err(shape_err)?.to_owned())))
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, axis=None))]
-pub fn flip(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let axes = axis.map(ints).transpose()?;
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().flip(axes.as_deref()).map_err(shape_err)?.to_owned())))
-}
-
 #[pyfunction]
 #[pyo3(signature = (a, shift, axis=None))]
 pub fn roll(py: Python<'_>, a: &Bound<'_, PyAny>, shift: &Bound<'_, PyAny>, axis: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
@@ -190,51 +109,6 @@ pub fn repeat(py: Python<'_>, a: &Bound<'_, PyAny>, repeats: &Bound<'_, PyAny>, 
         .map(|r| usize::try_from(r).map_err(|_| PyValueError::new_err("negative dimensions are not allowed")))
         .collect::<PyResult<_>>()?;
     out_array(py, with_arr!(&arr, x => Arr::from(rustnumpy::repeat(&x.view(), &reps, axis).map_err(shape_err)?)))
-}
-
-#[pyfunction]
-pub fn broadcast_to(py: Python<'_>, a: &Bound<'_, PyAny>, shape: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let dims: Vec<usize> = ints(shape)?
-        .into_iter()
-        .map(|d| usize::try_from(d).map_err(|_| PyValueError::new_err("all elements of broadcast shape must be non-negative")))
-        .collect::<PyResult<_>>()?;
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().broadcast_to(&dims).map_err(shape_err)?.to_owned())))
-}
-
-#[pyfunction]
-#[pyo3(signature = (*args))]
-pub fn broadcast_arrays(py: Python<'_>, args: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Py<PyAny>> {
-    let arrs: Vec<Arr> = args.iter().map(|o| arr_of(py, &o)).collect::<PyResult<_>>()?;
-    let mut shape: Vec<usize> = Vec::new();
-    for a in &arrs {
-        shape = rustnumpy::shape::broadcast_shapes(&shape, &a.shape())
-            .ok_or_else(|| PyValueError::new_err("shape mismatch: objects cannot be broadcast to a single shape"))?;
-    }
-    let outs: Vec<Arr> = arrs
-        .iter()
-        .map(|a| Ok(with_arr!(a, x => Arr::from(x.view().broadcast_to(&shape).map_err(shape_err)?.to_owned()))))
-        .collect::<PyResult<_>>()?;
-    to_tuple(py, outs)
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, axis=0))]
-pub fn unstack(py: Python<'_>, a: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let outs: Vec<Arr> = with_arr!(&arr, x => rustnumpy::unstack(&x.view(), axis)
-        .map_err(shape_err)?
-        .into_iter()
-        .map(|v| Arr::from(v.to_owned()))
-        .collect());
-    to_tuple(py, outs)
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, offset=0))]
-pub fn diagonal(py: Python<'_>, a: &Bound<'_, PyAny>, offset: isize) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    out_array(py, with_arr!(&arr, x => Arr::from(x.view().diagonal(offset).map_err(shape_err)?.to_owned())))
 }
 
 fn acc_name(a: &Arr) -> &'static str {
@@ -366,11 +240,11 @@ pub fn select(py: Python<'_>, condlist: &Bound<'_, PyAny>, choicelist: &Bound<'_
     let (target, dflt) = match default_operand {
         Operand::WeakInt(v) => {
             let name = if choices[0].is_bool() { "int64" } else { choices[0].dtype_name() };
-            (name, astype(&arr_of(py, &py.import("numpy")?.call_method1("asarray", (v,))?)?, name)?)
+            (name, astype(&Arr::scalar(v), name)?)
         }
         Operand::WeakFloat(v) => {
             let name = if choices[0].is_bool() || choices[0].is_int() { "float64" } else { choices[0].dtype_name() };
-            (name, astype(&arr_of(py, &py.import("numpy")?.call_method1("asarray", (v,))?)?, name)?)
+            (name, astype(&Arr::scalar(v), name)?)
         }
         Operand::Arr(a) => {
             let mut both = choices.iter().map(|c| astype(c, c.dtype_name())).collect::<PyResult<Vec<_>>>()?;
@@ -490,8 +364,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ($($f:ident),* $(,)?) => {$( m.add_function(wrap_pyfunction!($f, m)?)?; )*};
     }
     reg!(
-        reshape, ravel, transpose, permute_dims, swapaxes, moveaxis, expand_dims, squeeze, flip, roll, repeat, broadcast_to,
-        broadcast_arrays, unstack, diagonal, trace, kron, cross, matmul, dot, outer, vecdot, tensordot, einsum, select, choose,
+        roll, repeat, trace, kron, cross, matmul, dot, outer, vecdot, tensordot, einsum, select, choose,
         array_split, unique_all, unique_counts, unique_inverse, unique_values
     );
     m.add("where", wrap_pyfunction!(where_, m)?)?;

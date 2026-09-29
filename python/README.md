@@ -1,7 +1,8 @@
 # rustnumpy-python
 
-Step 6 of `NumPy.md`'s plan: PyO3 bindings so a real Python interpreter
-can create and operate on the Rust `NdArray` from earlier steps.
+The Python package `rustnumpy` (steps 6, 25 and 26 of `NumPy.md`): PyO3 bindings
+that give a real Python interpreter a standalone NumPy-style array library
+built on the Rust core.
 
 Kept as its own crate so the core `rustnumpy` library's `cargo
 test`/`cargo clippy` never has to know PyO3 exists.
@@ -42,27 +43,32 @@ NumPy comparison until functionality is complete).
 
 ## What's exposed
 
-The extension is *NumPy in, NumPy out*: every function takes anything
-`numpy.asarray` accepts (or a plain Python `int`/`float`, which is a
-*weak* scalar as in NEP 50) and returns a real `numpy.ndarray` (a NumPy
-scalar for 0-d results). Arrays cross the boundary by value (bytes), so
-this layer exists to *test* the Rust core against NumPy, not to be fast.
+`import rustnumpy` gives a standalone NumPy-style array library. It has its
+own `ndarray` and `dtype` types and **does not import NumPy** (NumPy is only
+used by the test suites, as the oracle).
 
 ```python
-import numpy as np, rustnumpy_python as rnp
+import rustnumpy as rn
 
-rnp.add(np.int8([1, 2]), 3)             # int8, like NumPy
-rnp.matmul(a, b); rnp.einsum("ij,jk", a, b)
-rnp.inv(a); rnp.eig(a); rnp.svd(a, full_matrices=False)
-rnp.fft(x); rnp.rfftn(x)
-g = rnp.default_rng(42); g.random(3)    # bit-identical to np.random.default_rng(42)
+a = rn.array([[1, 2, 3], [4, 5, 6]])     # int64
+b = a.T                                  # a view: shares memory with `a`
+a[0, 0] = 99                             # ...so b[0, 0] is 99 too
+(a @ b) / 2 + 1                          # operators, NEP 50 promotion
+a[a > 4], a[::-1, ::2], a[:, [0, 2]]     # basic, boolean and fancy indexing
+rn.linspace(0, 1, 5), rn.arange(10).reshape(2, 5).sum(axis=0)
+rn.det(rn.eye(3) * 2)                    # linalg, fft, random: rn.fft(...), rn.default_rng(42)
 ```
 
-Unsupported dtypes (`float16`, `longdouble`, `object`, strings...) and
-unsupported options raise `rustnumpy_python.Unsupported`, a subclass of
-`NotImplementedError`, so callers (and the NumPy-suite shim) can fall back
-to NumPy. Linalg errors raise `rustnumpy_python.LinAlgError` (a
-`ValueError`).
+Interop is by duck typing only: `rustnumpy.ndarray` exports the buffer
+protocol and `__array_interface__`, so `numpy.asarray(a)`, `memoryview(a)`
+and anything else that speaks those protocols read it **without copying**,
+and `rn.array(x)` accepts numbers, nested lists/tuples, `array.array`,
+`memoryview`s, NumPy arrays (through the buffer protocol) and
+`__array_interface__` objects.
 
-Also kept from step 6: a small `NdArray` class (`f64`, `from_list`,
-`to_list`, ...) and `save_npy`/`load_npy`.
+Unsupported dtypes (`float16`, `object`, strings...) and options raise
+`rustnumpy.Unsupported` (a `NotImplementedError`); linalg errors raise
+`rustnumpy.LinAlgError` (a `ValueError`). `rn.save(path, a)` / `rn.load(path)`
+read and write `.npy` (float64 only). 0-d results are Python scalars for
+`bool`/`int64`/`float64`/`complex128` and 0-d arrays for other dtypes. See
+"Step 26" in `../NumPy.md` for the design and its limits.

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import rustnumpy_python as rnp
+import rustnumpy as rnp
 from conftest import assert_same
 
 

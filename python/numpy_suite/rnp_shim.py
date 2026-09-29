@@ -9,7 +9,7 @@ Two modes (env RNP_SHIM_MODE):
 * ``serve``: rustnumpy's answer is returned to the test, so a NumPy test
   that passes on plain NumPy but fails here points at a divergence.
 
-Calls rustnumpy cannot handle raise ``rustnumpy_python.Unsupported`` and
+Calls rustnumpy cannot handle raise ``rustnumpy.Unsupported`` and
 transparently fall back to NumPy (counted as ``fallback``).
 
 Usage:  pytest -p rnp_shim <numpy test files>   (with numpy_suite on PYTHONPATH)
@@ -22,7 +22,7 @@ import threading
 
 import numpy as np
 
-import rustnumpy_python as rnp
+import rustnumpy as rnp
 
 MODE = os.environ.get("RNP_SHIM_MODE", "shadow")
 UFUNC_PROXIES = os.environ.get("RNP_SHIM_UFUNCS", "1") == "1"
@@ -60,6 +60,20 @@ def _describe(x):
     if isinstance(x, (list, tuple)):
         return f"{type(x).__name__}[{len(x)}]"
     return type(x).__name__ + (f"({x!r})" if isinstance(x, PLAIN_SCALARS) else "")
+
+
+def _to_np(x):
+    """rustnumpy results back to NumPy objects (arrays share memory; Python scalars become NumPy scalars)."""
+    if isinstance(x, rnp.ndarray):
+        a = np.asarray(x)
+        return a[()] if a.ndim == 0 else a
+    if isinstance(x, (bool, int, float, complex)):
+        return np.asarray(x)[()]
+    if isinstance(x, tuple) and hasattr(x, "_fields"):
+        return type(x)(*[_to_np(i) for i in x])
+    if isinstance(x, (tuple, list)):
+        return type(x)(_to_np(i) for i in x)
+    return x
 
 
 def _short(x, limit=160):
@@ -164,7 +178,8 @@ def _make(name, orig, fn, max_pos=None, allowed_kw=(), comparator=None):
                 if MODE == "serve" and ours_err is not None:
                     raise ours_err
                 return theirs
-            reason = comparator(ours, theirs, args, kw) if comparator else _same(ours, theirs)
+            ours_np = _to_np(ours)
+            reason = comparator(ours_np, theirs, args, kw) if comparator else _same(ours_np, theirs)
         finally:
             _IN_SHIM.active = False
         if reason:
@@ -173,7 +188,7 @@ def _make(name, orig, fn, max_pos=None, allowed_kw=(), comparator=None):
         else:
             _record(name, "match")
         _record(name, "served")
-        return ours if MODE == "serve" else theirs
+        return _to_np(ours) if MODE == "serve" else theirs
 
     wrapper._rnp_wrapped = True
     return wrapper

@@ -1,10 +1,9 @@
 use num_complex::Complex;
 use pyo3::exceptions::{PyNotImplementedError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyTuple};
 use rustnumpy::NdArray;
 
-pyo3::create_exception!(rustnumpy_python, Unsupported, PyNotImplementedError);
+pyo3::create_exception!(rustnumpy, Unsupported, PyNotImplementedError);
 
 pub fn unsupported(what: impl Into<String>) -> PyErr {
     Unsupported::new_err(what.into())
@@ -227,29 +226,235 @@ impl Arr {
         })
     }
 
-    pub fn from_numpy(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
-        let np = py.import("numpy")?;
-        let arr = np.call_method1("asarray", (obj,))?;
-        let dtype = arr.getattr("dtype")?;
-        let name: String = dtype.getattr("name")?.extract()?;
-        let byteorder: String = dtype.getattr("byteorder")?.extract()?;
-        let native = if byteorder == ">" { arr.call_method1("astype", (dtype.call_method1("newbyteorder", ("=",))?,))? } else { arr };
-        let kwargs = pyo3::types::PyDict::new(py);
-        kwargs.set_item("order", "C")?;
-        let contiguous = np.call_method("asarray", (native,), Some(&kwargs))?;
-        let shape: Vec<usize> = contiguous.getattr("shape")?.extract()?;
-        let bytes: Vec<u8> = contiguous.call_method0("tobytes")?.extract()?;
-        Arr::from_bytes(&name, &shape, &bytes)
+    pub fn scalar<T>(v: T) -> Arr
+    where
+        Arr: From<NdArray<T>>,
+    {
+        Arr::from(NdArray::from_vec(vec![v], &[]).expect("a 0-d array holds one element"))
     }
 
-    pub fn to_numpy<'py>(&self, py: Python<'py>, scalar_if_0d: bool) -> PyResult<Bound<'py, PyAny>> {
-        let np = py.import("numpy")?;
-        let shape = PyTuple::new(py, self.shape())?;
-        let flat = np.call_method1("frombuffer", (PyBytes::new(py, &self.to_bytes()), self.dtype_name()))?;
-        let arr = flat.call_method1("reshape", (shape,))?.call_method0("copy")?;
-        if scalar_if_0d && self.ndim() == 0 {
-            return arr.get_item(PyTuple::empty(py));
+    pub fn to_native_scalar(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(match self {
+            Arr::Bool(a) => pyo3::types::PyBool::new(py, a.as_slice()[0]).to_owned().into_any().unbind(),
+            Arr::I8(a) => i64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::I16(a) => i64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::I32(a) => i64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::I64(a) => a.as_slice()[0].into_pyobject(py)?.into_any().unbind(),
+            Arr::U8(a) => u64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::U16(a) => u64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::U32(a) => u64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::U64(a) => a.as_slice()[0].into_pyobject(py)?.into_any().unbind(),
+            Arr::F32(a) => f64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
+            Arr::F64(a) => a.as_slice()[0].into_pyobject(py)?.into_any().unbind(),
+            Arr::C64(a) => {
+                let c = a.as_slice()[0];
+                pyo3::types::PyComplex::from_doubles(py, f64::from(c.re), f64::from(c.im)).into_any().unbind()
+            }
+            Arr::C128(a) => {
+                let c = a.as_slice()[0];
+                pyo3::types::PyComplex::from_doubles(py, c.re, c.im).into_any().unbind()
+            }
+        })
+    }
+
+    pub fn to_py_scalar(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        if self.ndim() != 0 {
+            return Ok(None);
         }
-        Ok(arr)
+        Ok(match self {
+            Arr::Bool(a) => Some(pyo3::types::PyBool::new(py, a.as_slice()[0]).to_owned().into_any().unbind()),
+            Arr::I64(a) => Some(a.as_slice()[0].into_pyobject(py)?.into_any().unbind()),
+            Arr::F64(a) => Some(a.as_slice()[0].into_pyobject(py)?.into_any().unbind()),
+            Arr::C128(a) => Some(pyo3::types::PyComplex::from_doubles(py, a.as_slice()[0].re, a.as_slice()[0].im).into_any().unbind()),
+            _ => None,
+        })
+    }
+
+    pub fn from_object(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
+        if let Ok(a) = obj.downcast::<crate::pyarray::PyArray>() {
+            return Ok(a.borrow().to_arr());
+        }
+        if obj.is_exact_instance_of::<pyo3::types::PyBool>() {
+            return Ok(Arr::scalar(obj.extract::<bool>()?));
+        }
+        if obj.is_exact_instance_of::<pyo3::types::PyInt>() {
+            return match obj.extract::<i64>() {
+                Ok(v) => Ok(Arr::scalar(v)),
+                Err(_) => match obj.extract::<u64>() {
+                    Ok(v) => Ok(Arr::scalar(v)),
+                    Err(_) => Err(unsupported("Python int outside the int64/uint64 range")),
+                },
+            };
+        }
+        if obj.is_exact_instance_of::<pyo3::types::PyFloat>() {
+            return Ok(Arr::scalar(obj.extract::<f64>()?));
+        }
+        if obj.is_exact_instance_of::<pyo3::types::PyComplex>() {
+            let c = obj.downcast::<pyo3::types::PyComplex>()?;
+            return Ok(Arr::scalar(Complex::new(c.real(), c.imag())));
+        }
+        if obj.is_instance_of::<pyo3::types::PyList>() || obj.is_instance_of::<pyo3::types::PyTuple>() {
+            return Arr::from_sequence(py, obj);
+        }
+        if obj.is_instance_of::<pyo3::types::PyString>() || obj.is_instance_of::<pyo3::types::PyBytes>() {
+            return Err(unsupported("string and bytes data are not supported"));
+        }
+        if let Some(a) = Arr::from_buffer(py, obj)? {
+            return Ok(a);
+        }
+        if let Some(a) = Arr::from_array_interface(obj)? {
+            return Ok(a);
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "cannot convert {} to an array (expected a number, nested sequence, or an object with the buffer protocol or __array_interface__)",
+            obj.get_type().name()?
+        )))
+    }
+
+    fn from_sequence(py: Python<'_>, seq: &Bound<'_, PyAny>) -> PyResult<Arr> {
+        let items: Vec<Bound<'_, PyAny>> = seq.try_iter()?.collect::<PyResult<_>>()?;
+        if items.is_empty() {
+            return Ok(Arr::F64(NdArray::from_vec(vec![], &[0]).map_err(value_err)?));
+        }
+        let plain = items.iter().all(|i| {
+            i.is_exact_instance_of::<pyo3::types::PyBool>()
+                || i.is_exact_instance_of::<pyo3::types::PyInt>()
+                || i.is_exact_instance_of::<pyo3::types::PyFloat>()
+                || i.is_exact_instance_of::<pyo3::types::PyComplex>()
+        });
+        if plain {
+            return Arr::from_plain_scalars(&items);
+        }
+        let parts: Vec<Arr> = items.iter().map(|i| Arr::from_object(py, i)).collect::<PyResult<_>>()?;
+        let first_shape = parts[0].shape();
+        if parts.iter().any(|p| p.shape() != first_shape) {
+            return Err(PyValueError::new_err("setting an array element with a sequence: the requested array has an inhomogeneous shape"));
+        }
+        let parts = crate::shapefns::common_all(&parts)?;
+        let dtype = parts[0].dtype_name();
+        let bytes: Vec<u8> = parts.iter().flat_map(|p| p.to_bytes()).collect();
+        let mut shape = vec![parts.len()];
+        shape.extend(first_shape);
+        Arr::from_bytes(dtype, &shape, &bytes)
+    }
+
+    fn from_plain_scalars(items: &[Bound<'_, PyAny>]) -> PyResult<Arr> {
+        let n = items.len();
+        let any_complex = items.iter().any(|i| i.is_exact_instance_of::<pyo3::types::PyComplex>());
+        let any_float = items.iter().any(|i| i.is_exact_instance_of::<pyo3::types::PyFloat>());
+        let any_int = items.iter().any(|i| i.is_exact_instance_of::<pyo3::types::PyInt>());
+        if any_complex {
+            let data: Vec<C64> = items
+                .iter()
+                .map(|i| match i.downcast::<pyo3::types::PyComplex>() {
+                    Ok(c) => Ok(Complex::new(c.real(), c.imag())),
+                    Err(_) => i.extract::<f64>().map(|v| Complex::new(v, 0.0)),
+                })
+                .collect::<PyResult<_>>()?;
+            return Ok(Arr::C128(NdArray::from_vec(data, &[n]).map_err(value_err)?));
+        }
+        if any_float {
+            let data: Vec<f64> = items.iter().map(|i| i.extract::<f64>()).collect::<PyResult<_>>()?;
+            return Ok(Arr::F64(NdArray::from_vec(data, &[n]).map_err(value_err)?));
+        }
+        if any_int {
+            let as_i64: Result<Vec<i64>, _> = items.iter().map(|i| i.extract::<i64>()).collect();
+            if let Ok(data) = as_i64 {
+                return Ok(Arr::I64(NdArray::from_vec(data, &[n]).map_err(value_err)?));
+            }
+            let as_u64: Result<Vec<u64>, _> = items.iter().map(|i| i.extract::<u64>()).collect();
+            return match as_u64 {
+                Ok(data) => Ok(Arr::U64(NdArray::from_vec(data, &[n]).map_err(value_err)?)),
+                Err(_) => Err(unsupported("Python integers outside the int64/uint64 range")),
+            };
+        }
+        let data: Vec<bool> = items.iter().map(|i| i.extract::<bool>()).collect::<PyResult<_>>()?;
+        Ok(Arr::Bool(NdArray::from_vec(data, &[n]).map_err(value_err)?))
+    }
+
+    fn from_buffer(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Option<Arr>> {
+        let mv = match py.import("builtins")?.call_method1("memoryview", (obj,)) {
+            Ok(m) => m,
+            Err(_) => return Ok(None),
+        };
+        let format: String = mv.getattr("format")?.extract()?;
+        let itemsize: usize = mv.getattr("itemsize")?.extract()?;
+        let shape: Vec<usize> = mv.getattr("shape")?.extract()?;
+        if format.starts_with(['>', '!']) {
+            return Err(unsupported("big-endian buffers are not supported"));
+        }
+        let code = format.trim_start_matches(['<', '=', '@']);
+        let dtype = match (code, itemsize) {
+            ("?", _) => "bool",
+            ("b", _) => "int8",
+            ("B", _) => "uint8",
+            ("h", _) => "int16",
+            ("H", _) => "uint16",
+            ("i", _) => "int32",
+            ("I", _) => "uint32",
+            ("q", _) | ("l", 8) => "int64",
+            ("Q", _) | ("L", 8) => "uint64",
+            ("l", 4) => "int32",
+            ("L", 4) => "uint32",
+            ("f", _) => "float32",
+            ("d", _) => "float64",
+            ("Zf", _) => "complex64",
+            ("Zd", _) => "complex128",
+            _ => return Err(unsupported(format!("buffer format {format:?} is not supported"))),
+        };
+        let bytes: Vec<u8> = mv.call_method0("tobytes")?.extract()?;
+        Ok(Some(Arr::from_bytes(dtype, &shape, &bytes)?))
+    }
+
+    fn from_array_interface(obj: &Bound<'_, PyAny>) -> PyResult<Option<Arr>> {
+        let Ok(iface) = obj.getattr("__array_interface__") else { return Ok(None) };
+        let typestr: String = iface.get_item("typestr")?.extract()?;
+        let shape: Vec<usize> = iface.get_item("shape")?.extract()?;
+        let dtype = match typestr.as_str() {
+            "|b1" => "bool",
+            "|i1" => "int8",
+            "<i2" => "int16",
+            "<i4" => "int32",
+            "<i8" => "int64",
+            "|u1" => "uint8",
+            "<u2" => "uint16",
+            "<u4" => "uint32",
+            "<u8" => "uint64",
+            "<f4" => "float32",
+            "<f8" => "float64",
+            "<c8" => "complex64",
+            "<c16" => "complex128",
+            other => return Err(unsupported(format!("__array_interface__ typestr {other:?} is not supported"))),
+        };
+        let itemsize = crate::dtypes::itemsize(dtype);
+        let data = iface.get_item("data")?;
+        let count: usize = shape.iter().product();
+        let strides: Option<Vec<isize>> = match iface.get_item("strides") {
+            Ok(s) if !s.is_none() => Some(s.extract()?),
+            _ => None,
+        };
+        let bytes: Vec<u8> = if let Ok((ptr, _ro)) = data.extract::<(usize, bool)>() {
+            let strides = strides.unwrap_or_else(|| {
+                let mut st = vec![0isize; shape.len()];
+                let mut acc = itemsize as isize;
+                for i in (0..shape.len()).rev() {
+                    st[i] = acc;
+                    acc *= shape[i] as isize;
+                }
+                st
+            });
+            let mut out = Vec::with_capacity(count * itemsize);
+            for idx in rustnumpy::shape::IndexIter::new(&shape) {
+                let off: isize = idx.iter().zip(&strides).map(|(&i, &s)| i as isize * s).sum();
+                // SAFETY: the producer of __array_interface__ promises `ptr` addresses a live buffer covering
+                // every element reachable through `shape` and `strides`; `obj` is kept alive by the caller.
+                let src = unsafe { std::slice::from_raw_parts((ptr as isize + off) as *const u8, itemsize) };
+                out.extend_from_slice(src);
+            }
+            out
+        } else {
+            data.extract::<Vec<u8>>()?
+        };
+        Ok(Some(Arr::from_bytes(dtype, &shape, &bytes)?))
     }
 }

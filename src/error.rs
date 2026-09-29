@@ -139,6 +139,8 @@ pub enum ShapeError {
     RepeatLengthMismatch { repeats: usize, len: usize },
 
     RollShiftAxisMismatch { shifts: usize, axes: usize },
+
+    InvalidArange,
 }
 
 impl fmt::Display for ShapeError {
@@ -239,6 +241,7 @@ impl fmt::Display for ShapeError {
             ShapeError::RollShiftAxisMismatch { shifts, axes } => {
                 write!(f, "'shift' and 'axis' should be scalars or 1D sequences of the same length ({shifts} vs {axes})")
             }
+            ShapeError::InvalidArange => write!(f, "arange needs finite start/stop and a non-zero finite step"),
             ShapeError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
             ShapeError::NegativeIntegerPower => {
                 write!(f, "integers to negative integer powers are not allowed")

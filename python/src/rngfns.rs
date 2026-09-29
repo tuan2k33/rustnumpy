@@ -167,16 +167,17 @@ impl PyGenerator {
         out_array(py, Arr::from(a))
     }
 
-    fn shuffle(&mut self, py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<()> {
-        let arr = Arr::from_numpy(py, x)?;
-        if arr.ndim() == 0 {
+    fn shuffle(&mut self, x: &Bound<'_, PyAny>) -> PyResult<()> {
+        let Ok(a) = x.downcast::<crate::pyarray::PyArray>() else {
+            return Err(pyo3::exceptions::PyTypeError::new_err("shuffle needs a rustnumpy.ndarray (it shuffles in place)"));
+        };
+        let this = a.borrow();
+        if this.shape.is_empty() {
             return Err(PyValueError::new_err("x must be an array"));
         }
-        let mut arr = arr;
-        crate::with_arr!(&mut arr, a => self.inner.shuffle_rows(a));
-        let result = arr.to_numpy(py, false)?;
-        x.call_method1("__setitem__", (py.Ellipsis(), result))?;
-        Ok(())
+        let mut arr = this.to_arr();
+        crate::with_arr!(&mut arr, m => self.inner.shuffle_rows(m));
+        this.write_positions(&this.flat_positions(), &arr)
     }
 
     fn permutation(&mut self, py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -184,7 +185,7 @@ impl PyGenerator {
             let p: Vec<i64> = self.inner.permutation(n).into_iter().map(|i| i as i64).collect();
             return out_array(py, Arr::from(NdArray::from_vec(p, &[n]).map_err(shape_err)?));
         }
-        let mut arr = Arr::from_numpy(py, x)?;
+        let mut arr = Arr::from_object(py, x)?;
         if arr.ndim() == 0 {
             return Err(PyValueError::new_err("x must be an integer or at least 1-dimensional"));
         }
@@ -199,7 +200,7 @@ impl PyGenerator {
         let (source, pop): (Option<Arr>, usize) = match a.extract::<usize>() {
             Ok(n) => (None, n),
             Err(_) => {
-                let arr = Arr::from_numpy(py, a)?;
+                let arr = Arr::from_object(py, a)?;
                 if arr.ndim() != 1 {
                     return Err(unsupported("choice over an N-D array is not bound"));
                 }
@@ -229,7 +230,7 @@ impl PyGenerator {
             "cholesky" => MvnMethod::Cholesky,
             other => return Err(PyValueError::new_err(format!("mode must be one of svd, eigh, cholesky, not {other}"))),
         };
-        let Arr::F64(c) = astype(&Arr::from_numpy(py, cov)?, "float64")? else { unreachable!("cast to float64") };
+        let Arr::F64(c) = astype(&Arr::from_object(py, cov)?, "float64")? else { unreachable!("cast to float64") };
         let n = size.unwrap_or(1);
         let x = self.inner.multivariate_normal(&mean, &c, n, m, check_valid != "ignore").map_err(rand_err)?;
         if size.is_none() {
