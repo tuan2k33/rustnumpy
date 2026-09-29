@@ -1,7 +1,11 @@
 use faer::linalg::solvers::{DenseSolveCore, Solve};
 use faer::{Mat, MatRef, Side};
 
+use crate::fft::Complex64;
 use crate::ndarray::NdArray;
+
+pub use crate::contraction::{cross, kron, matmul, outer, trace};
+pub use crate::gufunc::vecdot;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LinalgError {
@@ -21,6 +25,10 @@ pub enum LinalgError {
     EigenFailed,
 
     SvdFailed,
+
+    Empty,
+
+    RankMismatch { a_rows: usize, b_rows: usize },
 }
 
 impl std::fmt::Display for LinalgError {
@@ -36,6 +44,10 @@ impl std::fmt::Display for LinalgError {
             LinalgError::NotPositiveDefinite => write!(f, "matrix is not positive definite"),
             LinalgError::EigenFailed => write!(f, "eigenvalue decomposition failed to converge"),
             LinalgError::SvdFailed => write!(f, "singular value decomposition failed to converge"),
+            LinalgError::Empty => write!(f, "operation is not defined on empty arrays"),
+            LinalgError::RankMismatch { a_rows, b_rows } => {
+                write!(f, "incompatible dimensions: a has {a_rows} rows but b has {b_rows}")
+            }
         }
     }
 }
@@ -195,6 +207,214 @@ pub fn matrix_power(a: &NdArray, n: i32) -> Result<NdArray, LinalgError> {
     Ok(from_mat(result.as_ref()))
 }
 
+pub fn diagonal<'a, T>(a: &crate::view::ArrayView<'a, T>, offset: isize) -> Result<crate::view::ArrayView<'a, T>, LinalgError> {
+    a.diagonal(offset).map_err(|_| LinalgError::Not2D { shape: a.shape().to_vec() })
+}
+
+pub fn matrix_transpose<'a, T>(a: &crate::view::ArrayView<'a, T>) -> Result<crate::view::ArrayView<'a, T>, LinalgError> {
+    a.matrix_transpose().map_err(|_| LinalgError::Not2D { shape: a.shape().to_vec() })
+}
+
+pub fn slogdet(a: &NdArray) -> Result<(f64, f64), LinalgError> {
+    let m = to_square_mat(a)?;
+    let n = m.nrows();
+    let mut lu: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| m[(i, j)]).collect()).collect();
+    let mut sign = 1.0;
+    let mut logabs = 0.0;
+    for col in 0..n {
+        let pivot = (col..n).max_by(|&i, &j| lu[i][col].abs().total_cmp(&lu[j][col].abs())).unwrap();
+        if lu[pivot][col] == 0.0 {
+            return Ok((0.0, f64::NEG_INFINITY));
+        }
+        if pivot != col {
+            lu.swap(pivot, col);
+            sign = -sign;
+        }
+        let d = lu[col][col];
+        if d < 0.0 {
+            sign = -sign;
+        }
+        logabs += d.abs().ln();
+        for row in col + 1..n {
+            let f = lu[row][col] / d;
+            let pivot_row = lu[col].clone();
+            for (dst, &v) in lu[row][col..].iter_mut().zip(&pivot_row[col..]) {
+                *dst -= f * v;
+            }
+        }
+    }
+    Ok((sign, logabs))
+}
+
+pub fn svdvals(a: &NdArray) -> Result<Vec<f64>, LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
+    Ok(svd(a)?.1)
+}
+
+pub fn matrix_rank(a: &NdArray, tol: Option<f64>) -> Result<usize, LinalgError> {
+    if a.ndim() < 2 {
+        return Ok(usize::from(a.as_slice().iter().any(|&x| x != 0.0)));
+    }
+    let s = svdvals(a)?;
+    let smax = s.iter().copied().fold(0.0_f64, f64::max);
+    let tol = tol.unwrap_or_else(|| smax * a.shape()[0].max(a.shape()[1]) as f64 * f64::EPSILON);
+    Ok(s.iter().filter(|&&x| x > tol).count())
+}
+
+fn pinv_from_svd(u: &NdArray, s: &[f64], vt: &NdArray, cutoff: f64) -> NdArray {
+    let (m, n, k) = (u.shape()[0], vt.shape()[1], s.len());
+    let mut out = vec![0.0; n * m];
+    for (r, &sv) in s.iter().enumerate().take(k) {
+        if sv > cutoff {
+            let inv = 1.0 / sv;
+            for i in 0..n {
+                let v = vt.as_slice()[r * n + i] * inv;
+                for j in 0..m {
+                    out[i * m + j] += v * u.as_slice()[j * k + r];
+                }
+            }
+        }
+    }
+    NdArray::from_vec(out, &[n, m]).expect("pinv output is n x m by construction")
+}
+
+pub fn pinv(a: &NdArray, rcond: Option<f64>) -> Result<NdArray, LinalgError> {
+    if a.ndim() != 2 {
+        return Err(LinalgError::Not2D { shape: a.shape().to_vec() });
+    }
+    if a.is_empty() {
+        return Ok(NdArray::zeros(&[a.shape()[1], a.shape()[0]]));
+    }
+    let (u, s, vt) = svd(a)?;
+    let smax = s.iter().copied().fold(0.0_f64, f64::max);
+    Ok(pinv_from_svd(&u, &s, &vt, rcond.unwrap_or(1e-15) * smax))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lstsq {
+    pub x: NdArray,
+    pub residuals: Vec<f64>,
+    pub rank: usize,
+    pub singular_values: Vec<f64>,
+}
+
+pub fn lstsq(a: &NdArray, b: &NdArray, rcond: Option<f64>) -> Result<Lstsq, LinalgError> {
+    if a.ndim() != 2 {
+        return Err(LinalgError::Not2D { shape: a.shape().to_vec() });
+    }
+    let (m, n) = (a.shape()[0], a.shape()[1]);
+    if b.ndim() == 0 || b.ndim() > 2 {
+        return Err(LinalgError::Not2D { shape: b.shape().to_vec() });
+    }
+    if b.shape()[0] != m {
+        return Err(LinalgError::RankMismatch { a_rows: m, b_rows: b.shape()[0] });
+    }
+    let nrhs = if b.ndim() == 1 { 1 } else { b.shape()[1] };
+    let (u, s, vt) = svd(a)?;
+    let smax = s.iter().copied().fold(0.0_f64, f64::max);
+    let cutoff = rcond.unwrap_or(f64::EPSILON * m.max(n) as f64) * smax;
+    let rank = s.iter().filter(|&&x| x > cutoff).count();
+    let p = pinv_from_svd(&u, &s, &vt, cutoff);
+    let b2 = b.view().reshape(&[m as isize, nrhs as isize]).expect("b is contiguous").to_owned();
+    let x2 = matmul(&p.view(), &b2.view()).expect("pinv is n x m and b is m x nrhs");
+    let residuals = if rank == n && m > n {
+        let fit = matmul(&a.view(), &x2.view()).expect("a is m x n and x is n x nrhs");
+        (0..nrhs)
+            .map(|c| (0..m).map(|r| (b2.as_slice()[r * nrhs + c] - fit.as_slice()[r * nrhs + c]).powi(2)).sum())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let x = if b.ndim() == 1 { x2.into_shape(&[n as isize]).expect("n x 1 flattens") } else { x2 };
+    Ok(Lstsq { x, residuals, rank, singular_values: s })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatNormOrd {
+    Fro,
+    Nuc,
+    Inf,
+    NegInf,
+    One,
+    NegOne,
+    Two,
+    NegTwo,
+}
+
+pub fn matrix_norm_ord(a: &NdArray, ord: MatNormOrd) -> Result<f64, LinalgError> {
+    if a.ndim() != 2 {
+        return Err(LinalgError::Not2D { shape: a.shape().to_vec() });
+    }
+    let (rows, cols) = (a.shape()[0], a.shape()[1]);
+    let sums = |by_row: bool| -> Vec<f64> {
+        let (outer, inner) = if by_row { (rows, cols) } else { (cols, rows) };
+        (0..outer)
+            .map(|o| {
+                (0..inner)
+                    .map(|i| a.as_slice()[if by_row { o * cols + i } else { i * cols + o }].abs())
+                    .sum()
+            })
+            .collect()
+    };
+    let (max, min) = (|v: Vec<f64>| v.iter().copied().fold(f64::NEG_INFINITY, f64::max), |v: Vec<f64>| v.iter().copied().fold(f64::INFINITY, f64::min));
+    Ok(match ord {
+        MatNormOrd::Fro => frobenius_norm(a),
+        MatNormOrd::Inf => max(sums(true)),
+        MatNormOrd::NegInf => min(sums(true)),
+        MatNormOrd::One => max(sums(false)),
+        MatNormOrd::NegOne => min(sums(false)),
+        MatNormOrd::Two => svdvals(a)?[0],
+        MatNormOrd::NegTwo => *svdvals(a)?.last().unwrap(),
+        MatNormOrd::Nuc => svdvals(a)?.iter().sum(),
+    })
+}
+
+pub fn cond(a: &NdArray, ord: MatNormOrd) -> Result<f64, LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
+    match ord {
+        MatNormOrd::Two | MatNormOrd::NegTwo => {
+            let s = svdvals(a)?;
+            let (hi, lo) = (s[0], *s.last().unwrap());
+            Ok(if ord == MatNormOrd::Two { hi / lo } else { lo / hi })
+        }
+        _ => {
+            to_square_mat(a)?;
+            match inv(a) {
+                Ok(inverse) => Ok(matrix_norm_ord(a, ord)? * matrix_norm_ord(&inverse, ord)?),
+                Err(LinalgError::Singular) => Ok(f64::INFINITY),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+pub fn eig(a: &NdArray) -> Result<(Vec<Complex64>, NdArray<Complex64>), LinalgError> {
+    let m = to_square_mat(a)?;
+    let n = m.nrows();
+    let e = m.as_ref().eigen().map_err(|_| LinalgError::EigenFailed)?;
+    let values: Vec<Complex64> = (0..n).map(|i| Complex64::new(e.S()[i].re, e.S()[i].im)).collect();
+    let mut vectors = Vec::with_capacity(n * n);
+    let cols: Vec<Vec<Complex64>> = (0..n)
+        .map(|j| {
+            let col: Vec<Complex64> = (0..n).map(|i| Complex64::new(e.U()[(i, j)].re, e.U()[(i, j)].im)).collect();
+            let norm = col.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+            let big = col.iter().copied().max_by(|x, y| x.norm_sqr().total_cmp(&y.norm_sqr())).unwrap();
+            let phase = if big.norm() > 0.0 { big.conj() / big.norm() } else { Complex64::new(1.0, 0.0) };
+            col.into_iter().map(|c| c * phase / norm).collect()
+        })
+        .collect();
+    for i in 0..n {
+        for col in &cols {
+            vectors.push(col[i]);
+        }
+    }
+    Ok((values, NdArray::from_vec(vectors, &[n, n]).expect("n x n eigenvector matrix")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +551,210 @@ mod tests {
 
         let inverse = matrix_power(&a, -1).unwrap();
         assert_allclose_default(&inverse.view(), &inv(&a).unwrap().view()).unwrap();
+    }
+
+    fn close(got: f64, want: f64) {
+        assert!((got - want).abs() <= 1e-10 * (1.0 + want.abs()), "got {got}, want {want}");
+    }
+
+    fn close_all(got: &[f64], want: &[f64]) {
+        assert_eq!(got.len(), want.len(), "{got:?} vs {want:?}");
+        for (g, w) in got.iter().zip(want) {
+            close(*g, *w);
+        }
+    }
+
+    fn tridiag() -> NdArray {
+        arr(vec![2.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 4.0], &[3, 3])
+    }
+
+    fn rank_one() -> NdArray {
+        arr(vec![1.0, 2.0, 2.0, 4.0, 3.0, 6.0], &[3, 2])
+    }
+
+    #[test]
+    fn slogdet_matches_numpy_including_zero_and_permutation_sign() {
+        let (sign, logabs) = slogdet(&tridiag()).unwrap();
+        assert_eq!(sign, 1.0);
+        close(logabs, 2.8903717578961645);
+        let neg = arr(tridiag().as_slice().iter().map(|x| -x).collect(), &[3, 3]);
+        let (sign, logabs) = slogdet(&neg).unwrap();
+        assert_eq!(sign, -1.0);
+        close(logabs, 2.8903717578961645);
+        assert_eq!(slogdet(&NdArray::zeros(&[2, 2])).unwrap(), (0.0, f64::NEG_INFINITY));
+        assert_eq!(slogdet(&arr(vec![0.0, 1.0, 1.0, 0.0], &[2, 2])).unwrap(), (-1.0, 0.0));
+        assert!(matches!(slogdet(&NdArray::zeros(&[2, 3])), Err(LinalgError::NotSquare { .. })));
+    }
+
+    #[test]
+    fn matrix_rank_and_svdvals_match_numpy() {
+        assert_eq!(matrix_rank(&rank_one(), None).unwrap(), 1);
+        assert_eq!(matrix_rank(&tridiag(), None).unwrap(), 3);
+        assert_eq!(matrix_rank(&NdArray::zeros(&[3, 3]), None).unwrap(), 0);
+        assert_eq!(matrix_rank(&arr(vec![1.0, 2.0, 3.0], &[3]), None).unwrap(), 1);
+        assert_eq!(matrix_rank(&arr(vec![0.0, 0.0], &[2]), None).unwrap(), 0);
+        assert_eq!(matrix_rank(&rank_one(), Some(10.0)).unwrap(), 0);
+        let wide = arr((0..12).map(f64::from).collect(), &[3, 4]);
+        assert_eq!(matrix_rank(&wide, None).unwrap(), 2);
+        let s = svdvals(&rank_one()).unwrap();
+        close(s[0], 8.366600265340757);
+        assert!(s[1] < 1e-12);
+        close_all(&svdvals(&tridiag()).unwrap(), &[4.732050807568878, 3.0, 1.267949192431123]);
+        close_all(&svdvals(&wide).unwrap()[..2], &[22.40929816327044, 1.955340336014275]);
+        assert_eq!(svdvals(&NdArray::zeros(&[0, 3])), Err(LinalgError::Empty));
+    }
+
+    #[test]
+    fn pinv_matches_numpy_including_rcond_and_shapes() {
+        let p = pinv(&rank_one(), None).unwrap();
+        assert_eq!(p.shape(), &[2, 3]);
+        close_all(
+            p.as_slice(),
+            &[0.014285714285714289, 0.028571428571428564, 0.042857142857142844, 0.028571428571428584, 0.05714285714285714, 0.0857142857142857],
+        );
+        let t = tridiag();
+        let id = matmul(&pinv(&t, None).unwrap().view(), &t.view()).unwrap();
+        close_all(id.as_slice(), &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+        let ill = arr(vec![1.0, 0.0, 0.0, 1e-10], &[2, 2]);
+        close_all(pinv(&ill, Some(1e-5)).unwrap().as_slice(), &[1.0, 0.0, 0.0, 0.0]);
+        close_all(pinv(&ill, None).unwrap().as_slice(), &[1.0, 0.0, 0.0, 1e10]);
+        assert_eq!(pinv(&arr((0..12).map(f64::from).collect(), &[3, 4]), None).unwrap().shape(), &[4, 3]);
+        assert_eq!(pinv(&NdArray::zeros(&[2, 3]), None).unwrap(), NdArray::zeros(&[3, 2]));
+    }
+
+    #[test]
+    fn lstsq_matches_numpy_for_over_under_and_rank_deficient_systems() {
+        let x = arr(vec![1.0, 1.0, 1.0, 2.0, 1.0, 3.0], &[3, 2]);
+        let r = lstsq(&x, &arr(vec![1.0, 2.0, 2.0], &[3]), None).unwrap();
+        close_all(r.x.as_slice(), &[0.666666666666666, 0.5]);
+        close_all(&r.residuals, &[0.166666666666667]);
+        assert_eq!(r.rank, 2);
+        close_all(&r.singular_values, &[4.079143328941734, 0.600491217213163]);
+
+        let multi = lstsq(&x, &arr(vec![1.0, 0.0, 2.0, 1.0, 2.0, 5.0], &[3, 2]), None).unwrap();
+        assert_eq!(multi.x.shape(), &[2, 2]);
+        close_all(multi.x.as_slice(), &[0.6666666666666663, -3.0000000000000004, 0.5000000000000002, 2.5]);
+        close_all(&multi.residuals, &[0.166666666666667, 1.5]);
+
+        let square = lstsq(&arr(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]), &arr(vec![1.0, 2.0], &[2]), None).unwrap();
+        close_all(square.x.as_slice(), &[0.0, 0.5]);
+        assert!(square.residuals.is_empty());
+        assert_eq!(square.rank, 2);
+
+        let deficient = lstsq(&rank_one(), &arr(vec![1.0, 2.0, 3.0], &[3]), None).unwrap();
+        close_all(deficient.x.as_slice(), &[0.2, 0.4]);
+        assert_eq!(deficient.rank, 1);
+        assert!(deficient.residuals.is_empty());
+
+        let wide = lstsq(&arr(vec![1.0, 1.0, 1.0, 1.0, 2.0, 3.0], &[2, 3]), &arr(vec![1.0, 2.0], &[2]), None).unwrap();
+        close_all(wide.x.as_slice(), &[0.333333333333332, 0.333333333333333, 0.333333333333334]);
+        assert_eq!(wide.rank, 2);
+        assert!(wide.residuals.is_empty());
+
+        assert!(matches!(lstsq(&x, &arr(vec![1.0; 4], &[4]), None), Err(LinalgError::RankMismatch { .. })));
+    }
+
+    #[test]
+    fn cond_and_matrix_norm_ord_match_numpy() {
+        let t = tridiag();
+        close(cond(&t, MatNormOrd::Two).unwrap(), 3.732050807568877);
+        close(cond(&t, MatNormOrd::Fro).unwrap(), 5.066228051190222);
+        close(cond(&t, MatNormOrd::One).unwrap(), 4.444444444444445);
+        close(cond(&t, MatNormOrd::NegOne).unwrap(), 1.3333333333333335);
+        close(cond(&t, MatNormOrd::Inf).unwrap(), 4.444444444444445);
+        close(cond(&t, MatNormOrd::NegInf).unwrap(), 1.3333333333333335);
+        close(cond(&t, MatNormOrd::NegTwo).unwrap(), 0.2679491924311227);
+        let singular = arr(vec![1.0, 2.0, 2.0, 4.0], &[2, 2]);
+        assert!(cond(&singular, MatNormOrd::Two).unwrap() > 1e15);
+        assert_eq!(cond(&singular, MatNormOrd::Fro).unwrap(), f64::INFINITY);
+        assert_eq!(cond(&singular, MatNormOrd::One).unwrap(), f64::INFINITY);
+        assert_eq!(cond(&NdArray::zeros(&[0, 0]), MatNormOrd::Two), Err(LinalgError::Empty));
+
+        let m = arr(vec![1.0, -2.0, 3.0, 4.0, 5.0, -6.0, 0.0, 7.0, 8.0], &[3, 3]);
+        let want = [
+            (MatNormOrd::Fro, 14.2828568570857),
+            (MatNormOrd::Nuc, 22.178254010179415),
+            (MatNormOrd::Inf, 15.0),
+            (MatNormOrd::NegInf, 6.0),
+            (MatNormOrd::One, 17.0),
+            (MatNormOrd::NegOne, 5.0),
+            (MatNormOrd::Two, 10.959993927680461),
+            (MatNormOrd::NegTwo, 2.3723219324861042),
+        ];
+        for (ord, expected) in want {
+            close(matrix_norm_ord(&m, ord).unwrap(), expected);
+        }
+    }
+
+    fn sorted(mut v: Vec<Complex64>) -> Vec<Complex64> {
+        v.sort_by(|a, b| a.re.total_cmp(&b.re).then(a.im.total_cmp(&b.im)));
+        v
+    }
+
+    fn check_eigenpairs(a: &NdArray) {
+        let n = a.shape()[0];
+        let (w, v) = eig(a).unwrap();
+        for (j, lambda) in w.iter().enumerate() {
+            let col: Vec<Complex64> = (0..n).map(|i| v.get(&[i, j]).unwrap()).collect();
+            let norm: f64 = col.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
+            close(norm, 1.0);
+            for i in 0..n {
+                let av: Complex64 = (0..n).map(|k| col[k] * a.get(&[i, k]).unwrap()).sum();
+                assert!((av - col[i] * lambda).norm() < 1e-10, "A v != lambda v for eigenpair {j}");
+            }
+        }
+    }
+
+    #[test]
+    fn eig_returns_complex_eigenpairs_that_satisfy_a_v_equals_lambda_v() {
+        let ns = arr(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+        let (w, _) = eig(&ns).unwrap();
+        let w = sorted(w);
+        close(w[0].re, -0.372281323269014);
+        close(w[1].re, 5.372281323269014);
+        assert!(w.iter().all(|c| c.im.abs() < 1e-12));
+        check_eigenpairs(&ns);
+
+        let rot = arr(vec![0.0, -1.0, 1.0, 0.0], &[2, 2]);
+        let (w, _) = eig(&rot).unwrap();
+        let w = sorted(w);
+        assert!(w[0].re.abs() < 1e-12 && (w[0].im + 1.0).abs() < 1e-12);
+        assert!((w[1].im - 1.0).abs() < 1e-12);
+        check_eigenpairs(&rot);
+
+        check_eigenpairs(&tridiag());
+        check_eigenpairs(&arr(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0], &[3, 3]));
+        check_eigenpairs(&arr(vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0], &[3, 3]));
+
+        let (w, v) = eig(&arr(vec![2.0, 0.0, 0.0, 2.0], &[2, 2])).unwrap();
+        assert!(w.iter().all(|c| (c.re - 2.0).abs() < 1e-12));
+        assert_eq!(v.shape(), &[2, 2]);
+        let (w, _) = eig(&arr(vec![0.0, 1.0, 0.0, 0.0], &[2, 2])).unwrap();
+        assert!(w.iter().all(|c| c.norm() < 1e-12));
+        assert!(matches!(eig(&NdArray::zeros(&[2, 3])), Err(LinalgError::NotSquare { .. })));
+    }
+
+    #[test]
+    fn eig_complex_eigenvalues_of_a_real_matrix_come_in_conjugate_pairs() {
+        let cyc = arr(vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0], &[3, 3]);
+        let w = sorted(eig(&cyc).unwrap().0);
+        assert!((w[0].re + 0.5).abs() < 1e-12 && (w[0].im + 0.8660254037844386).abs() < 1e-12);
+        assert!((w[1].re + 0.5).abs() < 1e-12 && (w[1].im - 0.8660254037844386).abs() < 1e-12);
+        assert!((w[2].re - 1.0).abs() < 1e-12 && w[2].im.abs() < 1e-12);
+    }
+
+    #[test]
+    fn array_api_names_are_reachable_from_linalg() {
+        let a = arr((0..6).map(f64::from).collect(), &[2, 3]);
+        assert_eq!(matrix_transpose(&a.view()).unwrap().shape(), &[3, 2]);
+        assert_eq!(diagonal(&a.view(), 1).unwrap().iter().collect::<Vec<_>>(), vec![1.0, 5.0]);
+        assert!(matches!(diagonal(&arr(vec![1.0], &[1]).view(), 0), Err(LinalgError::Not2D { .. })));
+        assert_eq!(trace(&a.view(), 0).unwrap(), 4.0);
+        assert_eq!(matmul(&a.view(), &matrix_transpose(&a.view()).unwrap()).unwrap().as_slice(), &[5.0, 14.0, 14.0, 50.0]);
+        assert_eq!(outer(&arr(vec![1.0, 2.0], &[2]).view(), &arr(vec![3.0, 4.0], &[2]).view()).unwrap().as_slice(), &[3.0, 4.0, 6.0, 8.0]);
+        assert_eq!(vecdot(&a.view(), &a.view()).unwrap().as_slice(), &[5.0, 50.0]);
+        assert_eq!(kron(&a.view(), &arr(vec![1.0], &[1, 1]).view()).unwrap().shape(), &[2, 3]);
+        let e = arr(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0], &[2, 3]);
+        assert_eq!(cross(&e.view(), &e.view()).unwrap().as_slice(), &[0.0; 6]);
     }
 }

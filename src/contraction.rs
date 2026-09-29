@@ -232,6 +232,58 @@ where
     contract(&[&va, &vb], &[vec![0], vec![1]], &[0, 1], &[va.len(), vb.len()])
 }
 
+pub fn trace<T>(view: &ArrayView<T>, offset: isize) -> Result<T, ShapeError>
+where
+    T: Copy + Default + WrapAdd,
+{
+    Ok(view.diagonal(offset)?.iter().fold(T::default(), |acc, x| acc.wrap_add(x)))
+}
+
+pub fn kron<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
+where
+    T: Copy + WrapMul,
+{
+    let nd = a.ndim().max(b.ndim());
+    let pad = |shape: &[usize]| -> Vec<usize> {
+        std::iter::repeat_n(1, nd - shape.len()).chain(shape.iter().copied()).collect()
+    };
+    let (sa, sb) = (pad(a.shape()), pad(b.shape()));
+    let out_shape: Vec<usize> = sa.iter().zip(&sb).map(|(x, y)| x * y).collect();
+    let (av, bv) = (a.to_owned(), b.to_owned());
+    let (a_strides, b_strides) = (crate::shape::c_contiguous_strides(&sa), crate::shape::c_contiguous_strides(&sb));
+    let data: Vec<T> = crate::shape::IndexIter::new(&out_shape)
+        .map(|idx| {
+            let (mut ia, mut ib) = (0isize, 0isize);
+            for d in 0..nd {
+                ia += (idx[d] / sb[d]) as isize * a_strides[d];
+                ib += (idx[d] % sb[d]) as isize * b_strides[d];
+            }
+            av.as_slice()[ia as usize].wrap_mul(bv.as_slice()[ib as usize])
+        })
+        .collect();
+    NdArray::from_vec(data, &out_shape)
+}
+
+pub fn cross<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
+where
+    T: Copy + Default + WrapMul + crate::dispatch::WrapSub,
+{
+    for v in [a, b] {
+        if v.shape().last() != Some(&3) {
+            return Err(ShapeError::InvalidGufunc {
+                reason: format!("cross needs 3-dimensional vectors along the last axis, got shape {:?}", v.shape()),
+            });
+        }
+    }
+    let mut out = crate::gufunc::gufunc("(n),(n)->(n)", &[a, b], |ins, outs, _| {
+        let (x, y) = (ins[0], ins[1]);
+        outs[0][0] = x[1].wrap_mul(y[2]).wrap_sub(x[2].wrap_mul(y[1]));
+        outs[0][1] = x[2].wrap_mul(y[0]).wrap_sub(x[0].wrap_mul(y[2]));
+        outs[0][2] = x[0].wrap_mul(y[1]).wrap_sub(x[1].wrap_mul(y[0]));
+    })?;
+    Ok(out.remove(0))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Token {
     Label(char),
@@ -375,6 +427,17 @@ mod tests {
         NdArray::from_vec((0..n as i64).collect(), shape).unwrap()
     }
 
+    trait MapAdd {
+        fn map_add(self, k: i64) -> Self;
+    }
+
+    impl MapAdd for NdArray<i64> {
+        fn map_add(self, k: i64) -> Self {
+            let shape = self.shape().to_vec();
+            NdArray::from_vec(self.into_vec().into_iter().map(|v| v + k).collect(), &shape).unwrap()
+        }
+    }
+
     #[test]
     fn matmul_covers_2d_1d_and_batched_shapes() {
         let (a, b) = (ar(6, &[2, 3]), ar(12, &[3, 4]));
@@ -506,6 +569,31 @@ mod tests {
         assert!(einsum("...j->j", &[&ar(12, &[2, 2, 3]).view()]).is_err());
         assert!(einsum("ii", &[&NdArray::from_vec(vec![1i64, 2, 3], &[3, 1]).unwrap().view()]).is_err());
         assert!(einsum("ab,b", &[&ar(6, &[2, 3]).view(), &ar(4, &[4]).view()]).is_err());
+    }
+
+    #[test]
+    fn trace_kron_and_cross_match_numpy() {
+        let a = NdArray::from_vec((0..12).map(f64::from).collect(), &[3, 4]).unwrap();
+        assert_eq!(trace(&a.view(), 0).unwrap(), 15.0);
+        assert_eq!(trace(&a.view(), -1).unwrap(), 13.0);
+        assert_eq!(trace(&a.view(), 5).unwrap(), 0.0);
+
+        let (p, q) = (ar(4, &[2, 2]).map_add(1), NdArray::from_vec(vec![0i64, 1, 1, 0], &[2, 2]).unwrap());
+        assert_eq!(kron(&p.view(), &q.view()).unwrap().as_slice(), &[0, 1, 0, 2, 1, 0, 2, 0, 0, 3, 0, 4, 3, 0, 4, 0]);
+        let one_d = ar(2, &[2]).map_add(1);
+        let row = NdArray::from_vec(vec![1i64, 2, 3], &[1, 3]).unwrap();
+        assert_eq!(kron(&one_d.view(), &row.view()).unwrap().shape(), &[1, 6]);
+        let v3 = NdArray::from_vec(vec![1i64, 2, 3], &[3]).unwrap();
+        let v2 = NdArray::from_vec(vec![1i64, 1], &[2]).unwrap();
+        assert_eq!(kron(&v3.view(), &v2.view()).unwrap().as_slice(), &[1, 1, 2, 2, 3, 3]);
+
+        let (x, y) = (NdArray::from_vec(vec![1.0, 2.0, 3.0], &[3]).unwrap(), NdArray::from_vec(vec![4.0, 5.0, 6.0], &[3]).unwrap());
+        assert_eq!(cross(&x.view(), &y.view()).unwrap().as_slice(), &[-3.0, 6.0, -3.0]);
+        let batch = NdArray::from_vec((0..6).map(f64::from).collect(), &[2, 3]).unwrap();
+        let e0 = NdArray::from_vec(vec![1.0, 0.0, 0.0], &[3]).unwrap();
+        assert_eq!(cross(&batch.view(), &e0.view()).unwrap().as_slice(), &[0.0, 2.0, -1.0, 0.0, 5.0, -4.0]);
+        let two = NdArray::from_vec(vec![1.0, 2.0], &[2]).unwrap();
+        assert!(cross(&two.view(), &two.view()).is_err());
     }
 
     #[test]

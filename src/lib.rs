@@ -33,9 +33,11 @@ pub use fft::{
 pub use gufunc::{gufunc, vecdot, Signature};
 pub use index::AxisIndex;
 pub use linalg::{
-    cholesky, det, eigh, eigvals, eigvalsh, frobenius_norm, inv, matrix_norm, matrix_power, qr,
-    solve, svd, vector_norm, LinalgError, VecNormOrd,
+    cholesky, cond, det, eig, eigh, eigvals, eigvalsh, frobenius_norm, inv, lstsq, matrix_norm,
+    matrix_norm_ord, matrix_power, matrix_rank, pinv, qr, slogdet, solve, svd, svdvals,
+    vector_norm, LinalgError, Lstsq, MatNormOrd, VecNormOrd,
 };
+pub use contraction::{cross, kron, trace};
 pub use mathfunc::Arith;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};

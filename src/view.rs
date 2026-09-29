@@ -74,6 +74,45 @@ impl<'a, T> ArrayView<'a, T> {
         (self.data, self.offset)
     }
 
+    pub fn swap_axes(&self, a: usize, b: usize) -> Result<ArrayView<'a, T>, ShapeError> {
+        for axis in [a, b] {
+            if axis >= self.ndim() {
+                return Err(ShapeError::AxisOutOfBounds { axis, ndim: self.ndim() });
+            }
+        }
+        let (mut shape, mut strides) = (self.shape.clone(), self.strides.clone());
+        shape.swap(a, b);
+        strides.swap(a, b);
+        Ok(ArrayView { data: self.data, shape, strides, offset: self.offset })
+    }
+
+    pub fn matrix_transpose(&self) -> Result<ArrayView<'a, T>, ShapeError> {
+        if self.ndim() < 2 {
+            return Err(ShapeError::AxisOutOfBounds { axis: 1, ndim: self.ndim() });
+        }
+        self.swap_axes(self.ndim() - 2, self.ndim() - 1)
+    }
+
+    pub fn diagonal(&self, offset: isize) -> Result<ArrayView<'a, T>, ShapeError> {
+        if self.ndim() != 2 {
+            return Err(ShapeError::AxisOutOfBounds { axis: 1, ndim: self.ndim() });
+        }
+        let (rows, cols) = (self.shape[0] as isize, self.shape[1] as isize);
+        let (r0, c0) = if offset >= 0 { (0, offset) } else { (-offset, 0) };
+        let len = (rows - r0).min(cols - c0).max(0) as usize;
+        let start = if len == 0 {
+            self.offset as isize
+        } else {
+            self.offset as isize + r0 * self.strides[0] + c0 * self.strides[1]
+        };
+        Ok(ArrayView {
+            data: self.data,
+            shape: vec![len],
+            strides: vec![self.strides[0] + self.strides[1]],
+            offset: start as usize,
+        })
+    }
+
     pub fn is_c_contiguous(&self) -> bool {
         is_c_contiguous_layout(&self.shape, &self.strides)
     }
@@ -344,6 +383,22 @@ mod tests {
         assert_eq!(scalar.view().iter().collect::<Vec<_>>(), vec![7.0]);
         let empty: NdArray = NdArray::zeros(&[2, 0]);
         assert_eq!(empty.view().iter().count(), 0);
+    }
+
+    #[test]
+    fn diagonal_and_transpose_are_zero_copy_views() {
+        let a = arange(&[3, 4]);
+        assert_eq!(a.view().diagonal(1).unwrap().iter().collect::<Vec<_>>(), vec![1.0, 6.0, 11.0]);
+        assert_eq!(a.view().diagonal(-1).unwrap().iter().collect::<Vec<_>>(), vec![4.0, 9.0]);
+        assert_eq!(a.view().diagonal(-3).unwrap().len(), 0);
+        assert_eq!(a.view().diagonal(9).unwrap().len(), 0);
+        let t = a.view().matrix_transpose().unwrap();
+        assert_eq!(t.shape(), &[4, 3]);
+        assert_eq!(t.get(&[1, 2]), Some(9.0));
+        assert!(a.view().swap_axes(0, 2).is_err());
+        assert!(arange(&[3]).view().matrix_transpose().is_err());
+        let batch = arange(&[2, 2, 3]);
+        assert_eq!(batch.view().matrix_transpose().unwrap().shape(), &[2, 3, 2]);
     }
 
     #[test]
