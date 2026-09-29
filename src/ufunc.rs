@@ -1,8 +1,10 @@
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
-use crate::shape::{broadcast_shapes, unravel_index, IndexIter};
+use crate::shape::{broadcast_shapes, IndexIter};
 use crate::view::{ArrayView, ArrayViewMut};
 use rayon::prelude::*;
+
+const PARALLEL_CHUNK: usize = 4096;
 
 pub fn zip_with<T: Copy>(
     a: &ArrayView<T>,
@@ -16,9 +18,7 @@ pub fn zip_with<T: Copy>(
     let a_b = a.broadcast_to(&out_shape)?;
     let b_b = b.broadcast_to(&out_shape)?;
 
-    let data: Vec<T> = IndexIter::new(&out_shape)
-        .map(|idx| f(a_b.get(&idx).unwrap(), b_b.get(&idx).unwrap()))
-        .collect();
+    let data: Vec<T> = a_b.iter().zip(b_b.iter()).map(|(x, y)| f(x, y)).collect();
     NdArray::from_vec(data, &out_shape)
 }
 
@@ -49,7 +49,7 @@ pub fn zip_with_into<T: Copy>(
 }
 
 pub fn map<T: Copy>(a: &ArrayView<T>, f: impl Fn(T) -> T) -> NdArray<T> {
-    let data: Vec<T> = IndexIter::new(a.shape()).map(|idx| f(a.get(&idx).unwrap())).collect();
+    let data: Vec<T> = a.iter().map(f).collect();
     NdArray::from_vec(data, a.shape()).expect("data.len() always matches a.shape().iter().product()")
 }
 
@@ -66,11 +66,12 @@ pub fn zip_with_parallel<T: Copy + Send + Sync>(
     let b_b = b.broadcast_to(&out_shape)?;
     let len: usize = out_shape.iter().product();
 
-    let data: Vec<T> = (0..len)
+    let data: Vec<T> = (0..len.div_ceil(PARALLEL_CHUNK))
         .into_par_iter()
-        .map(|flat| {
-            let idx = unravel_index(flat, &out_shape);
-            f(a_b.get(&idx).unwrap(), b_b.get(&idx).unwrap())
+        .flat_map_iter(|chunk| {
+            let (start, n) = (chunk * PARALLEL_CHUNK, PARALLEL_CHUNK);
+            let f = &f;
+            a_b.iter_range(start, n).zip(b_b.iter_range(start, n)).map(move |(x, y)| f(x, y))
         })
         .collect();
     NdArray::from_vec(data, &out_shape)
@@ -79,9 +80,12 @@ pub fn zip_with_parallel<T: Copy + Send + Sync>(
 pub fn map_parallel<T: Copy + Send + Sync>(a: &ArrayView<T>, f: impl Fn(T) -> T + Sync) -> NdArray<T> {
     let shape = a.shape();
     let len: usize = shape.iter().product();
-    let data: Vec<T> = (0..len)
+    let data: Vec<T> = (0..len.div_ceil(PARALLEL_CHUNK))
         .into_par_iter()
-        .map(|flat| f(a.get(&unravel_index(flat, shape)).unwrap()))
+        .flat_map_iter(|chunk| {
+            let f = &f;
+            a.iter_range(chunk * PARALLEL_CHUNK, PARALLEL_CHUNK).map(f)
+        })
         .collect();
     NdArray::from_vec(data, shape).expect("data.len() always matches shape.iter().product()")
 }
@@ -146,6 +150,21 @@ pub fn add_broadcast<T: Copy + std::ops::Add<Output = T>>(
 mod tests {
     use super::*;
     use crate::ndarray::NdArray;
+
+    #[test]
+    fn parallel_path_is_correct_across_chunk_boundaries_and_broadcasts() {
+        let n = PARALLEL_CHUNK * 2 + 37;
+        let big = NdArray::from_vec((0..n as i64).collect::<Vec<_>>(), &[n]).unwrap();
+        let col = NdArray::from_vec(vec![1i64, 1000], &[2, 1]).unwrap();
+        let par = zip_with_parallel(&col.view(), &big.view(), |x, y| x * y + 1).unwrap();
+        let seq = zip_with(&col.view(), &big.view(), |x, y| x * y + 1).unwrap();
+        assert_eq!(par.shape(), &[2, n]);
+        assert_eq!(par, seq);
+        assert_eq!(par.get(&[1, n - 1]), Some(1000 * (n as i64 - 1) + 1));
+        let range = 3..n - 5;
+        let strided = big.slice(std::slice::from_ref(&range)).unwrap();
+        assert_eq!(map_parallel(&strided, |x| x + 1), map(&strided, |x| x + 1));
+    }
 
     #[test]
     fn add_same_shape() {

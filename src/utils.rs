@@ -120,6 +120,46 @@ pub fn split(arr: &NdArray, sections: usize, axis: usize) -> Result<Vec<NdArray>
         .collect()
 }
 
+fn slice_axis<T: Copy>(arr: &NdArray<T>, axis: usize, start: usize, end: usize) -> Result<NdArray<T>, ShapeError> {
+    let ranges: Vec<std::ops::Range<usize>> = arr
+        .shape()
+        .iter()
+        .enumerate()
+        .map(|(a, &d)| if a == axis { start..end } else { 0..d })
+        .collect();
+    Ok(arr.slice(&ranges)?.to_owned())
+}
+
+pub fn array_split<T: Copy>(arr: &NdArray<T>, sections: usize, axis: usize) -> Result<Vec<NdArray<T>>, ShapeError> {
+    check_axis(axis, arr.ndim())?;
+    if sections == 0 {
+        return Err(ShapeError::ZeroSections);
+    }
+    let axis_len = arr.shape()[axis];
+    let (each, extras) = (axis_len / sections, axis_len % sections);
+    let mut start = 0;
+    (0..sections)
+        .map(|i| {
+            let end = start + each + usize::from(i < extras);
+            let piece = slice_axis(arr, axis, start, end);
+            start = end;
+            piece
+        })
+        .collect()
+}
+
+pub fn array_split_at<T: Copy>(arr: &NdArray<T>, indices: &[usize], axis: usize) -> Result<Vec<NdArray<T>>, ShapeError> {
+    check_axis(axis, arr.ndim())?;
+    let axis_len = arr.shape()[axis];
+    let mut bounds = vec![0usize];
+    bounds.extend(indices.iter().map(|&i| i.min(axis_len)));
+    bounds.push(axis_len);
+    bounds
+        .windows(2)
+        .map(|w| slice_axis(arr, axis, w[0], w[1].max(w[0])))
+        .collect()
+}
+
 pub fn tile(arr: &NdArray, reps: &[usize]) -> NdArray {
 
     let out_ndim = arr.ndim().max(reps.len());
@@ -272,6 +312,35 @@ mod tests {
         let out = tile(&m, &[2]);
         assert_eq!(out.shape(), &[2, 4]);
         assert_eq!(out.as_slice(), &[1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn array_split_gives_the_first_remainder_sections_one_extra_element() {
+        let r = NdArray::from_vec((0..10).collect::<Vec<i32>>(), &[10]).unwrap();
+        let three: Vec<Vec<i32>> = array_split(&r, 3, 0).unwrap().iter().map(|p| p.as_slice().to_vec()).collect();
+        assert_eq!(three, vec![vec![0, 1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]]);
+        let four: Vec<Vec<i32>> = array_split(&r, 4, 0).unwrap().iter().map(|p| p.as_slice().to_vec()).collect();
+        assert_eq!(four, vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7], vec![8, 9]]);
+        let tiny = NdArray::from_vec(vec![1, 2, 3], &[3]).unwrap();
+        let shapes: Vec<Vec<usize>> = array_split(&tiny, 5, 0).unwrap().iter().map(|p| p.shape().to_vec()).collect();
+        assert_eq!(shapes, vec![vec![1], vec![1], vec![1], vec![0], vec![0]]);
+        assert_eq!(array_split(&r, 0, 0).unwrap_err(), ShapeError::ZeroSections);
+    }
+
+    #[test]
+    fn array_split_along_a_non_leading_axis_and_by_indices() {
+        let m = NdArray::from_vec((0..12).collect::<Vec<i32>>(), &[3, 4]).unwrap();
+        let parts = array_split(&m, 2, 1).unwrap();
+        assert_eq!(parts.iter().map(|p| p.shape().to_vec()).collect::<Vec<_>>(), vec![vec![3, 2], vec![3, 2]]);
+        assert_eq!(parts[1].as_slice(), &[2, 3, 6, 7, 10, 11]);
+
+        let r = NdArray::from_vec((0..10).collect::<Vec<i32>>(), &[10]).unwrap();
+        let by_idx: Vec<Vec<i32>> = array_split_at(&r, &[2, 5, 5, 20], 0)
+            .unwrap()
+            .iter()
+            .map(|p| p.as_slice().to_vec())
+            .collect();
+        assert_eq!(by_idx, vec![vec![0, 1], vec![2, 3, 4], vec![], vec![5, 6, 7, 8, 9], vec![]]);
     }
 
     #[test]

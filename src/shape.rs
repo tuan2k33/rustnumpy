@@ -1,3 +1,5 @@
+use crate::error::ShapeError;
+
 pub fn c_contiguous_strides(shape: &[usize]) -> Vec<isize> {
     let mut strides = vec![0isize; shape.len()];
     let mut acc: isize = 1;
@@ -6,6 +8,53 @@ pub fn c_contiguous_strides(shape: &[usize]) -> Vec<isize> {
         acc *= shape[i] as isize;
     }
     strides
+}
+
+pub fn is_c_contiguous_layout(shape: &[usize], strides: &[isize]) -> bool {
+    if shape.contains(&0) {
+        return true;
+    }
+    let mut acc: isize = 1;
+    for i in (0..shape.len()).rev() {
+        if shape[i] != 1 && strides[i] != acc {
+            return false;
+        }
+        acc *= shape[i] as isize;
+    }
+    true
+}
+
+pub fn resolve_reshape(size: usize, shape: &[isize]) -> Result<Vec<usize>, ShapeError> {
+    let mismatch = || ShapeError::ReshapeMismatch { size, shape: shape.to_vec() };
+    let mut unknown: Option<usize> = None;
+    let mut known: usize = 1;
+    for (axis, &d) in shape.iter().enumerate() {
+        if d == -1 {
+            if unknown.is_some() {
+                return Err(ShapeError::MultipleUnknownDims);
+            }
+            unknown = Some(axis);
+        } else if d < 0 {
+            return Err(mismatch());
+        } else {
+            known = known.checked_mul(d as usize).ok_or_else(mismatch)?;
+        }
+    }
+    let mut out: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
+    match unknown {
+        Some(axis) => {
+            if known == 0 || !size.is_multiple_of(known) {
+                return Err(mismatch());
+            }
+            out[axis] = size / known;
+        }
+        None => {
+            if known != size {
+                return Err(mismatch());
+            }
+        }
+    }
+    Ok(out)
 }
 
 pub fn offset_of(index: &[usize], strides: &[isize]) -> isize {

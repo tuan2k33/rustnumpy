@@ -1,5 +1,5 @@
 use crate::error::ShapeError;
-use crate::shape::{c_contiguous_strides, index_in_bounds, offset_of};
+use crate::shape::{c_contiguous_strides, index_in_bounds, offset_of, resolve_reshape};
 use crate::view::{ArrayView, ArrayViewMut};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -78,6 +78,27 @@ impl<T> NdArray<T> {
     pub fn slice(&self, ranges: &[std::ops::Range<usize>]) -> Result<ArrayView<'_, T>, ShapeError> {
         self.view().slice(ranges)
     }
+
+    pub fn reshape(&self, shape: &[isize]) -> Result<ArrayView<'_, T>, ShapeError> {
+        self.view().reshape(shape)
+    }
+
+    pub fn into_shape(self, shape: &[isize]) -> Result<Self, ShapeError> {
+        let resolved = resolve_reshape(self.data.len(), shape)?;
+        Ok(Self {
+            data: self.data,
+            strides: c_contiguous_strides(&resolved),
+            shape: resolved,
+        })
+    }
+
+    pub fn ravel(&self) -> ArrayView<'_, T> {
+        self.reshape(&[-1]).expect("a contiguous array can always be flattened")
+    }
+
+    pub fn into_vec(self) -> Vec<T> {
+        self.data
+    }
 }
 
 impl<T: Copy> NdArray<T> {
@@ -126,6 +147,40 @@ mod tests {
             err,
             ShapeError::DataShapeMismatch { data_len: 3, shape: vec![2, 2] }
         );
+    }
+
+    #[test]
+    fn reshape_infers_unknown_dim_and_shares_data() {
+        let a = NdArray::from_vec((0..12).collect::<Vec<i32>>(), &[12]).unwrap();
+        let v = a.reshape(&[3, -1]).unwrap();
+        assert_eq!(v.shape(), &[3, 4]);
+        assert_eq!(v.get(&[2, 1]), Some(9));
+        assert_eq!(a.reshape(&[-1, 4]).unwrap().shape(), &[3, 4]);
+        assert_eq!(a.reshape(&[12]).unwrap().shape(), &[12]);
+        assert_eq!(a.reshape(&[]).unwrap_err(), ShapeError::ReshapeMismatch { size: 12, shape: vec![] });
+    }
+
+    #[test]
+    fn reshape_rejects_what_numpy_rejects() {
+        let a = NdArray::from_vec((0..12).collect::<Vec<i32>>(), &[12]).unwrap();
+        assert!(matches!(a.reshape(&[5, -1]), Err(ShapeError::ReshapeMismatch { size: 12, .. })));
+        assert_eq!(a.reshape(&[-1, -1]).unwrap_err(), ShapeError::MultipleUnknownDims);
+        assert!(matches!(a.reshape(&[0, -1]), Err(ShapeError::ReshapeMismatch { .. })));
+        assert!(matches!(a.reshape(&[-2, 6]), Err(ShapeError::ReshapeMismatch { .. })));
+        let empty: NdArray<i32> = NdArray::zeros(&[0]);
+        assert!(matches!(empty.reshape(&[0, -1]), Err(ShapeError::ReshapeMismatch { .. })));
+        assert_eq!(empty.reshape(&[2, 0]).unwrap().shape(), &[2, 0]);
+    }
+
+    #[test]
+    fn into_shape_moves_the_buffer_and_ravel_flattens() {
+        let a = NdArray::from_vec((0..6).collect::<Vec<i32>>(), &[2, 3]).unwrap();
+        assert_eq!(a.ravel().shape(), &[6]);
+        let b = a.into_shape(&[3, 2]).unwrap();
+        assert_eq!(b.shape(), &[3, 2]);
+        assert_eq!(b.strides(), &[2, 1]);
+        assert_eq!(b.get(&[2, 0]), Some(4));
+        assert_eq!(b.into_vec(), vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]

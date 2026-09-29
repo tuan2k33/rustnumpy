@@ -1112,6 +1112,7 @@ version = "0.1.0"
 dependencies = [
  "faer",
  "num-complex",
+ "num-traits",
  "rand 0.10.3",
  "rand_distr 0.6.0",
  "rand_pcg",

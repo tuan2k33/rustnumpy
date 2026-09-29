@@ -105,6 +105,28 @@ pub enum ShapeError {
     StackShapeMismatch { shapes: Vec<Vec<usize>> },
 
     NotEvenlyDivisible { axis_len: usize, sections: usize },
+
+    ReshapeMismatch { size: usize, shape: Vec<isize> },
+
+    MultipleUnknownDims,
+
+    NotContiguous { shape: Vec<usize>, strides: Vec<isize> },
+
+    ZeroSections,
+
+    ChoiceIndexOutOfBounds { index: i64, choices: usize },
+
+    ChoiceShapeMismatch { shapes: Vec<Vec<usize>> },
+
+    NegativeIntegerPower,
+
+    ZeroDimOperand,
+
+    ContractionMismatch { lhs: Vec<usize>, rhs: Vec<usize> },
+
+    InvalidEinsum { reason: String },
+
+    InvalidGufunc { reason: String },
 }
 
 impl fmt::Display for ShapeError {
@@ -158,6 +180,30 @@ impl fmt::Display for ShapeError {
                 f,
                 "array of length {axis_len} along the split axis cannot be split into {sections} equal sections"
             ),
+            ShapeError::ReshapeMismatch { size, shape } => {
+                write!(f, "cannot reshape array of size {size} into shape {shape:?}")
+            }
+            ShapeError::MultipleUnknownDims => write!(f, "can only specify one unknown dimension"),
+            ShapeError::NotContiguous { shape, strides } => write!(
+                f,
+                "cannot reshape a non-contiguous view without copying (shape {shape:?}, strides {strides:?}); call to_owned() first"
+            ),
+            ShapeError::ZeroSections => write!(f, "number sections must be larger than 0"),
+            ShapeError::ChoiceIndexOutOfBounds { index, choices } => {
+                write!(f, "invalid entry {index} in choice array with {choices} choices")
+            }
+            ShapeError::ZeroDimOperand => write!(f, "operand does not have enough dimensions (has 0, needs at least 1)"),
+            ShapeError::ContractionMismatch { lhs, rhs } => {
+                write!(f, "shapes {lhs:?} and {rhs:?} are not aligned for contraction")
+            }
+            ShapeError::InvalidEinsum { reason } => write!(f, "invalid einsum: {reason}"),
+            ShapeError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
+            ShapeError::NegativeIntegerPower => {
+                write!(f, "integers to negative integer powers are not allowed")
+            }
+            ShapeError::ChoiceShapeMismatch { shapes } => {
+                write!(f, "shapes {shapes:?} could not be broadcast together")
+            }
         }
     }
 }

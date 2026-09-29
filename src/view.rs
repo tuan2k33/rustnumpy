@@ -1,6 +1,9 @@
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
-use crate::shape::{broadcast_strides, index_in_bounds, offset_of, IndexIter};
+use crate::shape::{
+    broadcast_strides, c_contiguous_strides, index_in_bounds, is_c_contiguous_layout, offset_of,
+    resolve_reshape, unravel_index,
+};
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +70,30 @@ impl<'a, T> ArrayView<'a, T> {
         })
     }
 
+    pub(crate) fn raw(&self) -> (&'a [T], usize) {
+        (self.data, self.offset)
+    }
+
+    pub fn is_c_contiguous(&self) -> bool {
+        is_c_contiguous_layout(&self.shape, &self.strides)
+    }
+
+    pub fn reshape(&self, shape: &[isize]) -> Result<ArrayView<'a, T>, ShapeError> {
+        let resolved = resolve_reshape(self.len(), shape)?;
+        if !self.is_c_contiguous() {
+            return Err(ShapeError::NotContiguous {
+                shape: self.shape.clone(),
+                strides: self.strides.clone(),
+            });
+        }
+        Ok(ArrayView {
+            data: self.data,
+            strides: c_contiguous_strides(&resolved),
+            shape: resolved,
+            offset: self.offset,
+        })
+    }
+
     pub fn broadcast_to(&self, target_shape: &[usize]) -> Result<ArrayView<'a, T>, ShapeError> {
         match broadcast_strides(&self.shape, &self.strides, target_shape) {
             Some(new_strides) => Ok(ArrayView {
@@ -98,12 +125,64 @@ impl<'a, T: Copy> ArrayView<'a, T> {
     }
 
     pub fn to_owned(&self) -> NdArray<T> {
-        let data: Vec<T> = IndexIter::new(&self.shape)
-            .map(|idx| self.get(&idx).expect("IndexIter only produces valid indices"))
-            .collect();
+        let data: Vec<T> = self.iter().collect();
         NdArray::from_vec(data, &self.shape).expect("data.len() always matches shape.iter().product()")
     }
+
+    pub fn iter(&self) -> ViewIter<'a, T> {
+        self.iter_range(0, self.len())
+    }
+
+    pub(crate) fn iter_range(&self, start: usize, count: usize) -> ViewIter<'a, T> {
+        let idx = unravel_index(start, &self.shape);
+        let off = self.offset as isize + offset_of(&idx, &self.strides);
+        ViewIter {
+            data: self.data,
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+            idx,
+            off,
+            remaining: count.min(self.len().saturating_sub(start)),
+        }
+    }
 }
+
+pub struct ViewIter<'a, T> {
+    data: &'a [T],
+    shape: Vec<usize>,
+    strides: Vec<isize>,
+    idx: Vec<usize>,
+    off: isize,
+    remaining: usize,
+}
+
+impl<T: Copy> Iterator for ViewIter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let value = self.data[self.off as usize];
+        self.remaining -= 1;
+        for d in (0..self.shape.len()).rev() {
+            self.idx[d] += 1;
+            self.off += self.strides[d];
+            if self.idx[d] < self.shape[d] {
+                break;
+            }
+            self.off -= self.strides[d] * self.shape[d] as isize;
+            self.idx[d] = 0;
+        }
+        Some(value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<T: Copy> ExactSizeIterator for ViewIter<'_, T> {}
 
 #[derive(Debug, PartialEq)]
 pub struct ArrayViewMut<'a, T = f64> {
@@ -232,6 +311,39 @@ mod tests {
             vm.set(&[0, 1], 42.0).unwrap();
         }
         assert_eq!(a.get(&[0, 1]), Some(42.0));
+    }
+
+    #[test]
+    fn view_reshape_needs_contiguity() {
+        let a = arange(&[3, 4]);
+        let rows = a.slice(&[1..3, 0..4]).unwrap();
+        let r = rows.reshape(&[2, 2, 2]).unwrap();
+        assert_eq!(r.get(&[1, 0, 0]), Some(8.0));
+        assert_eq!(r.get(&[0, 1, 1]), Some(7.0));
+        let cols = a.slice(&[0..3, 1..3]).unwrap();
+        assert!(matches!(cols.reshape(&[6]), Err(ShapeError::NotContiguous { .. })));
+        assert_eq!(cols.to_owned().into_shape(&[6]).unwrap().as_slice(), &[1.0, 2.0, 5.0, 6.0, 9.0, 10.0]);
+        let one_col = a.slice(&[0..3, 1..2]).unwrap();
+        assert!(!one_col.is_c_contiguous());
+        let one_row = a.slice(&[1..2, 0..4]).unwrap();
+        assert!(one_row.is_c_contiguous());
+    }
+
+    #[test]
+    fn iter_walks_c_order_over_slices_broadcasts_and_partial_ranges() {
+        let a = arange(&[3, 4]);
+        let sub = a.slice(&[1..3, 1..3]).unwrap();
+        assert_eq!(sub.iter().collect::<Vec<_>>(), vec![5.0, 6.0, 9.0, 10.0]);
+        assert_eq!(sub.iter().len(), 4);
+        assert_eq!(sub.iter_range(1, 2).collect::<Vec<_>>(), vec![6.0, 9.0]);
+        assert_eq!(sub.iter_range(3, 10).collect::<Vec<_>>(), vec![10.0]);
+        let col = arange(&[3, 1]);
+        let wide = col.view().broadcast_to(&[2, 3, 2]).unwrap();
+        assert_eq!(wide.iter().collect::<Vec<_>>(), vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0]);
+        let scalar = NdArray::from_vec(vec![7.0], &[]).unwrap();
+        assert_eq!(scalar.view().iter().collect::<Vec<_>>(), vec![7.0]);
+        let empty: NdArray = NdArray::zeros(&[2, 0]);
+        assert_eq!(empty.view().iter().count(), 0);
     }
 
     #[test]

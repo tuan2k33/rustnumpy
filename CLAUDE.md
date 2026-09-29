@@ -21,9 +21,11 @@ Two facts that shape everything else in this repo:
   1–17: container, views, dtype/casting, ufuncs, allocator, PyO3 binding,
   indexing, testing, reductions, `lib`-utilities, `linalg`, `fft`,
   `random`, `polynomial`, the Array API audit, and the free-threading +
-  packaging audit). Steps 18–20 (structured/datetime dtypes, StringDType,
+  packaging audit). Steps 26–28 (structured/datetime dtypes, StringDType,
   masked arrays) exist in `NumPy.md`'s plan and in git history, but their
-  source files aren't part of this snapshot.
+  source files aren't part of this snapshot. Step 18 (core array
+  mechanics: reshape, sorting, selection, math ufuncs, matmul/einsum,
+  gufuncs, the strided iterator) has since landed on top of steps 1–17.
 
 **Source comments were deliberately stripped** from every `.rs` file in
 this snapshot (see the "Public snapshot" commit). Do not expect `//`,
@@ -147,7 +149,12 @@ rustnumpy/
 │   ├── ufunc.rs                numpy's ufunc machinery (add/sub/mul, broadcasting, out=, rayon)
 │   ├── reductions.rs           ndarray reduction methods (sum/mean/var/std/median/percentile/nan*)
 │   ├── index.rs                fancy indexing         (oindex/vindex, NEP 21)
-│   ├── utils.rs                numpy's lib/ layer     (unique/concatenate/stack/split/interp/gradient)
+│   ├── utils.rs                numpy's lib/ layer     (unique/concatenate/stack/split/array_split/interp/gradient)
+│   ├── sorting.rs              sort/argsort/searchsorted (NaN last, stable argsort)
+│   ├── selection.rs            where/select/choose
+│   ├── mathfunc.rs             named elementwise math (sqrt/exp/log/trig/rounding/power/...)
+│   ├── contraction.rs          matmul/dot/tensordot/outer/einsum (one strided odometer engine)
+│   ├── gufunc.rs               NEP 20 generalized ufuncs + vecdot
 │   ├── linalg.rs               numpy.linalg           (solve/inv/det/qr/cholesky/eigh/svd/norms), via faer
 │   ├── fft.rs                  numpy.fft              (fft/ifft/rfft/irfft/fftn/...), via rustfft
 │   ├── random.rs               numpy.random           (NEP 19 Generator), via rand_pcg/rand_distr
@@ -155,7 +162,7 @@ rustnumpy/
 │   ├── testing.rs              numpy.testing          (assert_array_equal/assert_allclose/...)
 │   ├── npy.rs                  .npy format            (NEP 1 read/write)
 │   └── allocator.rs             NEP 49 Allocator trait (System, BumpArena, PooledVec)
-├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step16_array_api.rs)
+├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step18_core_mechanics.rs)
 ├── tests/fixtures/*.npy       .npy files written by real NumPy, read back by npy.rs's tests
 ├── scripts/gen_fixtures.py    regenerates tests/fixtures/ (needs a real NumPy install)
 └── python/                    separate PyO3 binding crate (own Cargo.toml, path-deps on root)
