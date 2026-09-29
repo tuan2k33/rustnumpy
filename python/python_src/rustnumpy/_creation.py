@@ -64,7 +64,7 @@ def asarray(a, dtype=None, order=None, *, device=None, copy=None, like=None):
     if copy is False and not isinstance(a, ndarray):
         raise ValueError("Unable to avoid copy while creating an array as requested.")
     res = _asarray_native(a, dtype)
-    if copy is False and dtype is not None and isinstance(a, ndarray) and res is not a:
+    if copy is False and dtype is not None and isinstance(a, ndarray) and res.dtype != a.dtype:
         raise ValueError("Unable to avoid copy while creating an array as requested.")
     if order in ("F", "f") and res.ndim > 1 and not res.flags.f_contiguous:
         return _c_order_copy_to_f(res)

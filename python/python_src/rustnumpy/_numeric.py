@@ -55,10 +55,8 @@ def clip(a, a_min=_NoValue, a_max=_NoValue, out=None, *, min=_NoValue, max=_NoVa
         a_max = max
     lo = None if a_min is _NoValue else a_min
     hi = None if a_max is _NoValue else a_max
-    if lo is None and hi is None:
-        raise ValueError("One of max or min must be given")
     a = asarray(a)
-    res = a
+    res = a.copy() if lo is None and hi is None else a
     if lo is not None:
         res = _core.maximum(res, lo)
     if hi is not None:

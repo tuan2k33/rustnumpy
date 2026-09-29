@@ -106,7 +106,15 @@ def squeeze(a, axis=None):
 
 
 def expand_dims(a, axis):
-    return _core.expand_dims(asarray(a), axis)
+    from ._extra import AxisError
+
+    a = asarray(a)
+    axes = tuple(axis) if isinstance(axis, (tuple, list)) else (axis,)
+    out_ndim = a.ndim + len(axes)
+    for ax in axes:
+        if not -out_ndim <= ax < out_ndim:
+            raise AxisError(ax, out_ndim)
+    return _core.expand_dims(a, axis)
 
 
 def flip(m, axis=None):
@@ -730,20 +738,34 @@ def _wrap_side(res, ax, count, left):
     return _index_along(res, ax, pos.astype("int64"))
 
 
-def sort(a, axis=-1, kind=None, order=None, *, stable=None):
+def sort(a, axis=-1, kind=None, order=None, *, stable=None, descending=False):
     a = asarray(a)
     if axis is None:
         a = a.reshape((-1,))
         axis = -1
-    return _core.sort(a, axis)
+    res = _core.sort(a, axis)
+    if not descending:
+        return res
+    return _nan_last(_core.flip(res, axis), _core.flip(res, axis), axis)
 
 
-def argsort(a, axis=-1, kind=None, order=None, *, stable=None):
+def argsort(a, axis=-1, kind=None, order=None, *, stable=None, descending=False):
     a = asarray(a)
     if axis is None:
         a = a.reshape((-1,))
         axis = -1
-    return _core.argsort(a, axis)
+    if not descending or a.ndim == 0:
+        return _core.argsort(a, axis)
+    n = a.shape[axis]
+    order = _core.subtract(n - 1, _core.flip(_core.argsort(_core.flip(a, axis), axis), axis))
+    return _nan_last(order, take_along_axis(a, order, axis), axis)
+
+
+def _nan_last(res, values, axis):
+    if values.dtype.kind not in "fc":
+        return res
+    perm = _core.argsort(_core.isnan(values).astype("int8"), axis)
+    return take_along_axis(res, perm, axis)
 
 
 def sort_complex(a):

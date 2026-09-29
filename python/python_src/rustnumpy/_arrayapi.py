@@ -42,7 +42,7 @@ class __array_namespace_info__:
         return {n: _core.dtype(n) for n in names}
 
     def devices(self):
-        return ["cpu"]
+        return ("cpu",)
 
     @staticmethod
     def _kind(kind):

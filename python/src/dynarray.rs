@@ -274,13 +274,31 @@ impl Arr {
         if self.ndim() != 0 {
             return Ok(None);
         }
-        Ok(match self {
-            Arr::Bool(a) => Some(pyo3::types::PyBool::new(py, a.as_slice()[0]).to_owned().into_any().unbind()),
-            Arr::I64(a) => Some(a.as_slice()[0].into_pyobject(py)?.into_any().unbind()),
-            Arr::F64(a) => Some(a.as_slice()[0].into_pyobject(py)?.into_any().unbind()),
-            Arr::C128(a) => Some(pyo3::types::PyComplex::from_doubles(py, a.as_slice()[0].re, a.as_slice()[0].im).into_any().unbind()),
-            _ => None,
-        })
+        let (dtype, value) = match self {
+            Arr::Bool(a) => ("bool", pyo3::types::PyBool::new(py, a.as_slice()[0]).to_owned().into_any()),
+            Arr::I64(a) => ("int64", a.as_slice()[0].into_pyobject(py)?.into_any()),
+            Arr::F64(a) => ("float64", a.as_slice()[0].into_pyobject(py)?.into_any()),
+            Arr::C128(a) => ("complex128", pyo3::types::PyComplex::from_doubles(py, a.as_slice()[0].re, a.as_slice()[0].im).into_any()),
+            _ => return Ok(None),
+        };
+        Ok(Some(py.import("rustnumpy._scalars")?.getattr("scalar")?.call1((dtype, value))?.unbind()))
+    }
+
+    pub fn from_scalar_class(obj: &Bound<'_, PyAny>) -> PyResult<Option<Arr>> {
+        use pyo3::types::{PyComplex, PyFloat, PyInt};
+        if obj.is_exact_instance_of::<PyFloat>() || obj.is_exact_instance_of::<PyInt>() || obj.is_exact_instance_of::<PyComplex>() {
+            return Ok(None);
+        }
+        let Ok(name) = obj.get_type().getattr("_rnp_dtype") else { return Ok(None) };
+        Ok(Some(match name.extract::<String>()?.as_str() {
+            "bool" => Arr::scalar(obj.is_truthy()?),
+            "int64" => Arr::scalar(obj.extract::<i64>()?),
+            "float64" => Arr::scalar(obj.extract::<f64>()?),
+            _ => {
+                let c = obj.downcast::<PyComplex>()?;
+                Arr::scalar(Complex::new(c.real(), c.imag()))
+            }
+        }))
     }
 
     pub fn from_object(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
@@ -288,6 +306,9 @@ impl Arr {
             let this = a.borrow();
             crate::createfns::alloc_guard(this.size(), crate::dtypes::itemsize(this.dtype_name()) + 8)?;
             return Ok(this.to_arr());
+        }
+        if let Some(a) = Arr::from_scalar_class(obj)? {
+            return Ok(a);
         }
         if obj.is_exact_instance_of::<pyo3::types::PyBool>() {
             return Ok(Arr::scalar(obj.extract::<bool>()?));

@@ -77,6 +77,8 @@ def sum(a, axis=None, dtype=None, out=None, keepdims=False, initial=_NoValue, wh
     res, axes = _native_reduce(_core.sum, a, axis)
     if initial is not _NoValue:
         res = _core.add(res, initial)
+    if dtype is not None and asarray(res).dtype != asarray(0, dtype).dtype:
+        res = asarray(res).astype(dtype)
     return _deliver(res, out, keepdims, shape, axes, name="sum")
 
 
@@ -90,6 +92,8 @@ def prod(a, axis=None, dtype=None, out=None, keepdims=False, initial=_NoValue, w
     res, axes = _native_reduce(_core.prod, a, axis)
     if initial is not _NoValue:
         res = _core.multiply(res, initial)
+    if dtype is not None and asarray(res).dtype != asarray(0, dtype).dtype:
+        res = asarray(res).astype(dtype)
     return _deliver(res, out, keepdims, shape, axes, name="prod")
 
 
@@ -227,8 +231,8 @@ def _var_composite(a, axes, ddof, where, complex_ok=True):
         sq = _core.where(mask, sq, asarray(0, sq.dtype))
     ssq = asarray(sum(sq, axis=tuple(axes), keepdims=True) if axes else sq)
     denom = _core.maximum(_core.subtract(cnt, ddof), 0)
-    if ssq.dtype.kind == "f" and isinstance(denom, ndarray):
-        denom = denom.astype(ssq.dtype)
+    if ssq.dtype.kind == "f":
+        denom = denom.astype(ssq.dtype) if isinstance(denom, ndarray) else asarray(denom, ssq.dtype)
     return _core.divide(ssq, denom)
 
 

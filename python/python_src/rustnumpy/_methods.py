@@ -4,10 +4,12 @@ from . import _core
 from ._core import asarray
 
 
-def _m_sort(a, axis=-1, kind=None, order=None, *, stable=None):
+def _m_sort(a, axis=-1, kind=None, order=None, *, stable=None, descending=False):
     if a.ndim == 0:
         raise ValueError("Cannot sort a 0-d array")
-    a[...] = _core.sort(a, axis)
+    from ._manip import sort
+
+    a[...] = sort(a, axis, descending=descending)
     return None
 
 

@@ -136,21 +136,24 @@ def slogdet(a):
 
 
 def solve(a, b):
+    from ._manip import broadcast_shapes
+
     a, b = asarray(a), asarray(b)
     _square(a)
     solver = _c.c_solve if (_cx(a) or _cx(b)) else _c.solve
-    if a.ndim == 2:
-        return solver(a, b)
-    vec = b.ndim == a.ndim - 1
-    bb = b[..., None] if vec else b
-    lead = _c.broadcast_shapes(tuple(a.shape[:-2]), tuple(bb.shape[:-2])) if False else None
-    from ._manip import broadcast_shapes
-
+    vec = b.ndim == 1
+    bb = b[:, None] if vec else b
     lead = broadcast_shapes(tuple(a.shape[:-2]), tuple(bb.shape[:-2]))
-    aa = _c.broadcast_to(a, lead + tuple(a.shape[-2:])).reshape((_count(lead),) + tuple(a.shape[-2:]))
-    bb = _c.broadcast_to(bb, lead + tuple(bb.shape[-2:])).reshape((_count(lead),) + tuple(bb.shape[-2:]))
-    outs = [asarray(solver(aa[i], bb[i])) for i in range(aa.shape[0])]
-    res = _c.stack(outs, axis=0).reshape(lead + tuple(outs[0].shape))
+    dtype = _c.result_type(a.dtype, b.dtype, "float32" if a.dtype.kind in "iub" and b.dtype.kind in "iub" else a.dtype)
+    if a.size == 0 or bb.size == 0 or _count(lead) == 0:
+        res = _core.zeros(lead + (a.shape[-1], bb.shape[-1]), dtype if dtype.kind in "fc" else "float64")
+    elif a.ndim == 2 and bb.ndim == 2:
+        res = asarray(solver(a, bb))
+    else:
+        aa = _c.broadcast_to(a, lead + tuple(a.shape[-2:])).reshape((_count(lead),) + tuple(a.shape[-2:]))
+        bb = _c.broadcast_to(bb, lead + tuple(bb.shape[-2:])).reshape((_count(lead),) + tuple(bb.shape[-2:]))
+        outs = [asarray(solver(aa[i], bb[i])) for i in range(aa.shape[0])]
+        res = _c.stack(outs, axis=0).reshape(lead + tuple(outs[0].shape))
     return res[..., 0] if vec else res
 
 
@@ -254,9 +257,18 @@ def pinv(a, rcond=None, hermitian=False, *, rtol=None):
     if rtol is not None:
         rcond = rtol
     a = asarray(a)
-    if _cx(a):
-        return _stack(lambda m: _cx_pinv(m, rcond), a)
-    return _stack(lambda m: _c.pinv(m, rcond), a)
+    one = (lambda m, rc: _cx_pinv(m, rc)) if _cx(a) else (lambda m, rc: _c.pinv(m, rc))
+    if rcond is not None and asarray(rcond).ndim > 0 and a.ndim > 2:
+        lead = tuple(a.shape[:-2])
+        if _count(lead) == 0:
+            return _stack(lambda m: one(m, None), a)
+        rc = _c.broadcast_to(asarray(rcond), lead).reshape((-1,))
+        flat = a.reshape((_count(lead),) + tuple(a.shape[-2:]))
+        outs = [asarray(one(flat[i], float(rc[i]))) for i in range(flat.shape[0])]
+        return _c.stack(outs, axis=0).reshape(lead + tuple(outs[0].shape))
+    if rcond is not None and asarray(rcond).ndim > 0:
+        rcond = float(asarray(rcond).reshape(()))
+    return _stack(lambda m: one(m, rcond), a)
 
 
 def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):

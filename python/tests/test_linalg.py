@@ -167,7 +167,7 @@ def test_stacked_matrices(name):
 def test_stacked_solve_qr_eigh_svd_slogdet_matrix_power():
     a = _stacked(2)
     b = np.random.default_rng(3).standard_normal((3, 4))
-    np.testing.assert_allclose(np.asarray(rnp.linalg.solve(rnp.array(a), rnp.array(b))), np.linalg.solve(a, b[..., None])[..., 0], rtol=1e-8)
+    np.testing.assert_allclose(np.asarray(rnp.linalg.solve(rnp.array(a), rnp.array(b[..., None])))[..., 0], np.linalg.solve(a, b[..., None])[..., 0], rtol=1e-8)
     s, l = rnp.linalg.slogdet(rnp.array(a)), np.linalg.slogdet(a)
     np.testing.assert_allclose(np.asarray(s.sign), l.sign)
     np.testing.assert_allclose(np.asarray(s.logabsdet), l.logabsdet)
@@ -232,7 +232,7 @@ def test_complex_inverse_det_solve_and_friends(dtype, shape):
     np.testing.assert_allclose(np.asarray(s.sign), l.sign, rtol=tol, atol=tol)
     np.testing.assert_allclose(np.asarray(s.logabsdet), l.logabsdet, rtol=tol, atol=tol)
     b = _cplx(2, shape[:-1], dtype)
-    np.testing.assert_allclose(np.asarray(rnp.linalg.solve(ra, rnp.array(b))), np.linalg.solve(a, b[..., None])[..., 0], rtol=tol, atol=tol)
+    np.testing.assert_allclose(np.asarray(rnp.linalg.solve(ra, rnp.array(b[..., None])))[..., 0], np.linalg.solve(a, b[..., None])[..., 0], rtol=tol, atol=tol)
     np.testing.assert_allclose(np.asarray(rnp.linalg.matrix_power(ra, 3)), np.linalg.matrix_power(a, 3), rtol=tol, atol=tol)
     np.testing.assert_allclose(np.asarray(rnp.linalg.matrix_power(ra, -2)), np.linalg.matrix_power(a, -2), rtol=tol, atol=tol)
     q, r = rnp.linalg.qr(ra)

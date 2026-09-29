@@ -236,7 +236,7 @@ impl PyArray {
                 }
                 Item::Mask(m) => {
                     let Arr::Bool(b) = m else { unreachable!("mask arrays are bool") };
-                    if b.len() != shape[axis] {
+                    if b.len() != shape[axis] && !b.is_empty() {
                         return Err(PyIndexError::new_err(format!(
                             "boolean index did not match indexed array along axis {axis}; size of axis is {} but size of corresponding boolean axis is {}",
                             shape[axis],
@@ -321,9 +321,75 @@ fn mask_err(e: rustnumpy::ShapeError) -> PyErr {
     }
 }
 
+fn scalar_mask_value(item: &Bound<'_, PyAny>) -> PyResult<Option<bool>> {
+    if item.is_exact_instance_of::<pyo3::types::PyBool>() {
+        return Ok(Some(item.extract::<bool>()?));
+    }
+    if let Ok(a) = item.downcast::<PyArray>() {
+        let this = a.borrow();
+        if this.shape.is_empty() && this.dtype_name() == "bool" {
+            return Ok(Some(item.call_method0("item")?.extract::<bool>()?));
+        }
+        return Ok(None);
+    }
+    if item.get_type().hasattr("_rnp_scalar")? && item.get_type().getattr("_rnp_dtype")?.extract::<String>()? == "bool" {
+        return Ok(Some(item.is_truthy()?));
+    }
+    Ok(None)
+}
+
+fn split_scalar_masks<'py>(py: Python<'py>, index: &Bound<'py, PyAny>) -> PyResult<Option<(Bound<'py, PyAny>, bool)>> {
+    let raw: Vec<Bound<'py, PyAny>> = match index.downcast::<PyTuple>() {
+        Ok(t) => t.iter().collect(),
+        Err(_) => vec![index.clone()],
+    };
+    let mut keep = true;
+    let mut found = false;
+    let mut rest = Vec::with_capacity(raw.len());
+    for item in raw {
+        match scalar_mask_value(&item)? {
+            Some(v) => {
+                found = true;
+                keep &= v;
+            }
+            None => rest.push(item),
+        }
+    }
+    if !found {
+        return Ok(None);
+    }
+    Ok(Some((PyTuple::new(py, rest)?.into_any(), keep)))
+}
+
 #[pymethods]
 impl PyArray {
-    fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    fn __getitem__(slf: &Bound<'_, Self>, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        if let Some((rest, keep)) = split_scalar_masks(py, index)? {
+            let inner = slf.get_item(rest)?;
+            let core = py.import("rustnumpy._core")?;
+            let arr = core.getattr("asarray")?.call1((inner,))?;
+            if keep {
+                return Ok(arr.get_item(py.None())?.unbind());
+            }
+            let mut shape: Vec<usize> = vec![0];
+            shape.extend(arr.getattr("shape")?.extract::<Vec<usize>>()?);
+            return Ok(core.getattr("zeros")?.call1((shape, arr.getattr("dtype")?))?.unbind());
+        }
+        let this = slf.borrow();
+        this.get_plain(py, index)
+    }
+
+    fn __setitem__(slf: &Bound<'_, Self>, py: Python<'_>, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Some((rest, keep)) = split_scalar_masks(py, index)? {
+            return if keep { slf.set_item(rest, value) } else { Ok(()) };
+        }
+        let this = slf.borrow();
+        this.set_plain(py, index, value)
+    }
+}
+
+impl PyArray {
+    fn get_plain(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         match self.apply_index(py, index)? {
             Applied::View(v) => wrap(py, v),
             Applied::Owned(a) => out_array(py, a),
@@ -331,7 +397,7 @@ impl PyArray {
         }
     }
 
-    fn __setitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    fn set_plain(&self, py: Python<'_>, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let positions = PyArray::from_arr(Arr::I64(
             NdArray::from_vec(self.flat_positions().into_iter().map(|p| p as i64).collect(), &self.shape).map_err(shape_err)?,
         ));

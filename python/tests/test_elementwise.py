@@ -59,12 +59,21 @@ def test_bool_array_with_python_scalars():
     assert_same(rnp.multiply(a, 2.5), np.multiply(a, 2.5))
 
 
-def test_zero_dim_results_are_python_scalars_or_0d_arrays():
+def test_zero_dim_results_are_array_scalars_or_0d_arrays():
     r = rnp.add(np.float64(1.5), np.float64(2.0))
-    assert type(r) is float and r == 3.5
+    assert isinstance(r, float) and r == 3.5 and r.dtype == "float64" and r.shape == () and type(r.item()) is float
     r = rnp.add(np.int64(1), np.int64(2))
-    assert type(r) is int and r == 3
-    assert type(rnp.add(True, True)) is bool
+    assert isinstance(r, int) and r == 3 and r.dtype == "int64" and type(r.item()) is int
+    r = rnp.add(True, True)
+    assert bool(r) is True and r.dtype == "bool" and r.ndim == 0
+    r = rnp.multiply(1 + 2j, 2)
+    assert isinstance(r, complex) and r.dtype == "complex128"
+    strong = rnp.sum(rnp.asarray([1.5, 2.5])) * rnp.asarray([1.0], dtype="float32")
+    assert strong.dtype == "float64"
+    weak = 2.5 * rnp.asarray([1.0], dtype="float32")
+    assert weak.dtype == "float32"
+    assert type(rnp.sum(rnp.asarray([1.5])) + 1) is type(rnp.sum(rnp.asarray([1.5])))
+    assert np.asarray(rnp.any(rnp.asarray([True]))).dtype == np.bool_
     r = rnp.add(np.float32(1.5), np.float32(2.0))
     assert isinstance(r, rnp.ndarray) and r.shape == () and r.dtype == rnp.float32 and float(r) == 3.5
     r = rnp.add(np.int8(1), np.int8(2))
