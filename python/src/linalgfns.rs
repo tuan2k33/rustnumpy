@@ -153,16 +153,20 @@ pub fn eig(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
+pub fn qr_complete(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    let i = f64_input(py, a)?;
+    let (q, r) = linalg::qr_complete(&i.a).map_err(la_err)?;
+    Ok((ret(py, q, i.single)?, ret(py, r, i.single)?))
+}
+
+#[pyfunction]
 #[pyo3(signature = (a, full_matrices=true, compute_uv=true))]
 pub fn svd(py: Python<'_>, a: &Bound<'_, PyAny>, full_matrices: bool, compute_uv: bool) -> PyResult<Py<PyAny>> {
     let i = f64_input(py, a)?;
     if !compute_uv {
         return ret_vec(py, linalg::svdvals(&i.a).map_err(la_err)?, i.single);
     }
-    if full_matrices && i.a.ndim() == 2 && i.a.shape()[0] != i.a.shape()[1] {
-        return Err(unsupported("full_matrices=True on a non-square matrix is not bound; pass full_matrices=False"));
-    }
-    let (u, s, vt) = linalg::svd(&i.a).map_err(la_err)?;
+    let (u, s, vt) = if full_matrices { linalg::svd_full(&i.a) } else { linalg::svd(&i.a) }.map_err(la_err)?;
     named(py, "SVDResult", &["U", "S", "Vh"], vec![ret(py, u, i.single)?, ret_vec(py, s, i.single)?, ret(py, vt, i.single)?])
 }
 
@@ -504,7 +508,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ($($f:ident),* $(,)?) => {$( m.add_function(wrap_pyfunction!($f, m)?)?; )*};
     }
     reg!(
-        inv, cholesky, det, slogdet, solve, qr, eigh, eigvalsh, eigvals, eig, svd, svdvals, pinv, matrix_rank, lstsq, cond,
+        inv, qr_complete, cholesky, det, slogdet, solve, qr, eigh, eigvalsh, eigvals, eig, svd, svdvals, pinv, matrix_rank, lstsq, cond,
         norm, matrix_power, fft, ifft, rfft, irfft, hfft, ihfft, fftn, ifftn, fft2, ifft2, rfftn, irfftn, fftfreq, rfftfreq,
         fftshift, ifftshift
     );

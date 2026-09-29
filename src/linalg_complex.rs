@@ -137,6 +137,30 @@ pub fn qr(a: &CArr) -> Result<(CArr, CArr), LinalgError> {
     Ok((from_mat(f.compute_thin_Q().as_ref()), from_mat(f.thin_R())))
 }
 
+pub fn qr_complete(a: &CArr) -> Result<(CArr, CArr), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
+    let m = to_mat(a)?;
+    let f = m.as_ref().qr();
+    let q = f.compute_Q();
+    let (r, c) = (m.nrows(), m.ncols());
+    let thin = f.thin_R();
+    let full_r = Mat::from_fn(r, c, |i, j| if i < thin.nrows() { thin[(i, j)] } else { c64::new(0.0, 0.0) });
+    Ok((from_mat(q.as_ref()), from_mat(full_r.as_ref())))
+}
+
+pub fn svd_full(a: &CArr) -> Result<(CArr, Vec<f64>, CArr), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
+    let m = to_mat(a)?;
+    let s = m.as_ref().svd().map_err(|_| LinalgError::SvdFailed)?;
+    let k = m.nrows().min(m.ncols());
+    let values = (0..k).map(|i| s.S()[i].re).collect();
+    Ok((from_mat(s.U()), values, from_mat(s.V().adjoint().to_owned().as_ref())))
+}
+
 pub fn cholesky(a: &CArr) -> Result<CArr, LinalgError> {
     if a.is_empty() {
         return Err(LinalgError::Empty);

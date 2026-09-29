@@ -102,11 +102,9 @@ def test_svd_family(dtype, shape):
     eu, es, evh = np.linalg.svd(a, full_matrices=False)
     assert u.shape == eu.shape and vh.shape == evh.shape
     np.testing.assert_allclose((u * sv) @ vh, a, rtol=rtol(dtype) * 10, atol=1e-4 if dtype == "float32" else 1e-10)
-    if shape[0] == shape[1]:
-        assert rnp.linalg.svd(a)[0].shape == (5, 5)
-    else:
-        with pytest.raises(NotImplementedError):
-            rnp.linalg.svd(a)
+    u, sv, vh = rnp.linalg.svd(a)
+    wu, ws, wvh = np.linalg.svd(a)
+    assert u.shape == wu.shape and vh.shape == wvh.shape
 
 
 @pytest.mark.parametrize("shape", [(5, 5), (6, 3), (3, 6)])
@@ -267,3 +265,25 @@ def test_complex_lstsq_cond_norm_and_singular():
     with pytest.raises(rnp.linalg.LinAlgError):
         rnp.linalg.inv(rnp.array(np.array([[1j, 2j], [2j, 4j]])))
     assert complex(rnp.linalg.det(rnp.array(np.array([[1j, 2j], [2j, 4j]])))) == 0
+
+
+@pytest.mark.parametrize("dtype", ["float64", "complex128", "complex64"])
+@pytest.mark.parametrize("shape", [(5, 3), (3, 5), (4, 4)])
+def test_qr_complete_and_svd_full_matrices_for_every_kind(dtype, shape):
+    a = _cplx(9, shape, "complex128").astype(dtype) if dtype != "float64" else np.random.default_rng(9).standard_normal(shape)
+    tol = 1e-3 if dtype == "complex64" else 1e-9
+    q, r = rnp.linalg.qr(rnp.array(a), mode="complete")
+    q, r = np.asarray(q), np.asarray(r)
+    wq, wr = np.linalg.qr(a, mode="complete")
+    assert q.shape == wq.shape and r.shape == wr.shape and q.dtype == wq.dtype
+    np.testing.assert_allclose(q @ r, a, atol=tol, rtol=tol)
+    np.testing.assert_allclose(np.conj(q.T) @ q, np.eye(shape[0]), atol=tol)
+    u, s, vh = rnp.linalg.svd(rnp.array(a), full_matrices=True)
+    u, s, vh = np.asarray(u), np.asarray(s), np.asarray(vh)
+    wu, ws, wvh = np.linalg.svd(a, full_matrices=True)
+    assert u.shape == wu.shape and vh.shape == wvh.shape
+    np.testing.assert_allclose(s, ws, rtol=tol, atol=tol)
+    k = len(s)
+    np.testing.assert_allclose((u[:, :k] * s) @ vh[:k], a, atol=tol, rtol=tol)
+    np.testing.assert_allclose(np.conj(u.T) @ u, np.eye(shape[0]), atol=tol)
+    np.testing.assert_allclose(vh @ np.conj(vh.T), np.eye(shape[1]), atol=tol)

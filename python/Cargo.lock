@@ -866,6 +866,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pymath"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc10e50b7a1f2cc3887e983721cb51fc7574be0066c84bff3ef9e5c096e8d6d5"
+dependencies = [
+ "libc",
+ "libm",
+ "num-complex",
+]
+
+[[package]]
 name = "pyo3"
 version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1138,6 +1149,7 @@ dependencies = [
  "half",
  "num-complex",
  "num-traits",
+ "pymath",
  "pyo3",
  "rustnumpy",
 ]

@@ -216,6 +216,31 @@ pub fn svd(a: &NdArray) -> Result<(NdArray, Vec<f64>, NdArray), LinalgError> {
     Ok((from_mat(svd.U()), values, from_mat(vt)))
 }
 
+pub fn svd_full(a: &NdArray) -> Result<(NdArray, Vec<f64>, NdArray), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
+    let a_mat = to_mat(a)?;
+    let svd = a_mat.as_ref().svd().map_err(|_| LinalgError::SvdFailed)?;
+    let k = a_mat.nrows().min(a_mat.ncols());
+    let values: Vec<f64> = (0..k).map(|i| svd.S()[i]).collect();
+    let vt = svd.V().transpose();
+    Ok((from_mat(svd.U()), values, from_mat(vt)))
+}
+
+pub fn qr_complete(a: &NdArray) -> Result<(NdArray, NdArray), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
+    let a_mat = to_mat(a)?;
+    let f = a_mat.as_ref().qr();
+    let q = f.compute_Q();
+    let thin = f.thin_R();
+    let (r, c) = (a_mat.nrows(), a_mat.ncols());
+    let full_r = Mat::from_fn(r, c, |i, j| if i < thin.nrows() { thin[(i, j)] } else { 0.0 });
+    Ok((from_mat(q.as_ref()), from_mat(full_r.as_ref())))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VecNormOrd {
 

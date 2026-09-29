@@ -329,10 +329,10 @@ fn ln2<T: Float>() -> T {
     T::from(std::f64::consts::LN_2).expect("ln 2 fits every float")
 }
 
-fn c_sqrt<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_sqrt_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     z.sqrt()
 }
-fn c_exp<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_exp_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     z.exp()
 }
 fn c_exp2<T: Float>(z: Complex<T>) -> Complex<T> {
@@ -343,7 +343,7 @@ fn c_expm1<T: Float>(z: Complex<T>) -> Complex<T> {
     let a = (z.im / two).sin();
     Complex::new(z.re.exp_m1() * z.im.cos() - two * a * a, z.re.exp() * z.im.sin())
 }
-fn c_log<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_log_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let half = T::one() / (T::one() + T::one());
     let two = T::one() + T::one();
     let (ax, ay) = (z.re.abs(), z.im.abs());
@@ -369,38 +369,38 @@ fn c_log1p<T: Float>(z: Complex<T>) -> Complex<T> {
     let x1 = z.re + T::one();
     Complex::new(x1.hypot(z.im).ln(), z.im.atan2(x1))
 }
-fn c_sin<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_sin_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     z.sin()
 }
-fn c_cos<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_cos_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     z.cos()
 }
-fn c_tan<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_tan_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let r = c_tanh(Complex::new(-z.im, z.re));
     Complex::new(r.im, -r.re)
 }
-fn c_asin<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_asin_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let a = Complex::new(T::one() - z.re, -z.im).sqrt();
     let b = Complex::new(T::one() + z.re, z.im).sqrt();
     Complex::new(z.re.atan2((a * b).re), (a.conj() * b).im.asinh())
 }
-fn c_acos<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_acos_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let a = Complex::new(T::one() - z.re, -z.im).sqrt();
     let b = Complex::new(T::one() + z.re, z.im).sqrt();
     let two = T::one() + T::one();
     Complex::new(two * a.re.atan2(b.re), (b.conj() * a).im.asinh())
 }
-fn c_atan<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_atan_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let r = c_atanh(Complex::new(-z.im, z.re));
     Complex::new(r.im, -r.re)
 }
-fn c_sinh<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_sinh_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     z.sinh()
 }
-fn c_cosh<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_cosh_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     z.cosh()
 }
-fn c_tanh<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_tanh_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let (x, y) = (z.re, z.im);
     let one = T::one();
     let limit = T::from(if std::mem::size_of::<T>() == 4 { 9.0 } else { 22.0 }).expect("limit fits every float");
@@ -416,15 +416,15 @@ fn c_tanh<T: Float>(z: Complex<T>) -> Complex<T> {
     let denom = one + beta * s * s;
     Complex::new(beta * rho * s / denom, t / denom)
 }
-fn c_asinh<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_asinh_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let r = c_asin(Complex::new(-z.im, z.re));
     Complex::new(r.im, -r.re)
 }
-fn c_acosh<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_acosh_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let w = c_acos(z);
     if z.im.is_sign_negative() { Complex::new(w.im, -w.re) } else { Complex::new(-w.im, w.re) }
 }
-fn c_atanh<T: Float>(z: Complex<T>) -> Complex<T> {
+fn c_atanh_fb<T: Float>(z: Complex<T>) -> Complex<T> {
     let x = z.re.abs();
     let y = z.im;
     let one = T::one();
@@ -435,6 +435,124 @@ fn c_atanh<T: Float>(z: Complex<T>) -> Complex<T> {
     let im = (one / two) * (two * y).atan2((one - x) * (one + x) - y * y);
     Complex::new(re.copysign(z.re), im)
 }
+fn mulinf(a: f64, sign: f64) -> f64 {
+    if a == 0.0 { a * sign.signum() } else { (a.signum() * sign.signum()) * f64::INFINITY }
+}
+
+fn special64(name: &str, z: Complex<f64>, edom: bool) -> Option<Complex<f64>> {
+    let (x, y) = (z.re, z.im);
+    if !edom {
+        let (sy, cy) = y.sin_cos();
+        let (sx, cx) = x.sin_cos();
+        return Some(match name {
+            "exp" => Complex::new(mulinf(cy, 1.0), mulinf(sy, 1.0)),
+            "cosh" => Complex::new(mulinf(cy, 1.0), mulinf(sy, x)),
+            "sinh" => Complex::new(mulinf(cy, x), mulinf(sy, 1.0)),
+            "sin" => Complex::new(mulinf(sx, 1.0), mulinf(cx, y)),
+            "cos" => Complex::new(mulinf(cx, 1.0), -mulinf(sx, y)),
+            _ => return None,
+        });
+    }
+    if y.is_infinite() && x.is_finite() {
+        return match (name, x == 0.0) {
+            ("sinh", true) => Some(Complex::new(x, f64::NAN)),
+            ("cosh", true) => Some(Complex::new(f64::NAN, 0.0 * x.signum() * y.signum())),
+            ("tanh", true) => Some(Complex::new(x, f64::NAN)),
+            ("sinh" | "cosh" | "tanh", false) => Some(Complex::new(f64::NAN, f64::NAN)),
+            _ => None,
+        };
+    }
+    if y.is_infinite() && x.is_infinite() {
+        return match name {
+            "sinh" => Some(Complex::new(x.signum() * f64::INFINITY, f64::NAN)),
+            "cosh" => Some(Complex::new(f64::INFINITY, f64::NAN)),
+            "tanh" => Some(Complex::new(x.signum(), 0.0 * y.signum())),
+            "sin" => Some(Complex::new(f64::NAN, f64::INFINITY)),
+            "cos" => Some(Complex::new(f64::INFINITY, f64::NAN)),
+            _ => None,
+        };
+    }
+    if (name == "sin" || name == "cos") && x.is_infinite() && y.is_finite() {
+        return Some(Complex::new(f64::NAN, if y == 0.0 { y } else { f64::NAN }));
+    }
+    if name == "tan" && x.is_infinite() && y.is_finite() {
+        return Some(Complex::new(f64::NAN, if y == 0.0 { y } else { f64::NAN }));
+    }
+    None
+}
+
+fn via64<T: Float>(name: &str, z: Complex<T>, f: impl Fn(Complex<f64>) -> pymath::Result<Complex<f64>>, fallback: impl Fn(Complex<T>) -> Complex<T>) -> Complex<T> {
+    let w = Complex::new(z.re.to_f64().expect("float converts"), z.im.to_f64().expect("float converts"));
+    let back = |r: Complex<f64>| Complex::new(T::from(r.re).expect("float converts"), T::from(r.im).expect("float converts"));
+    match f(w) {
+        Ok(r) => back(r),
+        Err(e) => match special64(name, w, e == pymath::Error::EDOM) {
+            Some(r) => back(r),
+            None => fallback(z),
+        },
+    }
+}
+
+fn c_sqrt<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("sqrt", z, pymath::cmath::sqrt, c_sqrt_fb)
+}
+
+fn c_exp<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("exp", z, pymath::cmath::exp, c_exp_fb)
+}
+
+fn c_sin<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("sin", z, pymath::cmath::sin, c_sin_fb)
+}
+
+fn c_cos<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("cos", z, pymath::cmath::cos, c_cos_fb)
+}
+
+fn c_tan<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("tan", z, pymath::cmath::tan, c_tan_fb)
+}
+
+fn c_asin<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("asin", z, pymath::cmath::asin, c_asin_fb)
+}
+
+fn c_acos<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("acos", z, pymath::cmath::acos, c_acos_fb)
+}
+
+fn c_atan<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("atan", z, pymath::cmath::atan, c_atan_fb)
+}
+
+fn c_sinh<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("sinh", z, pymath::cmath::sinh, c_sinh_fb)
+}
+
+fn c_cosh<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("cosh", z, pymath::cmath::cosh, c_cosh_fb)
+}
+
+fn c_tanh<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("tanh", z, pymath::cmath::tanh, c_tanh_fb)
+}
+
+fn c_asinh<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("asinh", z, pymath::cmath::asinh, c_asinh_fb)
+}
+
+fn c_acosh<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("acosh", z, pymath::cmath::acosh, c_acosh_fb)
+}
+
+fn c_atanh<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("atanh", z, pymath::cmath::atanh, c_atanh_fb)
+}
+
+fn c_log<T: Float>(z: Complex<T>) -> Complex<T> {
+    via64("log", z, |w| pymath::cmath::log(w, None), c_log_fb)
+}
+
 fn c_rint<T: Float>(z: Complex<T>) -> Complex<T> {
     Complex::new(u_rint(z.re), u_rint(z.im))
 }

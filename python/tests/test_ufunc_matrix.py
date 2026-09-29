@@ -142,3 +142,19 @@ def test_complex_power_special_cases():
     z = np.array([0j, -0.0 + 0j, 1 + 1j, -1 + 0j, -1 - 0j, 2j, 1e-300 + 0j])
     for e in (0j, 1 + 0j, 2 + 0j, 3 + 0j, -2 + 0j, 0.5 + 0j, 1 + 1j, -1 + 1j, 150 + 0j):
         check("power", (z, e), (rnp.array(z), e))
+
+
+def test_complex_functions_with_inf_nan_and_huge_components_match_numpy_up_to_zero_sign():
+    vals = [0.0, -0.0, 1.0, -1.0, 2.0, 0.5, 1e-300, 1e300, np.inf, -np.inf, np.nan]
+    z = np.array([complex(a, b) for a in vals for b in vals])
+
+    def same(a, b):
+        return (np.isnan(a) & np.isnan(b)) | (a == b) | (np.abs(a - b) <= 1e-11 * np.abs(b))
+
+    for name in ("sqrt", "log", "log10", "exp", "sin", "cos", "tan", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
+                 "arcsinh", "arccosh", "arctanh"):
+        with np.errstate(all="ignore"):
+            want = getattr(np, name)(z)
+        got = np.asarray(getattr(rnp, name)(rnp.array(z)))
+        bad = ~(same(got.real, want.real) & same(got.imag, want.imag))
+        assert not bad.any(), (name, z[bad][:3], want[bad][:3], got[bad][:3])

@@ -135,6 +135,9 @@ def qr(a, mode="reduced"):
         return _tuple_stack(lambda m: tuple(qr_(m)), a, QRResult)
     if mode == "r":
         return _tuple_stack(lambda m: (qr_(m)[1],), a, lambda r: r)
+    if mode == "complete":
+        full = _c.c_qr_complete if _cx(a) else _c.qr_complete
+        return _tuple_stack(lambda m: tuple(full(m)), a, QRResult)
     raise _core.Unsupported("qr mode %r is not supported" % mode)
 
 
@@ -167,11 +170,10 @@ def eigvals(a):
 def svd(a, full_matrices=True, compute_uv=True, hermitian=False):
     a = asarray(a)
     if _cx(a):
-        if full_matrices:
-            raise _core.Unsupported("complex svd supports full_matrices=False only")
+        one = _c.c_svd_full if full_matrices else _c.c_svd
         if not compute_uv:
             return _stack(lambda m: _c.c_svd(m)[1], a)
-        return _tuple_stack(lambda m: tuple(_c.c_svd(m)), a, SVDResult)
+        return _tuple_stack(lambda m: tuple(one(m)), a, SVDResult)
     if not compute_uv:
         return _stack(lambda m: _c.svd(m, full_matrices, False), a)
     return _tuple_stack(lambda m: tuple(_c.svd(m, full_matrices, True)), a, SVDResult)

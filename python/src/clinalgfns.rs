@@ -80,6 +80,20 @@ pub fn c_cholesky(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
+pub fn c_qr_complete(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
+    let i = input(py, a)?;
+    let (q, r) = lc::qr_complete(&i.a).map_err(err)?;
+    Ok((out_array(py, back(q, i.single)?)?, out_array(py, back(r, i.single)?)?))
+}
+
+#[pyfunction]
+pub fn c_svd_full(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>, Py<PyAny>)> {
+    let i = input(py, a)?;
+    let (u, s, vh) = lc::svd_full(&i.a).map_err(err)?;
+    Ok((out_array(py, back(u, i.single)?)?, out_array(py, real_back(s, i.single)?)?, out_array(py, back(vh, i.single)?)?))
+}
+
+#[pyfunction]
 #[pyo3(signature = (a, uplo="L"))]
 pub fn c_eigh(py: Python<'_>, a: &Bound<'_, PyAny>, uplo: &str) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
     let i = input(py, a)?;
@@ -107,6 +121,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     macro_rules! reg {
         ($($f:ident),* $(,)?) => {$( m.add_function(wrap_pyfunction!($f, m)?)?; )*};
     }
-    reg!(c_solve, c_inv, c_det, c_slogdet, c_qr, c_cholesky, c_eigh, c_eig, c_svd);
+    reg!(c_qr_complete, c_svd_full, c_solve, c_inv, c_det, c_slogdet, c_qr, c_cholesky, c_eigh, c_eig, c_svd);
     Ok(())
 }
