@@ -256,28 +256,30 @@ Fixed by this run: `__array_namespace_info__`/`__array_api_version__` were missi
 
 ## Index of NEPs Read, With Status
 
-| NEP | Topic | Status |
-| --- | --- | --- |
-| 1 | .npy file format | Final |
-| 5 | Generalized universal function API | Final |
-| 10 | Iterator (NpyIter) | Final |
-| 19 | New RNG architecture | Final |
-| 20 | Extending gufunc signatures | Final |
-| 21 | oindex/vindex indexing | **Deferred (not adopted)** |
-| 23 | Backward-compatibility policy | Final |
-| 27 | 0-D arrays vs. array scalars | Final |
-| 34 | Banning dtype=object inference for ragged data | Final |
-| 38 | Universal SIMD intrinsics | Final |
-| 41 | New DType system (foundation) | Accepted |
-| 42 | New DType system (API detail) | Accepted |
-| 43 | Extending ufuncs for new DTypes | **Draft/Open** |
-| 49 | Custom memory allocator C-API | Final |
-| 50 | Weak scalar promotion | Final |
-| 52 | API cleanup for NumPy 2.0 | Final |
-| 55 | New StringDType | Final |
-| 56 | Aligning to the Python Array API standard | Final |
+"Status" is the NEP's own status; "Here" is what this repository does with it (checked against the code and the `array-api-tests` run in step 26c).
 
-Note: only NEP 41/42/43 are still being shaped (43 remains Draft); NEP 21 is a rejected historical proposal — both of these groups should be treated as direction/reference, not settled convention like the remaining NEPs.
+| NEP | Topic | Status | Here |
+| --- | --- | --- | --- |
+| 1 | .npy file format | Final | Rust: every dtype, Fortran order, big-endian read (`npy.rs`); Python: full v1/v2/v3 + `.npz` (`_io.py`) |
+| 5, 20 | Generalized ufuncs | Final | `gufunc.rs` (signature parser, `vecdot`, `matmul`) |
+| 10 | Iterator (NpyIter) | Final | `ViewIter` strided iterator (`view.rs`) |
+| 19 | New RNG architecture | Final | `SeedSequence` + PCG64 bit-identical; `integers`/`shuffle`/`choice` identical, other distributions not |
+| 21 | oindex/vindex indexing | **Deferred (not adopted)** | Implemented as explicit `.oindex()`/`.vindex()` |
+| 23 | Backward-compatibility policy | Final | Policy only |
+| 27 | 0-D arrays vs. array scalars | Final | Scalars for `bool`/`int64`/`float64`/`complex128`, 0-d arrays otherwise (see `docs/CONVENTIONS.md`) |
+| 34 | No dtype=object for ragged data | Final | Ragged input is a `ValueError` |
+| 38 | Universal SIMD intrinsics | Final | Not implemented; perf pass deferred |
+| 41 | New DType system (foundation) | Accepted | `Kind` + `DType` trait |
+| 42 | New DType system (API detail) | Accepted | Partial: closed set of 14 dtypes, no third-party dtypes |
+| 43 | Extending ufuncs for new DTypes | **Draft/Open** | Not implemented |
+| 49 | Custom memory allocator C-API | Final | `allocator.rs`, standalone (not wired into `NdArray`) |
+| 50 | Weak scalar promotion | Final | Generated promotion tables, weak scalars, per-loop resolution |
+| 52 | API cleanup for NumPy 2.0 | Final | Modern names only |
+| 55 | New StringDType | Final | Written earlier (commit `083b9af`), not in this tree |
+| 56 | Aligning to the Python Array API standard | Final | Spec 2025.12: 1335 passed / 41 failed on `array-api-tests`, stock NumPy 2.5.3 gets 1331 / 46 |
+| 13, 18, 22, 35 | `__array_ufunc__`, `__array_function__`, duck arrays | Final/Accepted | Deliberately not implemented (independence from NumPy) |
+
+Note: only NEP 41/42/43 are still being shaped (43 remains Draft); NEP 21 is a rejected historical proposal. Treat both groups as direction and reference, not settled convention.
 
 ## Mapping to Rust Design
 
@@ -332,65 +334,6 @@ struct MaskedArray<T> {
 - **Unsupported ops** (`solve`/`eig`/`det`/`inv`/SVD) shouldn't exist as a callable method on `MaskedArray<T>` at all — and with `MaskedArray<T>` as its own separate struct (not `NdArray<T>` plus a field, see above), this isn't even something to remember to omit: `linalg` is only ever implemented for `NdArray<T>`, so `masked.solve(...)` is a compile error ("no method named `solve` found for `MaskedArray<T>`") automatically, not a runtime panic or an `Err` the caller has to remember to check. A mistake caught at `cargo build` beats one caught in production.
 
 General rule for step 29: reach for the type system, method naming, and doc comments first; reserve any actual runtime mechanism (return values, `Result`, `debug_assert!`) for cases doc comments genuinely can't cover, and never use a runtime print/log as the *primary* way of communicating well-documented, contractual behavior.
-
-## Mapping Real Source Code → Rust Modules
-
-Based on the actual structure map of NumPy's source (871 files: 190 Python, 653 C/C++, 16 Cython, 12 vendored) — grouped by capability layer, not by the original directory tree:
-
-| Rust Module | Real NumPy Source | Notes |
-| --- | --- | --- |
-| `core/` | `_core/include/numpy/ndarraytypes.h` (struct `PyArrayObject`), `multiarray/arrayobject.c`, `alloc.c`, `ctors.c`, `iterators.c` | Convert — the design core |
-| `dtype/` | `multiarray/descriptor.c`, `dtypemeta.c`, `arraytypes.c.src`, `scalartypes.c.src`, `_core/include/numpy/dtype_api.h` | Convert — main trait-learning focus |
-| `cast/` | `multiarray/convert_datatype.c`, `dtype_transfer.c` | Convert — NEP 50 algorithm |
-| `ufunc/` | `umath/ufunc_object.c`, `ufunc_type_resolution.c`, `loops.c.src` | Convert |
-| `simd/` | `_core/src/_simd/`, `common/simd/{sse,avx2,avx512,neon,vec,lsx}/`, `_core/src/highway/` | Convert partially — use `std::arch`/`pulp` crate instead of writing 6 separate intrinsic sets like C |
-| `sort/` | `_core/src/npysort/` (except `x86-simd-sort/`) | Convert the algorithmic part, use standard `sort_unstable` for the basics |
-| `math/` | `_core/src/npymath/` | Mostly available in `std`/`half` crate, only convert what's missing |
-| `iter/` | `multiarray/nditer_*.c` (the real NpyIter) | Convert |
-| `io/` | `lib/_format_impl.py` | Convert — matches NEP 1 |
-| `random/` | `random/*.pyx` (bit_generator, _pcg64, _generator, mtrand), `random/src/pcg64/`, `philox/` | Convert the wrapper, use `rand`/`rand_pcg` crate for the core |
-| `ma/` | `ma/core.py` (18 classes, 94 functions) | Not converted 1-1 — condensed into the `validity` field (see separate note below) |
-| **DEPEND ON A PURE-RUST CRATE, not hand-converted** | | |
-| `linalg/lapack_lite/` | F2C-translated from Fortran LAPACK/BLAS — machine-generated code, not hand-written | Use the `faer` crate (pure Rust) — readable, debuggable, no FFI/build-system boundary to reason about |
-| `fft/pocketfft` | A separate author's (Martin Reinecke) FFT library, vendored as-is | Use the `rustfft` crate (pure Rust) |
-| `npysort/x86-simd-sort/` | Intel's own vendored x86-simd-sort library, highly specialized SIMD kernels per CPU microarchitecture | Use standard `sort_unstable` (`sort_unstable_by(|a,b| a.total_cmp(b))` for floats) — no plan to bind `x86-simd-sort` |
-
-**Convert vs. depend-on-a-crate principles:**
-
-| Convert by hand when... | Depend on a crate when... |
-| --- | --- |
-| The code is NumPy's own design (dtype system, iterator, ufunc dispatch) — there's an idea to learn | The code is a numerical library that's been battle-tested for decades (LAPACK, FFT) — reimplementing the *algorithm* teaches little that reimplementing the *design* doesn't |
-| It's readable, has real value for learning algorithms/OOP | The original is machine-generated (F2C) or a highly specialized SIMD kernel — reading *that* specific code teaches nothing, even though the math it implements is worth understanding |
-| Rewriting it is a reasonable scope (hundreds to a few thousand lines) | Writing a from-scratch LAPACK/FFT *implementation* (not just using one) would be a separate project unto itself taking years |
-
-In short: convert the parts that are "NumPy's design ideas" by hand; for "numerical tools NumPy merely borrows", reach for an existing implementation rather than writing one from scratch or wrapping NumPy's own copy via FFI.
-
-**Current decision: native Rust from the start** — `faer` for `linalg`, `rustfft` for FFT, `sort_unstable` for sort. None of LAPACK/BLAS/pocketfft/x86-simd-sort is FFI-bound at all.
-
-The earlier plan bound to the C/Fortran libraries first, on the theory that it's faster to ship. That traded away the thing this project is actually for: every line of the core stays pure Rust, buildable with plain `cargo build`, debuggable with normal Rust tooling, with no FFI boundary, no C build toolchain, and no linker path to reason about when something goes wrong. Worth it even though it means accepting small, well-understood behavioral deviations from NumPy (below) instead of bit-for-bit compatibility — those deviations are handled by testing with a tolerance, not by chasing exact equality.
-
-**Known deviations from NumPy this decision accepts** (not mathematically wrong, just not identical to NumPy's specific implementation):
-
-- **Sort**: `f64`/`f32` don't implement `Ord` because of NaN — use `sort_unstable_by(|a,b| a.total_cmp(b))` to match NumPy's behavior of pushing NaN to the end. Neither `sort_unstable` nor NumPy's default `quicksort`/introsort is stable, so the order of equal elements may differ from NumPy's — use `sort()` (Rust's stable sort) if matching NumPy's `kind='stable'` specifically matters.
-- **FFT**: `rustfft` and `pocketfft` are both mathematically correct but not bit-for-bit identical (different floating-point summation order → ULP-level error).
-- **Linear algebra** (`faer` vs LAPACK): the clearest difference — eigenvector/singular-vector signs can flip (both are mathematically correct), degenerate (repeated) eigenvalues/singular values can come out in a different order/corresponding subspace, error handling for singular matrices follows a different API style (LAPACK's `info` code vs. faer's Rust-style `Result`/panic), and multi-threaded BLAS-backed code can produce non-deterministic results between runs at the ULP level (`faer` is less prone to this than a threaded LAPACK, but not immune).
-- **Testing implication**: when comparing results with NumPy, always use tolerance-based comparison (`atol`/`rtol`, like `numpy.allclose`) instead of exact equality, and normalize signs before comparing eigenvectors/SVD. Treat exact equality against NumPy as the wrong test to write for anything touching sort, FFT, or linalg — a tolerance check that passes is the actual spec being met; an exact-equality check that fails on a sign flip or an ULP is a broken test, not a real bug.
-
-**This tolerance principle is project-wide, not just for linalg/FFT/sort.** Any module computing something numerically (reductions, statistics, future `polynomial`/interpolation work, anything summing or averaging floats) can legitimately differ from NumPy's C implementation at the floating-point level — different summation order, a different but equally valid formula, a different intermediate rounding step — without either side being wrong. The standard from step 12 onward: match NumPy's *documented behavior and formulas* exactly (defaults, edge cases like empty-input or all-`NaN` handling, which case is `Err` vs. a `NaN` return), verify those against a real NumPy run before writing them into a test, and compare numeric results with a tolerance rather than bit-for-bit equality. When an implementation genuinely can't match a behavior exactly (not just a floating-point rounding difference, but a real scope gap or a deliberate simplification), say so explicitly in the code/commit rather than silently shipping a near-miss — small, well-understood, and disclosed beats undisclosed.
-
-## Next Steps
-
-Suggested learning/implementation order, easy to hard, where every step produces immediately verifiable code:
-
-1. **Basic `NdArray` struct** — shape/strides/buffer for a fixed dtype (e.g. `f64`), try manual slicing/view/broadcasting. Learn ownership, lifetimes, `&`/`&mut`.
-2. **Reading/writing the .npy format** (NEP 1) — read a real NumPy-exported file, compare results directly with Python. Learn binary parsing, error handling (`Result`/`?`).
-3. **Basic DType via trait** — implement 3-4 dtypes (`i32`, `f32`, `f64`, `bool`) via `enum` or `trait`, try the NEP 50 promotion algorithm. Learn traits, generics, pattern matching.
-4. **Simple ufunc** — element-wise `add`/`mul` with broadcasting, compare results with real NumPy. Learn iterator design, closures.
-5. **Custom allocator** (NEP 49 → `Allocator` trait) — try a simple pool allocator. Learn controlled unsafe Rust.
-6. **PyO3 binding** — call the Rust array from Python, compare performance with NumPy on a real problem.
-7. **Parallelization with `rayon`** — this is a genuine chance to beat NumPy (the original NumPy is mostly single-threaded outside of BLAS).
-
-Each step should pause to write a benchmark comparing against NumPy — both to track performance progress and to reinforce understanding of the real cost of each design decision.
 
 ## Steps 8–29 — Reaching Functional Parity with NumPy
 
@@ -654,7 +597,7 @@ Step 26 ended with a list of "deliberately not done" items and a few unverified 
 
 **Bugs found and fixed while doing this** (each has a test; `histogram(bins='auto')` estimator and the allocation guard are described under Numbers): integer power exponent clamped to `u32`; `lstsq` `rcond < 0` must mean `eps/2` (LAPACK), not `eps` (fixes the last known `lstsq` divergence); `ndarray.__index__` accepted 1-element arrays; `reshape` accepted `True`; `float16` was silently missing from `write_positions`, `clip` and the overflow check; `mean`/`nanvar` with `where=` promoted `float32` to `float64`; `nanvar`/`nanstd` must be `nan` when `n - ddof <= 0`; complex `max` ignored a NaN in the second operand; `sin/cos` with overlapping `out=` (the old `test_sincos_overlaps` failures); `np.asarray(x)` required a `dtype` argument; `where(cond)` with one argument did not work.
 
-**Conventions (kept on purpose, not bugs).** (1) Statistics (`var/std/mean`) of `float16`/`float32` accumulate in `f64` and round once; NumPy accumulates in the input dtype, so results agree to the dtype's precision but NumPy can overflow in an intermediate where we do not (the tests use data that avoids it). (2) `view(dtype)` returns a *copy* (the storage is a typed enum, so two dtypes cannot alias one buffer); same-dtype `view()` is a real view. (3) `partition`/`argpartition` fully sort (a valid partition; NumPy's element order inside the halves is introselect-specific). (4) The distributions added to `Generator` (and `normal`/`exponential`/`gamma` from step 22) are statistically correct transforms of the bit-identical PCG64 stream, **not** NumPy's ziggurat/rejection algorithms, so their streams differ from NumPy's; making them bit-identical needs NumPy's 256-entry ziggurat tables, which are not in the installed package, so they cannot be verified here; integers/shuffle/choice stay bit-identical. (5) `np.random.seed/rand/RandomState/MT19937`, `np.matrix`, legacy `poly1d/polyfit`, `longdouble`/`object` dtypes, `numpy.testing` stay out (NumPy Parts Worth Dropping). (6) Python ints beyond `int64` as weak operands follow NumPy since step 26c (float loops convert, integer loops raise `OverflowError`; only ints too large for a double raise `OverflowError` even for float loops). (7) `histogram(bins='stone')` is not implemented. (8) `float32` subnormals may print one digit differently from NumPy's Dragon4. (9) `float16` `linalg` is a `TypeError` (as in NumPy); complex `nanmedian`; `qr(mode='raw')` (LAPACK `geqrf` internals). `svd(full_matrices=True)` and `qr(mode='complete')` are supported for real and complex matrices (faer's full `svd()` / `compute_Q()`). (10) Structured/datetime/string dtypes and masked arrays remain steps 27-29.
+**Conventions (kept on purpose, not bugs)** are collected in [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
 
 **Complex linalg (added after the first cut of this step).** `linalg_complex.rs` in the core (faer `c64`): `solve`, `inv`, `det`, `slogdet` (complex sign), `qr`, `cholesky`, `eigh` (Hermitian, real eigenvalues), `eig`, `svd`; singularity is detected by an exact complex LU like the real path. `pinv`, `matrix_rank`, `lstsq`, `cond`, `matrix_power` are composed in Python from the SVD/LU. Works for `complex64` (computed in `complex128`, returned as `complex64`) and stacked matrices; checked against NumPy for both dtypes, single and stacked (`test_linalg.py`).
 
@@ -675,7 +618,7 @@ Step 26 ended with a list of "deliberately not done" items and a few unverified 
 - SVD (real and complex, `svd`/`svd_full`/`svdvals`) rescales matrices whose largest entry is outside `[1e-100, 1e100]` before calling faer and rescales the singular values afterwards; entries near `1e154` used to overflow to `SvdFailed` ("failed to converge"). Singular values far below `eps·σ₁` are, as in any backward-stable algorithm, not guaranteed to match LAPACK's.
 - Linalg on matrices with a zero dimension ("empty matrix input is not bound") and empty stacks (`zeros((0, 3, 3))`) now return NumPy's shapes and dtypes for `svd`, `qr` (all modes), `eigh`, `eig`, `cholesky`, `pinv`, `matrix_rank`, `svdvals`, `eigvals(h)`; complex `vecdot` conjugates its first argument.
 
-**Conventions confirmed, not changed.** `finfo(float32).eps` is a typed scalar (`float32`), not a Python `float` — the suite asks for `float`, NumPy fails the same tests. 0-d results of `float64`/`int64`/`bool`/`complex128` are scalars rather than 0-d arrays (step 26). The first version returned bare Python objects, which cost ~145 suite failures of the form `'float' object has no attribute 'dtype'`; the project owner chose to keep the "Python-number-compatible" idea but give them array attributes, so they are now `float`/`int`/`complex` subclasses (and a small `bool` class) with `.dtype`/`.shape`/`.astype`, strong under NEP 50 like `np.float64`. With that change and the follow-up fixes (`sort(descending=)`, `clip` without bounds, `dtype=` of `sum`/`prod`, `solve` with NumPy 2's vector rule and empty stacks, `pinv` with array `rtol`, zero-size boolean masks, zero-dimensional boolean indices) the suite ended at 1335 passed / 41 failed against NumPy's own 1331 / 46 (4 of ours are `finfo` tests that NumPy fails under other ids). `finfo(float32).eps` stays a typed scalar; `fftfreq(dtype=)`'s absence is NumPy's too.
+**Conventions confirmed, not changed** — see [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
 
 **Architecture review (Rust core).**
 - `utils.rs` merged into `manipulation.rs`. `unique`/`intersect1d`/`union1d` are generic over `FloatIsh` (they collapse NaNs like `np.unique`; `unique_*` keep them distinct as the Array API asks — two behaviours on purpose); `split` is generic and now delegates to `array_split`; `concat` stays as the standard's name for `concatenate`.

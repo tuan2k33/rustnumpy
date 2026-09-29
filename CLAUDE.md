@@ -9,7 +9,7 @@ binding, not a drop-in replacement. Every design decision is driven by
 NumPy's own NEPs (Enhancement Proposals), and the *entire* rationale for
 why the code looks the way it does lives in **[`NumPy.md`](NumPy.md)**,
 not in code comments. Read `NumPy.md` before making architectural
-changes; it is the authoritative design/plan document and is kept up to
+changes (deliberate differences from NumPy are listed in `docs/CONVENTIONS.md`); it is the authoritative design/plan document and is kept up to
 date after every change.
 
 Two facts that shape everything else in this repo:
