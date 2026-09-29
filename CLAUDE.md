@@ -96,10 +96,13 @@ LAPACK/FFT bindings upcast every input to `float64` internally too.
 (`ShapeError`) are pure leaves with no `use crate::` deps. `dtype.rs`
 (NEP 50: `Kind`, `DType` trait, `common_dtype`, `can_cast`) and
 `allocator.rs` (NEP 49: `Allocator` trait, `System`, `BumpArena`,
-`PooledVec`) are also standalone — `dtype.rs` is *not* currently wired
-into `ufunc`/`reductions` as a promotion mechanism; those functions
-require both operands to already be the same concrete `T` (no
-`int32 + float64 -> float64` dispatch). `ndarray.rs` depends only on
+`PooledVec`) are also standalone — `ufunc::add`/`sub`/`mul` do promote mixed dtypes at compile
+time (step 19): `promote.rs` is *generated* from real NumPy by
+`scripts/gen_promote.py` — regenerate it, never hand-edit it — and
+`dispatch.rs` holds `Common<B>`, weak Python scalars, `*_assign`, `where=`
+masks and `reduce`/`accumulate`/`outer_with`. Integer arithmetic uses
+`WrapAdd`/`WrapSub`/`WrapMul` so it wraps like NumPy in debug builds too;
+don't reintroduce plain `+`/`*` on generic integer `T`. `ndarray.rs` depends only on
 `error`/`shape`/`view`. Everything above that (`ufunc`, `reductions`,
 `testing`, `index`, `utils`, `linalg`, `fft`, `random`, `polynomial`,
 `npy`) depends on `ndarray` (and usually `view` too, for the ones that
@@ -155,6 +158,8 @@ rustnumpy/
 │   ├── mathfunc.rs             named elementwise math (sqrt/exp/log/trig/rounding/power/...)
 │   ├── contraction.rs          matmul/dot/tensordot/outer/einsum (one strided odometer engine)
 │   ├── gufunc.rs               NEP 20 generalized ufuncs + vecdot
+│   ├── dispatch.rs             NEP 50 promotion in ufuncs, weak scalars, *_assign, where=, reduce/accumulate/outer
+│   ├── promote.rs              GENERATED promotion/cast tables (scripts/gen_promote.py)
 │   ├── linalg.rs               numpy.linalg           (solve/inv/det/qr/cholesky/eigh/svd/norms), via faer
 │   ├── fft.rs                  numpy.fft              (fft/ifft/rfft/irfft/fftn/...), via rustfft
 │   ├── random.rs               numpy.random           (NEP 19 Generator), via rand_pcg/rand_distr
@@ -162,7 +167,7 @@ rustnumpy/
 │   ├── testing.rs              numpy.testing          (assert_array_equal/assert_allclose/...)
 │   ├── npy.rs                  .npy format            (NEP 1 read/write)
 │   └── allocator.rs             NEP 49 Allocator trait (System, BumpArena, PooledVec)
-├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step18_core_mechanics.rs)
+├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step19_promotion.rs)
 ├── tests/fixtures/*.npy       .npy files written by real NumPy, read back by npy.rs's tests
 ├── scripts/gen_fixtures.py    regenerates tests/fixtures/ (needs a real NumPy install)
 └── python/                    separate PyO3 binding crate (own Cargo.toml, path-deps on root)

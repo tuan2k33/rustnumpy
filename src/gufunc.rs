@@ -140,10 +140,10 @@ pub fn gufunc<T: Copy + Default>(
 
 pub fn vecdot<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
+    T: Copy + Default + crate::dispatch::WrapAdd + crate::dispatch::WrapMul,
 {
     let mut out = gufunc("(n),(n)->()", &[a, b], |ins, outs, _| {
-        outs[0][0] = ins[0].iter().zip(ins[1]).fold(T::default(), |acc, (&x, &y)| acc + x * y);
+        outs[0][0] = ins[0].iter().zip(ins[1]).fold(T::default(), |acc, (&x, &y)| acc.wrap_add(x.wrap_mul(y)));
     })?;
     Ok(out.remove(0))
 }

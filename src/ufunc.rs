@@ -1,3 +1,4 @@
+use crate::dispatch::{WrapAdd, WrapMul, WrapSub, zip_with_promoted, zip_with_promoted_parallel, Common, Out};
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 use crate::shape::{broadcast_shapes, IndexIter};
@@ -90,59 +91,75 @@ pub fn map_parallel<T: Copy + Send + Sync>(a: &ArrayView<T>, f: impl Fn(T) -> T 
     NdArray::from_vec(data, shape).expect("data.len() always matches shape.iter().product()")
 }
 
-pub fn add<T: Copy + std::ops::Add<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
-    zip_with(a, b, |x, y| x + y)
+pub fn add<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B>,
+    B: Copy,
+    Out<A, B>: WrapAdd,
+{
+    zip_with_promoted(a, b, |x, y| x.wrap_add(y))
 }
 
-pub fn sub<T: Copy + std::ops::Sub<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
-    zip_with(a, b, |x, y| x - y)
+pub fn sub<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B>,
+    B: Copy,
+    Out<A, B>: WrapSub,
+{
+    zip_with_promoted(a, b, |x, y| x.wrap_sub(y))
 }
 
-pub fn mul<T: Copy + std::ops::Mul<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
-    zip_with(a, b, |x, y| x * y)
+pub fn mul<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B>,
+    B: Copy,
+    Out<A, B>: WrapMul,
+{
+    zip_with_promoted(a, b, |x, y| x.wrap_mul(y))
 }
 
-pub fn subtract<T: Copy + std::ops::Sub<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
+pub fn subtract<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B>,
+    B: Copy,
+    Out<A, B>: WrapSub,
+{
     sub(a, b)
 }
 
-pub fn multiply<T: Copy + std::ops::Mul<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
+pub fn multiply<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B>,
+    B: Copy,
+    Out<A, B>: WrapMul,
+{
     mul(a, b)
 }
 
-pub fn add_parallel<T: Copy + Send + Sync + std::ops::Add<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
-    zip_with_parallel(a, b, |x, y| x + y)
+pub fn add_parallel<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B> + Send + Sync,
+    B: Copy + Send + Sync,
+    Out<A, B>: WrapAdd + Send,
+{
+    zip_with_promoted_parallel(a, b, |x, y| x.wrap_add(y))
 }
 
-pub fn mul_parallel<T: Copy + Send + Sync + std::ops::Mul<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
-    zip_with_parallel(a, b, |x, y| x * y)
+pub fn mul_parallel<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B> + Send + Sync,
+    B: Copy + Send + Sync,
+    Out<A, B>: WrapMul + Send,
+{
+    zip_with_promoted_parallel(a, b, |x, y| x.wrap_mul(y))
 }
 
-pub fn add_broadcast<T: Copy + std::ops::Add<Output = T>>(
-    a: &ArrayView<T>,
-    b: &ArrayView<T>,
-) -> Result<NdArray<T>, ShapeError> {
+pub fn add_broadcast<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
+where
+    A: Common<B>,
+    B: Copy,
+    Out<A, B>: WrapAdd,
+{
     add(a, b)
 }
 
@@ -223,7 +240,7 @@ mod tests {
     #[test]
     fn add_incompatible_shapes_errs() {
         let a: NdArray = NdArray::zeros(&[2, 3]);
-        let b = NdArray::zeros(&[4]);
+        let b: NdArray = NdArray::zeros(&[4]);
         assert!(add(&a.view(), &b.view()).is_err());
     }
 
@@ -324,7 +341,7 @@ mod tests {
     #[test]
     fn zip_with_parallel_propagates_shape_errors() {
         let a: NdArray = NdArray::zeros(&[2, 3]);
-        let b = NdArray::zeros(&[4]);
+        let b: NdArray = NdArray::zeros(&[4]);
         assert!(add_parallel(&a.view(), &b.view()).is_err());
     }
 }

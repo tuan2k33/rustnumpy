@@ -1,3 +1,4 @@
+use crate::dispatch::WrapAdd;
 use crate::view::ArrayView;
 
 pub trait FloatIsh: Copy + PartialOrd {
@@ -79,8 +80,8 @@ fn values<T: Copy>(view: &ArrayView<T>) -> Vec<T> {
         .collect()
 }
 
-pub fn sum<T: Copy + Default + std::ops::Add<Output = T>>(view: &ArrayView<T>) -> T {
-    values(view).into_iter().fold(T::default(), |acc, x| acc + x)
+pub fn sum<T: Copy + Default + WrapAdd>(view: &ArrayView<T>) -> T {
+    values(view).into_iter().fold(T::default(), |acc, x| acc.wrap_add(x))
 }
 
 pub fn mean<T: AsF64>(view: &ArrayView<T>) -> f64 {
@@ -180,8 +181,8 @@ fn non_nan_values<T: FloatIsh>(view: &ArrayView<T>) -> Vec<T> {
     values(view).into_iter().filter(|x| !x.is_nan_ish()).collect()
 }
 
-pub fn nansum<T: FloatIsh + Default + std::ops::Add<Output = T>>(view: &ArrayView<T>) -> T {
-    non_nan_values(view).into_iter().fold(T::default(), |acc, x| acc + x)
+pub fn nansum<T: FloatIsh + Default + WrapAdd>(view: &ArrayView<T>) -> T {
+    non_nan_values(view).into_iter().fold(T::default(), |acc, x| acc.wrap_add(x))
 }
 
 pub fn nanmean<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> f64 {

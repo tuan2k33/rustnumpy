@@ -1,5 +1,6 @@
 pub mod allocator;
 pub mod contraction;
+pub mod dispatch;
 pub mod dtype;
 pub mod error;
 pub mod fft;
@@ -10,6 +11,7 @@ pub mod mathfunc;
 pub mod ndarray;
 pub mod npy;
 pub mod polynomial;
+pub mod promote;
 pub mod random;
 pub mod reductions;
 pub mod selection;

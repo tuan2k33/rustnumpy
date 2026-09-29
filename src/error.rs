@@ -127,6 +127,12 @@ pub enum ShapeError {
     InvalidEinsum { reason: String },
 
     InvalidGufunc { reason: String },
+
+    WeakScalarOverflow { value: i64, dtype: &'static str },
+
+    ReduceNoIdentity,
+
+    ReduceWhereNeedsInitial,
 }
 
 impl fmt::Display for ShapeError {
@@ -197,6 +203,16 @@ impl fmt::Display for ShapeError {
                 write!(f, "shapes {lhs:?} and {rhs:?} are not aligned for contraction")
             }
             ShapeError::InvalidEinsum { reason } => write!(f, "invalid einsum: {reason}"),
+            ShapeError::WeakScalarOverflow { value, dtype } => {
+                write!(f, "Python integer {value} out of bounds for {dtype}")
+            }
+            ShapeError::ReduceNoIdentity => {
+                write!(f, "zero-size array to reduction operation which has no identity")
+            }
+            ShapeError::ReduceWhereNeedsInitial => write!(
+                f,
+                "a reduction with a where mask and no identity needs an explicit initial value"
+            ),
             ShapeError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
             ShapeError::NegativeIntegerPower => {
                 write!(f, "integers to negative integer powers are not allowed")

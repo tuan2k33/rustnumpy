@@ -1,8 +1,8 @@
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
-use crate::ufunc::mul;
+use crate::ufunc::zip_with;
 use crate::view::ArrayView;
-use std::ops::{Add, Mul};
+use crate::dispatch::{WrapAdd, WrapMul};
 
 fn advance(idx: &mut [usize], labels: &[usize], sizes: &[usize], strides: &[Vec<isize>], off: &mut [isize]) -> bool {
     for d in (0..labels.len()).rev() {
@@ -29,7 +29,7 @@ fn contract<T>(
     sizes: &[usize],
 ) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     let nl = sizes.len();
     let strides: Vec<Vec<isize>> = ops
@@ -72,9 +72,9 @@ where
                 loop {
                     let mut prod = raws[0].0[(raws[0].1 + off[0]) as usize];
                     for k in 1..raws.len() {
-                        prod = prod * raws[k].0[(raws[k].1 + off[k]) as usize];
+                        prod = prod.wrap_mul(raws[k].0[(raws[k].1 + off[k]) as usize]);
                     }
-                    acc = acc + prod;
+                    acc = acc.wrap_add(prod);
                     if !advance(&mut sum_idx, &sum_labels, sizes, &strides, &mut off) {
                         break;
                     }
@@ -100,7 +100,7 @@ fn merge_size(current: usize, dim: usize) -> Option<usize> {
 
 pub fn matmul<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     if a.ndim() == 0 || b.ndim() == 0 {
         return Err(ShapeError::ZeroDimOperand);
@@ -156,7 +156,7 @@ pub fn tensordot<T>(
     axes_b: &[usize],
 ) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     let mismatch = || ShapeError::ContractionMismatch { lhs: a.shape().to_vec(), rhs: b.shape().to_vec() };
     if axes_a.len() != axes_b.len() {
@@ -201,7 +201,7 @@ where
 
 pub fn tensordot_n<T>(a: &ArrayView<T>, b: &ArrayView<T>, n: usize) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     if n > a.ndim() || n > b.ndim() {
         return Err(ShapeError::ContractionMismatch { lhs: a.shape().to_vec(), rhs: b.shape().to_vec() });
@@ -213,10 +213,10 @@ where
 
 pub fn dot<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     if a.ndim() == 0 || b.ndim() == 0 {
-        return mul(a, b);
+        return zip_with(a, b, |x, y| x.wrap_mul(y));
     }
     let axis_b = if b.ndim() == 1 { 0 } else { b.ndim() - 2 };
     tensordot(a, b, &[a.ndim() - 1], &[axis_b])
@@ -224,7 +224,7 @@ where
 
 pub fn outer<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     let fa = a.to_owned();
     let fb = b.to_owned();
@@ -264,7 +264,7 @@ fn tokenize(term: &str) -> Result<Vec<Token>, ShapeError> {
 
 pub fn einsum<T>(subscripts: &str, operands: &[&ArrayView<T>]) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + Add<Output = T> + Mul<Output = T>,
+    T: Copy + Default + WrapAdd + WrapMul,
 {
     let bad = |reason: &str| ShapeError::InvalidEinsum { reason: reason.to_string() };
     if operands.is_empty() {
