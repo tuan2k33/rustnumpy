@@ -77,3 +77,25 @@ read and write `.npy` (float64 only). 0-d results are Python scalars for
 ## Layout and limits (step 26b)
 
 `rustnumpy._core` is the compiled module; `rustnumpy` is a small Python package over it, with `rustnumpy.linalg`, `rustnumpy.fft` and `rustnumpy.random`. It supports 14 dtypes (`bool`, 8 integer types, `float16/32/64`, `complex64/128`), ufunc objects (`out=`, `where=`, `dtype=`, `reduce/accumulate/outer/reduceat/at`), NumPy's printing, `.npy`/`.npz` I/O, pickling and DLPack. Not supported: structured/datetime/string/object dtypes, masked arrays, `longdouble`, complex `linalg`, the legacy `np.random.*` functions and `np.matrix`. Details and the list of deliberate differences from NumPy are in `NumPy.md` ("Step 26b").
+
+
+## Install
+
+Needs a Rust toolchain (`rustup`, Rust >= 1.85) and Python >= 3.9 (developed and tested on 3.14, Linux x86_64).
+
+```sh
+python -m venv .venv && source .venv/bin/activate
+pip install "maturin>=1.5,<2.0"
+cd python
+maturin develop --release        # editable install into the active venv
+# or: maturin build --release -o dist && pip install dist/rustnumpy-*.whl
+python -c "import rustnumpy as rn; print(rn.arange(6.).reshape(2, 3).sum(axis=0))"
+```
+
+The library has no Python dependencies (it never imports NumPy). It is not on PyPI.
+
+## Tests
+
+- `cargo test --lib` (repository root): the core's unit tests. No NumPy needed; expected values are literals checked against NumPy when written.
+- `pip install -r requirements-dev.txt && python -m pytest tests -q -n 2`: differential tests that call NumPy at run time as the oracle, so NumPy is required here (and only here).
+- `numpy_suite/run_suite.py`: runs NumPy's own test files through a shim; needs the NumPy install that ships its tests.

@@ -2,6 +2,7 @@
 name = "rustnumpy-python"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 description = "Python package `rustnumpy`: a standalone NumPy-style array library built on the rustnumpy core."
 license = "MIT OR Apache-2.0"
 
