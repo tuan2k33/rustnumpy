@@ -67,6 +67,10 @@ impl<T> NdArray<T> {
         &self.data
     }
 
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
     pub fn view(&self) -> ArrayView<'_, T> {
         ArrayView::new(&self.data, self.shape.clone(), self.strides.clone(), 0)
     }

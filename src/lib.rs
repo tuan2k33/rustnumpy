@@ -42,7 +42,7 @@ pub use mathfunc::Arith;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
 pub use polynomial::{Polynomial, PolynomialKind};
-pub use random::{Generator, RandomError};
+pub use random::{default_rng, mvn_factor, Generator, MvnMethod, RandomError, SeedSequence};
 pub use reductions::{
     cov, cov_default, corrcoef, histogram, max, mean, median, min, nanmax, nanmean, nanmedian,
     nanmin, nanstd, nanstd_default, nansum, nanvar, nanvar_default, percentile, std, std_default,

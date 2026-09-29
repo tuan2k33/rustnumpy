@@ -1,7 +1,7 @@
-use rustnumpy::{mean, Generator};
+use rustnumpy::{default_rng, mean};
 
 fn main() {
-    let mut rng = Generator::seed(42);
+    let mut rng = default_rng(42);
 
     println!("random(5) -> {:?}", rng.random(&[5]).as_slice());
     println!("uniform(2, 10, 5) -> {:?}", rng.uniform(2.0, 10.0, &[5]).unwrap().as_slice());
