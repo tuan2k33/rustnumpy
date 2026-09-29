@@ -70,6 +70,10 @@ impl<'a, T> ArrayView<'a, T> {
         })
     }
 
+    pub(crate) fn relayout(&self, shape: Vec<usize>, strides: Vec<isize>, offset: isize) -> ArrayView<'a, T> {
+        ArrayView { data: self.data, shape, strides, offset: offset as usize }
+    }
+
     pub(crate) fn raw(&self) -> (&'a [T], usize) {
         (self.data, self.offset)
     }

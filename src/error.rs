@@ -133,6 +133,20 @@ pub enum ShapeError {
     ReduceNoIdentity,
 
     ReduceWhereNeedsInitial,
+
+    InvalidAxis { axis: isize, ndim: usize },
+
+    RepeatedAxis,
+
+    PermutationMismatch { axes: usize, ndim: usize },
+
+    SqueezeNotOne { axis: usize, size: usize },
+
+    AxisCountMismatch { source: usize, destination: usize },
+
+    RepeatLengthMismatch { repeats: usize, len: usize },
+
+    RollShiftAxisMismatch { shifts: usize, axes: usize },
 }
 
 impl fmt::Display for ShapeError {
@@ -212,6 +226,27 @@ impl fmt::Display for ShapeError {
                 f,
                 "a reduction with a where mask and no identity needs an explicit initial value"
             ),
+            ShapeError::InvalidAxis { axis, ndim } => {
+                write!(f, "axis {axis} is out of bounds for array of dimension {ndim}")
+            }
+            ShapeError::RepeatedAxis => write!(f, "repeated axis"),
+            ShapeError::PermutationMismatch { axes, ndim } => {
+                write!(f, "axes don't match array: {axes} axes given for {ndim} dimensions")
+            }
+            ShapeError::SqueezeNotOne { axis, size } => write!(
+                f,
+                "cannot select an axis to squeeze out which has size not equal to one (axis {axis} has size {size})"
+            ),
+            ShapeError::AxisCountMismatch { source, destination } => write!(
+                f,
+                "`source` and `destination` arguments must have the same number of elements ({source} vs {destination})"
+            ),
+            ShapeError::RepeatLengthMismatch { repeats, len } => {
+                write!(f, "operands could not be broadcast together: {repeats} repeats for axis of length {len}")
+            }
+            ShapeError::RollShiftAxisMismatch { shifts, axes } => {
+                write!(f, "'shift' and 'axis' should be scalars or 1D sequences of the same length ({shifts} vs {axes})")
+            }
             ShapeError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
             ShapeError::NegativeIntegerPower => {
                 write!(f, "integers to negative integer powers are not allowed")

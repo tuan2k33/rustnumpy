@@ -158,6 +158,7 @@ rustnumpy/
 │   ├── mathfunc.rs             named elementwise math (sqrt/exp/log/trig/rounding/power/...)
 │   ├── contraction.rs          matmul/dot/tensordot/outer/einsum (one strided odometer engine)
 │   ├── gufunc.rs               NEP 20 generalized ufuncs + vecdot
+│   ├── manipulation.rs         view ops (permute_dims/moveaxis/flip/squeeze/expand_dims/unstack/broadcast_arrays), repeat/roll, unique_*
 │   ├── dispatch.rs             NEP 50 promotion in ufuncs, weak scalars, *_assign, where=, reduce/accumulate/outer
 │   ├── promote.rs              GENERATED promotion/cast tables (scripts/gen_promote.py)
 │   ├── linalg.rs               numpy.linalg           (solve/inv/det/qr/cholesky/eigh/svd/norms), via faer

@@ -7,6 +7,7 @@ pub mod fft;
 pub mod gufunc;
 pub mod index;
 pub mod linalg;
+pub mod manipulation;
 pub mod mathfunc;
 pub mod ndarray;
 pub mod npy;
@@ -38,6 +39,10 @@ pub use linalg::{
     vector_norm, LinalgError, Lstsq, MatNormOrd, VecNormOrd,
 };
 pub use contraction::{cross, kron, trace};
+pub use manipulation::{
+    broadcast_arrays, expand_dims, repeat, roll, unique_all, unique_counts, unique_inverse,
+    unique_values, unstack, UniqueAll,
+};
 pub use mathfunc::Arith;
 pub use ndarray::NdArray;
 pub use npy::{load_npy, save_npy, NpyError};
