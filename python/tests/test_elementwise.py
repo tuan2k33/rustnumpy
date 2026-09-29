@@ -72,7 +72,7 @@ def test_zero_dim_results_are_python_scalars_or_0d_arrays():
 
 
 def test_unsupported_dtypes_raise_not_implemented():
-    for arr in (np.zeros(2, np.float16), np.array(["a"]), np.array([1], dtype=object)):
+    for arr in (np.array(["a"]), np.array([1], dtype=object)):
         with pytest.raises((NotImplementedError, TypeError)):
             rnp.add(arr, arr)
 
@@ -136,4 +136,4 @@ def test_astype_matches_numpy_for_in_range_values(src, dst):
     if np.dtype(src).kind in "fiuc" and np.dtype(dst).kind in "iu":
         x = np.abs(np.clip(x.real if x.dtype.kind == "c" else x, -100, 100)).astype(src)
     expected = np.asarray(x).astype(dst)
-    assert_same(rnp.astype_(x, dst), expected)
+    assert_same(rnp._core.astype_(x, dst), expected)

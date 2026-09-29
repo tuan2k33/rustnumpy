@@ -54,8 +54,8 @@ path-dependency on the root crate) specifically so the core crate's
 ```sh
 cd python
 cargo build                                    # builds as a plain rlib too, no Python needed
-python -m maturin develop --release            # build + install into the active venv
-python -m pytest tests -q                       # ~2100 tests; NumPy is only the oracle here, the package never imports it
+python -m maturin develop --release            # build + install into the active venv (needs VIRTUAL_ENV set)
+python -m pytest tests -q                       # ~11,000 tests; NumPy is only the oracle here, the package never imports it
 ```
 
 There is no top-level test runner beyond `cargo test --lib` — every
@@ -135,8 +135,11 @@ A standalone array library, not a NumPy accessory: it has its own `ndarray`
 reshaping are real views) and `dtype` types, and **never imports NumPy**
 (`python/tests/test_ndarray.py` proves it by blocking the import). Other
 libraries reach it only through the buffer protocol / `__array_interface__`.
-Function modules turn any input into the core's `Arr` (a 13-variant enum of
-`NdArray<T>`), call the core, and wrap the result; `pyarray.rs` holds the
+The native module is `rustnumpy._core`; `python/python_src/rustnumpy/` is a thin
+Python layer (ufunc objects with `out=`/`where=`/`reduce`, composite functions,
+printing, I/O, `linalg`/`fft`/`random` submodules). Native function modules turn any
+input into the core's `Arr` (a 14-variant enum of
+`NdArray<T>`, including `float16`), call the core, and wrap the result; `pyarray.rs` holds the
 few `unsafe` blocks (each has a SAFETY comment, and the `Sync` claim assumes
 the GIL). NumPy is used only by the pytest suites and `numpy_suite/` as the
 oracle. Don't add `import numpy` to `python/src/`.
@@ -190,5 +193,5 @@ rustnumpy/
     ├── src/{pyops,pyindex}.rs   operators/methods and __getitem__/__setitem__ on that type
     ├── src/{ops,arrayfns,shapefns,viewfns,logicfns,createfns,linalgfns,rngfns}.rs   the function surface
     ├── numpy_suite/             rnp_shim: runs NumPy's own test files against the package (shadow/serve modes)
-    └── tests/                   pytest suite (~2100 cases) comparing against a real NumPy install
+    └── tests/                   pytest suite (~11,000 cases) comparing against a real NumPy install
 ```

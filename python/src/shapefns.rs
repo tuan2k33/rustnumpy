@@ -20,6 +20,7 @@ macro_rules! with_list {
             Arr::U16(_) => { let $l: Vec<&NdArray<u16>> = $arrs.iter().map(|a| match a { Arr::U16(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::U32(_) => { let $l: Vec<&NdArray<u32>> = $arrs.iter().map(|a| match a { Arr::U32(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::U64(_) => { let $l: Vec<&NdArray<u64>> = $arrs.iter().map(|a| match a { Arr::U64(v) => v, _ => unreachable!() }).collect(); $body }
+            Arr::F16(_) => { let $l: Vec<&NdArray<half::f16>> = $arrs.iter().map(|a| match a { Arr::F16(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::F32(_) => { let $l: Vec<&NdArray<f32>> = $arrs.iter().map(|a| match a { Arr::F32(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::F64(_) => { let $l: Vec<&NdArray<f64>> = $arrs.iter().map(|a| match a { Arr::F64(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::C64(_) => { let $l: Vec<&NdArray<crate::dynarray::C32>> = $arrs.iter().map(|a| match a { Arr::C64(v) => v, _ => unreachable!() }).collect(); $body }
@@ -40,6 +41,7 @@ macro_rules! with_list_nb {
             Arr::U16(_) => { let $l: Vec<&NdArray<u16>> = $arrs.iter().map(|a| match a { Arr::U16(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::U32(_) => { let $l: Vec<&NdArray<u32>> = $arrs.iter().map(|a| match a { Arr::U32(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::U64(_) => { let $l: Vec<&NdArray<u64>> = $arrs.iter().map(|a| match a { Arr::U64(v) => v, _ => unreachable!() }).collect(); $body }
+            Arr::F16(_) => { let $l: Vec<&NdArray<half::f16>> = $arrs.iter().map(|a| match a { Arr::F16(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::F32(_) => { let $l: Vec<&NdArray<f32>> = $arrs.iter().map(|a| match a { Arr::F32(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::F64(_) => { let $l: Vec<&NdArray<f64>> = $arrs.iter().map(|a| match a { Arr::F64(v) => v, _ => unreachable!() }).collect(); $body }
             Arr::C64(_) => { let $l: Vec<&NdArray<crate::dynarray::C32>> = $arrs.iter().map(|a| match a { Arr::C64(v) => v, _ => unreachable!() }).collect(); $body }
@@ -59,6 +61,7 @@ macro_rules! with_real {
             Arr::U16($a) => $body,
             Arr::U32($a) => $body,
             Arr::U64($a) => $body,
+            Arr::F16($a) => $body,
             Arr::F32($a) => $body,
             Arr::F64($a) => $body,
             _ => return Err(unsupported("bound for real integer and float dtypes only")),
@@ -108,6 +111,8 @@ pub fn repeat(py: Python<'_>, a: &Bound<'_, PyAny>, repeats: &Bound<'_, PyAny>, 
         .into_iter()
         .map(|r| usize::try_from(r).map_err(|_| PyValueError::new_err("negative dimensions are not allowed")))
         .collect::<PyResult<_>>()?;
+    let total: usize = if reps.len() == 1 { reps[0].saturating_mul(arr.shape().iter().product::<usize>().max(1)) } else { reps.iter().sum() };
+    crate::createfns::alloc_guard(total, 16)?;
     out_array(py, with_arr!(&arr, x => Arr::from(rustnumpy::repeat(&x.view(), &reps, axis).map_err(shape_err)?)))
 }
 
@@ -246,6 +251,10 @@ pub fn select(py: Python<'_>, condlist: &Bound<'_, PyAny>, choicelist: &Bound<'_
             let name = if choices[0].is_bool() || choices[0].is_int() { "float64" } else { choices[0].dtype_name() };
             (name, astype(&Arr::scalar(v), name)?)
         }
+        Operand::WeakComplex(re, im) => {
+            let name = if choices[0].is_complex() { choices[0].dtype_name() } else { "complex128" };
+            (name, astype(&Arr::scalar(crate::dynarray::C64::new(re, im)), name)?)
+        }
         Operand::Arr(a) => {
             let mut both = choices.iter().map(|c| astype(c, c.dtype_name())).collect::<PyResult<Vec<_>>>()?;
             both.push(a);
@@ -313,15 +322,34 @@ fn i64_arr(v: Vec<usize>) -> PyResult<Arr> {
     Ok(Arr::from(NdArray::from_vec(v.into_iter().map(|i| i as i64).collect::<Vec<_>>(), &[n]).map_err(shape_err)?))
 }
 
+fn unique_of<K: rustnumpy::reductions::FloatIsh>(
+    x: &NdArray<K>,
+    back: impl Fn(Vec<K>) -> PyResult<Arr>,
+) -> PyResult<(Arr, Vec<usize>, Arr, Vec<usize>)> {
+    let u = rustnumpy::unique_all(&x.view());
+    let inv = &u.inverse_indices;
+    let inverse = Arr::from(NdArray::from_vec(inv.as_slice().iter().map(|&i| i as i64).collect::<Vec<_>>(), inv.shape()).map_err(shape_err)?);
+    Ok((back(u.values)?, u.indices, inverse, u.counts))
+}
+
 fn unique_parts(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Arr, Vec<usize>, Arr, Vec<usize>)> {
     let arr = arr_of(py, a)?;
-    Ok(with_real!(&arr, x => {
-        let u = rustnumpy::unique_all(&x.view());
-        let n = u.values.len();
-        let inv = &u.inverse_indices;
-        let inverse = Arr::from(NdArray::from_vec(inv.as_slice().iter().map(|&i| i as i64).collect::<Vec<_>>(), inv.shape()).map_err(shape_err)?);
-        (Arr::from(NdArray::from_vec(u.values, &[n]).map_err(shape_err)?), u.indices, inverse, u.counts)
-    }))
+    fn flat<T>(values: Vec<T>) -> PyResult<Arr>
+    where
+        Arr: From<NdArray<T>>,
+    {
+        let n = values.len();
+        Ok(Arr::from(NdArray::from_vec(values, &[n]).map_err(shape_err)?))
+    }
+    match &arr {
+        Arr::Bool(x) => {
+            let (values, i, inv, c) = unique_of(&rustnumpy::logic::map_to(&x.view(), u8::from), flat)?;
+            Ok((astype(&values, "bool")?, i, inv, c))
+        }
+        Arr::C64(x) => unique_of(&crate::cxkey::to_keys(x), |v| flat(v.into_iter().map(|k| k.0).collect())),
+        Arr::C128(x) => unique_of(&crate::cxkey::to_keys(x), |v| flat(v.into_iter().map(|k| k.0).collect())),
+        _ => with_real!(&arr, x => unique_of(x, flat)),
+    }
 }
 
 fn named<'py>(py: Python<'py>, name: &str, fields: &[&str], values: Vec<Py<PyAny>>) -> PyResult<Bound<'py, PyAny>> {

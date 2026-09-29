@@ -26,6 +26,7 @@ pub enum Arr {
     U16(NdArray<u16>),
     U32(NdArray<u32>),
     U64(NdArray<u64>),
+    F16(NdArray<half::f16>),
     F32(NdArray<f32>),
     F64(NdArray<f64>),
     C64(NdArray<C32>),
@@ -45,6 +46,7 @@ macro_rules! with_arr {
             Arr::U16($a) => $body,
             Arr::U32($a) => $body,
             Arr::U64($a) => $body,
+            Arr::F16($a) => $body,
             Arr::F32($a) => $body,
             Arr::F64($a) => $body,
             Arr::C64($a) => $body,
@@ -66,6 +68,7 @@ macro_rules! dispatch_b {
             Arr::U16($y) => $body,
             Arr::U32($y) => $body,
             Arr::U64($y) => $body,
+            Arr::F16($y) => $body,
             Arr::F32($y) => $body,
             Arr::F64($y) => $body,
             Arr::C64($y) => $body,
@@ -87,6 +90,7 @@ macro_rules! dispatch2 {
             Arr::U16($x) => $crate::dispatch_b!($b, $x, $y => $body),
             Arr::U32($x) => $crate::dispatch_b!($b, $x, $y => $body),
             Arr::U64($x) => $crate::dispatch_b!($b, $x, $y => $body),
+            Arr::F16($x) => $crate::dispatch_b!($b, $x, $y => $body),
             Arr::F32($x) => $crate::dispatch_b!($b, $x, $y => $body),
             Arr::F64($x) => $crate::dispatch_b!($b, $x, $y => $body),
             Arr::C64($x) => $crate::dispatch_b!($b, $x, $y => $body),
@@ -102,7 +106,7 @@ macro_rules! impl_from {
         }
     )*};
 }
-impl_from!(Bool, bool; I8, i8; I16, i16; I32, i32; I64, i64; U8, u8; U16, u16; U32, u32; U64, u64; F32, f32; F64, f64; C64, C32; C128, C64);
+impl_from!(Bool, bool; I8, i8; I16, i16; I32, i32; I64, i64; U8, u8; U16, u16; U32, u32; U64, u64; F16, half::f16; F32, f32; F64, f64; C64, C32; C128, C64);
 
 impl Arr {
     pub fn dtype_name(&self) -> &'static str {
@@ -116,11 +120,16 @@ impl Arr {
             Arr::U16(_) => "uint16",
             Arr::U32(_) => "uint32",
             Arr::U64(_) => "uint64",
+            Arr::F16(_) => "float16",
             Arr::F32(_) => "float32",
             Arr::F64(_) => "float64",
             Arr::C64(_) => "complex64",
             Arr::C128(_) => "complex128",
         }
+    }
+
+    pub fn clone_arr(&self) -> Arr {
+        with_arr!(self, a => Arr::from(a.clone()))
     }
 
     pub fn shape(&self) -> Vec<usize> {
@@ -158,6 +167,7 @@ impl Arr {
             Arr::U16(_) => Kind::Uint(16),
             Arr::U32(_) => Kind::Uint(32),
             Arr::U64(_) => Kind::Uint(64),
+            Arr::F16(_) => Kind::Float(16),
             Arr::F32(_) => Kind::Float(32),
             Arr::F64(_) => Kind::Float(64),
             Arr::C64(_) => Kind::Complex(32),
@@ -181,6 +191,7 @@ impl Arr {
             Arr::U16(a) => ints!(a),
             Arr::U32(a) => ints!(a),
             Arr::U64(a) => ints!(a),
+            Arr::F16(a) => ints!(a),
             Arr::F32(a) => ints!(a),
             Arr::F64(a) => ints!(a),
             Arr::C64(a) => a.as_slice().iter().flat_map(|c| c.re.to_le_bytes().into_iter().chain(c.im.to_le_bytes())).collect(),
@@ -206,6 +217,7 @@ impl Arr {
             "uint16" => parse!(u16, U16),
             "uint32" => parse!(u32, U32),
             "uint64" => parse!(u64, U64),
+            "float16" => parse!(half::f16, F16),
             "float32" => parse!(f32, F32),
             "float64" => parse!(f64, F64),
             "complex64" => {
@@ -244,6 +256,7 @@ impl Arr {
             Arr::U16(a) => u64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
             Arr::U32(a) => u64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
             Arr::U64(a) => a.as_slice()[0].into_pyobject(py)?.into_any().unbind(),
+            Arr::F16(a) => f64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
             Arr::F32(a) => f64::from(a.as_slice()[0]).into_pyobject(py)?.into_any().unbind(),
             Arr::F64(a) => a.as_slice()[0].into_pyobject(py)?.into_any().unbind(),
             Arr::C64(a) => {
@@ -272,7 +285,9 @@ impl Arr {
 
     pub fn from_object(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
         if let Ok(a) = obj.downcast::<crate::pyarray::PyArray>() {
-            return Ok(a.borrow().to_arr());
+            let this = a.borrow();
+            crate::createfns::alloc_guard(this.size(), crate::dtypes::itemsize(this.dtype_name()) + 8)?;
+            return Ok(this.to_arr());
         }
         if obj.is_exact_instance_of::<pyo3::types::PyBool>() {
             return Ok(Arr::scalar(obj.extract::<bool>()?));
@@ -396,6 +411,7 @@ impl Arr {
             ("Q", _) | ("L", 8) => "uint64",
             ("l", 4) => "int32",
             ("L", 4) => "uint32",
+            ("e", _) => "float16",
             ("f", _) => "float32",
             ("d", _) => "float64",
             ("Zf", _) => "complex64",
@@ -420,6 +436,7 @@ impl Arr {
             "<u2" => "uint16",
             "<u4" => "uint32",
             "<u8" => "uint64",
+            "<f2" => "float16",
             "<f4" => "float32",
             "<f8" => "float64",
             "<c8" => "complex64",

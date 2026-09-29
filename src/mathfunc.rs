@@ -41,7 +41,15 @@ macro_rules! impl_arith_signed {
                 if rhs < 0 {
                     return None;
                 }
-                Some(self.wrapping_pow(u32::try_from(rhs).unwrap_or(u32::MAX)))
+                let (mut base, mut exp, mut acc) = (self, rhs as u64, 1 as $t);
+                while exp > 0 {
+                    if exp & 1 == 1 {
+                        acc = acc.wrapping_mul(base);
+                    }
+                    base = base.wrapping_mul(base);
+                    exp >>= 1;
+                }
+                Some(acc)
             }
         }
     )*};
@@ -58,7 +66,15 @@ macro_rules! impl_arith_unsigned {
             fn floor_div_(self, rhs: Self) -> Self { if rhs == 0 { 0 } else { self / rhs } }
             fn mod_(self, rhs: Self) -> Self { if rhs == 0 { 0 } else { self % rhs } }
             fn pow_(self, rhs: Self) -> Option<Self> {
-                Some(self.wrapping_pow(u32::try_from(rhs).unwrap_or(u32::MAX)))
+                let (mut base, mut exp, mut acc) = (self, rhs as u64, 1 as $t);
+                while exp > 0 {
+                    if exp & 1 == 1 {
+                        acc = acc.wrapping_mul(base);
+                    }
+                    base = base.wrapping_mul(base);
+                    exp >>= 1;
+                }
+                Some(acc)
             }
         }
     )*};
@@ -109,6 +125,16 @@ macro_rules! impl_arith_float {
     )*};
 }
 impl_arith_float!(f32, f64);
+
+impl Arith for half::f16 {
+    fn abs_(self) -> Self { half::f16::from_f32(f32::from(self).abs_()) }
+    fn neg_(self) -> Self { -self }
+    fn square_(self) -> Self { half::f16::from_f32(f32::from(self).square_()) }
+    fn sign_(self) -> Self { half::f16::from_f32(f32::from(self).sign_()) }
+    fn floor_div_(self, rhs: Self) -> Self { half::f16::from_f32(f32::from(self).floor_div_(f32::from(rhs))) }
+    fn mod_(self, rhs: Self) -> Self { half::f16::from_f32(f32::from(self).mod_(f32::from(rhs))) }
+    fn pow_(self, rhs: Self) -> Option<Self> { Some(half::f16::from_f32(f32::from(self).powf(f32::from(rhs)))) }
+}
 
 macro_rules! float_unary {
     ($($name:ident => $f:expr),* $(,)?) => {$(
@@ -207,6 +233,12 @@ macro_rules! divide_float {
 }
 divide_float!(f32, f64);
 
+impl Divide for half::f16 {
+    fn divide(self, rhs: Self) -> Self {
+        self / rhs
+    }
+}
+
 pub fn divide<T: Divide>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
     zip_with(a, b, T::divide)
 }
@@ -269,6 +301,18 @@ pub fn power<T: Arith>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>,
 mod tests {
     use super::*;
 
+    fn expected_pow(mut base: u64, mut exp: u64) -> u64 {
+        let mut acc = 1u64;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                acc = acc.wrapping_mul(base);
+            }
+            base = base.wrapping_mul(base);
+            exp >>= 1;
+        }
+        acc
+    }
+
     fn arr<T>(data: Vec<T>) -> NdArray<T> {
         let n = data.len();
         NdArray::from_vec(data, &[n]).unwrap()
@@ -292,6 +336,26 @@ mod tests {
         same(&ceil(&f.view()), &[-2.0, -1.0, -0.0, 1.0, 2.0, 3.0, f64::NAN, f64::INFINITY, -0.0]);
         same(&trunc(&f.view()), &[-2.0, -1.0, -0.0, 0.0, 1.0, 2.0, f64::NAN, f64::INFINITY, -0.0]);
         same(&sign(&f.view()), &[-1.0, -1.0, -1.0, 1.0, 1.0, 1.0, f64::NAN, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn float16_math_rounds_through_f32_like_numpy() {
+        use half::f16;
+        let x = arr(vec![f16::from_f32(2.0), f16::from_f32(-1.5), f16::from_f32(0.1)]);
+        let s = sqrt(&arr(vec![f16::from_f32(4.0), f16::from_f32(2.0)]).view());
+        assert_eq!(s.as_slice()[0], f16::from_f32(2.0));
+        assert_eq!(s.as_slice()[1], f16::from_f32(2.0_f32.sqrt()));
+        assert_eq!(abs(&x.view()).as_slice()[1], f16::from_f32(1.5));
+        assert_eq!(floor_divide(&x.view(), &arr(vec![f16::from_f32(0.75); 3]).view()).unwrap().as_slice()[0], f16::from_f32(2.0));
+        assert_eq!(rint(&arr(vec![f16::from_f32(2.5), f16::from_f32(3.5)]).view()).as_slice(), &[f16::from_f32(2.0), f16::from_f32(4.0)]);
+    }
+
+    #[test]
+    fn integer_power_wraps_with_a_full_width_exponent() {
+        let base = arr(vec![3u64, 2]);
+        let exp = arr(vec![u64::MAX, 64]);
+        let r = power(&base.view(), &exp.view()).unwrap();
+        assert_eq!(r.as_slice(), &[expected_pow(3, u64::MAX), 0]);
     }
 
     #[test]

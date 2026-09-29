@@ -17,7 +17,24 @@ def test_npy_round_trip_in_both_directions(tmp_path):
         rnp.load(str(tmp_path / "missing.npy"))
 
 
-def test_save_casts_other_dtypes_to_float64(tmp_path):
-    path = tmp_path / "ints.npy"
-    rnp.save(str(path), rnp.arange(4))
-    assert np.load(path).dtype == np.float64
+@pytest.mark.parametrize("dtype", ["bool", "int8", "int32", "uint64", "float16", "float32", "float64", "complex64", "complex128"])
+def test_save_keeps_the_dtype_and_numpy_reads_it(tmp_path, dtype):
+    path = tmp_path / "x.npy"
+    x = np.arange(12).reshape(3, 4).astype(dtype)
+    rnp.save(str(path), rnp.array(x))
+    back = np.load(path)
+    assert back.dtype == x.dtype
+    np.testing.assert_array_equal(back, x)
+    np.testing.assert_array_equal(np.asarray(rnp.load(str(path))), x)
+
+
+def test_fortran_ordered_and_npz_files(tmp_path):
+    x = np.asfortranarray(np.arange(6.0).reshape(2, 3))
+    np.save(tmp_path / "f.npy", x)
+    np.testing.assert_array_equal(np.asarray(rnp.load(str(tmp_path / "f.npy"))), x)
+    rnp.savez(str(tmp_path / "z.npz"), a=rnp.arange(3), b=rnp.ones((2, 2)))
+    with np.load(tmp_path / "z.npz") as z:
+        np.testing.assert_array_equal(z["a"], np.arange(3))
+    with rnp.load(str(tmp_path / "z.npz")) as z:
+        assert sorted(z.files) == ["a", "b"]
+        np.testing.assert_array_equal(np.asarray(z["b"]), np.ones((2, 2)))

@@ -35,7 +35,7 @@ macro_rules! wrap_plain {
         impl WrapMul for $t { fn wrap_mul(self, rhs: Self) -> Self { self * rhs } }
     )*};
 }
-wrap_plain!(f32, f64, Complex<f32>, Complex<f64>);
+wrap_plain!(half::f16, f32, f64, Complex<f32>, Complex<f64>);
 
 impl WrapAdd for bool {
     fn wrap_add(self, rhs: Self) -> Self {
@@ -83,6 +83,15 @@ macro_rules! from_weak_float_type {
     )*};
 }
 from_weak_float_type!(f32, f64);
+
+impl FromWeak for half::f16 {
+    fn from_weak_int(v: i64) -> Option<Self> {
+        Some(half::f16::from_f64(v as f64))
+    }
+    fn from_weak_float(v: f64) -> Self {
+        half::f16::from_f64(v)
+    }
+}
 
 impl FromWeak for bool {
     fn from_weak_int(v: i64) -> Option<Self> {

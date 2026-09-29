@@ -1,10 +1,10 @@
 import numpy as np, sys
 
 NAMES = ['bool', 'int8', 'int16', 'int32', 'int64', 'uint8', 'uint16', 'uint32', 'uint64',
-         'float32', 'float64', 'complex64', 'complex128']
+         'float16', 'float32', 'float64', 'complex64', 'complex128']
 RUST = {'bool': 'bool', 'int8': 'i8', 'int16': 'i16', 'int32': 'i32', 'int64': 'i64',
         'uint8': 'u8', 'uint16': 'u16', 'uint32': 'u32', 'uint64': 'u64',
-        'float32': 'f32', 'float64': 'f64', 'complex64': 'Complex<f32>', 'complex128': 'Complex<f64>'}
+        'float16': 'half::f16', 'float32': 'f32', 'float64': 'f64', 'complex64': 'Complex<f32>', 'complex128': 'Complex<f64>'}
 
 
 def kind(n):
@@ -50,6 +50,36 @@ macro_rules! widen_bool {
         impl Widen<$o> for bool {
             fn widen(self) -> $o {
                 self as u8 as $o
+            }
+        }
+    };
+}
+
+macro_rules! widen_prim {
+    ($a:ty => $o:ty) => {
+        impl Widen<$o> for $a {
+            fn widen(self) -> $o {
+                num_traits::AsPrimitive::<$o>::as_(self)
+            }
+        }
+    };
+}
+
+macro_rules! widen_prim_complex {
+    ($a:ty => $f:ty) => {
+        impl Widen<Complex<$f>> for $a {
+            fn widen(self) -> Complex<$f> {
+                Complex::new(num_traits::AsPrimitive::<$f>::as_(self), 0.0)
+            }
+        }
+    };
+}
+
+macro_rules! widen_bool_half {
+    () => {
+        impl Widen<half::f16> for bool {
+            fn widen(self) -> half::f16 {
+                half::f16::from_f32(f32::from(self as u8))
             }
         }
     };
@@ -105,12 +135,18 @@ for src in NAMES:
             out.append(f"impl Widen<{RUST[dst]}> for {RUST[src]} {{\n    fn widen(self) -> {RUST[dst]} {{\n        self\n    }}\n}}")
         elif ks == 'bool' and kd == 'complex':
             out.append(f"widen_bool_complex!({comp_float(dst)});")
+        elif ks == 'bool' and dst == 'float16':
+            out.append("widen_bool_half!();")
         elif ks == 'bool':
             out.append(f"widen_bool!({RUST[dst]});")
         elif kd == 'complex' and ks == 'complex':
             out.append(f"widen_complex!({comp_float(src)} => {comp_float(dst)});")
+        elif kd == 'complex' and src == 'float16':
+            out.append(f"widen_prim_complex!({RUST[src]} => {comp_float(dst)});")
         elif kd == 'complex':
             out.append(f"widen_real_complex!({RUST[src]} => {comp_float(dst)});")
+        elif 'float16' in (src, dst):
+            out.append(f"widen_prim!({RUST[src]} => {RUST[dst]});")
         else:
             out.append(f"widen_as!({RUST[src]} => {RUST[dst]});")
 open(sys.argv[1], 'w').write("\n".join(out) + "\n")

@@ -9,6 +9,7 @@ keywords = ["ndarray", "numpy", "linear-algebra", "array", "scientific"]
 categories = ["science", "mathematics", "data-structures"]
 
 [dependencies]
+half = { version = "2", features = ["num-traits"] }
 faer = "0.24.4"
 num-complex = "0.4.6"
 num-traits = "0.2"

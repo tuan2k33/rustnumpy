@@ -50,7 +50,7 @@ def test_shape_errors_are_value_errors():
     a = x3("int32")
     for call in (lambda: rnp.reshape(a, (5, -1)), lambda: rnp.reshape(a, (-1, -1)), lambda: rnp.transpose(a, (0, 1)),
                  lambda: rnp.transpose(a, (0, 0, 1)), lambda: rnp.expand_dims(a, 9), lambda: rnp.squeeze(a, axis=1),
-                 lambda: rnp.moveaxis(a, [0, 0], [1, 2]), lambda: rnp.flip(a, 3), lambda: rnp.diagonal(a)):
+                 lambda: rnp.moveaxis(a, [0, 0], [1, 2]), lambda: rnp.flip(a, 3), lambda: rnp.diagonal(a, axis1=0, axis2=0)):
         with pytest.raises(ValueError):
             call()
 

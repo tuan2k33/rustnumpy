@@ -3,9 +3,9 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyComplex, PyFloat, PyInt, PyString, PyType};
 
-pub const NAMES: [&str; 13] = [
-    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "complex64",
-    "complex128",
+pub const NAMES: [&str; 14] = [
+    "bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float16", "float32", "float64",
+    "complex64", "complex128",
 ];
 
 #[pyclass(name = "dtype", module = "rustnumpy", frozen)]
@@ -29,6 +29,92 @@ impl PyDtype {
     #[getter]
     fn itemsize(&self) -> usize {
         itemsize(self.name)
+    }
+
+    #[getter(r#type)]
+    fn scalar_type(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[pyo3(signature = (value=None))]
+    fn __call__(&self, py: Python<'_>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
+        let arr = match value {
+            None => crate::casting::astype(&crate::dynarray::Arr::scalar(0i64), self.name)?,
+            Some(v) => crate::casting::astype(&crate::dynarray::Arr::from_object(py, v)?, self.name)?,
+        };
+        crate::ops::out(py, arr)
+    }
+
+    #[getter]
+    fn byteorder(&self) -> &'static str {
+        if self.name == "bool" || self.itemsize() == 1 { "|" } else { "=" }
+    }
+
+    #[getter]
+    fn alignment(&self) -> usize {
+        match self.name {
+            "complex64" => 4,
+            "complex128" => 8,
+            _ => itemsize(self.name),
+        }
+    }
+
+    #[getter]
+    fn num(&self) -> u8 {
+        match self.name {
+            "bool" => 0, "int8" => 1, "uint8" => 2, "int16" => 3, "uint16" => 4, "int32" => 5, "uint32" => 6, "int64" => 7,
+            "uint64" => 8, "float32" => 11, "float64" => 12, "complex64" => 14, "complex128" => 15, _ => 23,
+        }
+    }
+
+    #[getter]
+    fn isnative(&self) -> bool {
+        true
+    }
+
+    #[getter]
+    fn isbuiltin(&self) -> u8 {
+        1
+    }
+
+    #[getter]
+    fn hasobject(&self) -> bool {
+        false
+    }
+
+    #[getter]
+    fn names(&self) -> Option<Py<PyAny>> {
+        None
+    }
+
+    #[getter]
+    fn fields(&self) -> Option<Py<PyAny>> {
+        None
+    }
+
+    #[getter]
+    fn ndim(&self) -> usize {
+        0
+    }
+
+    #[getter]
+    fn shape<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyTuple>> {
+        pyo3::types::PyTuple::new(py, Vec::<usize>::new())
+    }
+
+    #[getter]
+    fn base(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    #[getter]
+    fn subdtype(&self) -> Option<Py<PyAny>> {
+        None
+    }
+
+    #[getter]
+    fn descr(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Ok(pyo3::types::PyList::new(py, [("", typestr(self.name))])?.into_any().unbind())
     }
 
     #[getter]
@@ -78,7 +164,7 @@ impl PyDtype {
 pub fn itemsize(name: &str) -> usize {
     match name {
         "bool" | "int8" | "uint8" => 1,
-        "int16" | "uint16" => 2,
+        "int16" | "uint16" | "float16" => 2,
         "int32" | "uint32" | "float32" => 4,
         "int64" | "uint64" | "float64" | "complex64" => 8,
         _ => 16,
@@ -106,6 +192,7 @@ pub fn type_char(name: &str) -> &'static str {
         "uint16" => "H",
         "uint32" => "I",
         "uint64" => "Q",
+        "float16" => "e",
         "float32" => "f",
         "float64" => "d",
         "complex64" => "F",
@@ -124,6 +211,7 @@ pub fn typestr(name: &str) -> &'static str {
         "uint16" => "<u2",
         "uint32" => "<u4",
         "uint64" => "<u8",
+        "float16" => "<f2",
         "float32" => "<f4",
         "float64" => "<f8",
         "complex64" => "<c8",
@@ -142,6 +230,7 @@ pub fn buffer_format(name: &str) -> &'static [u8] {
         "uint16" => b"H\0",
         "uint32" => b"I\0",
         "uint64" => b"Q\0",
+        "float16" => b"e\0",
         "float32" => b"f\0",
         "float64" => b"d\0",
         "complex64" => b"Zf\0",
@@ -161,6 +250,7 @@ fn from_text(text: &str) -> Option<&'static str> {
         "uint16" | "u2" | "H" | "ushort" => "uint16",
         "uint32" | "u4" | "I" | "uintc" => "uint32",
         "uint64" | "u8" | "Q" | "L" | "uint" | "uintp" | "ulonglong" | "ulong" => "uint64",
+        "float16" | "f2" | "e" | "half" => "float16",
         "float32" | "f4" | "f" | "single" => "float32",
         "float64" | "f8" | "d" | "float" | "double" | "float_" => "float64",
         "complex64" | "c8" | "F" | "csingle" => "complex64",
@@ -213,6 +303,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("bool_", PyDtype { name: "bool" }.into_pyobject(m.py())?)?;
     m.add("intp", PyDtype { name: "int64" }.into_pyobject(m.py())?)?;
     m.add("double", PyDtype { name: "float64" }.into_pyobject(m.py())?)?;
+    m.add("half", PyDtype { name: "float16" }.into_pyobject(m.py())?)?;
     m.add("single", PyDtype { name: "float32" }.into_pyobject(m.py())?)?;
     Ok(())
 }

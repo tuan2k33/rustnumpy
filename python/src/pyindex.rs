@@ -350,7 +350,7 @@ impl PyArray {
             Applied::Owned(Arr::I64(a)) => (a.as_slice().iter().map(|&p| p as usize).collect(), a.shape().to_vec()),
             Applied::Owned(_) => unreachable!("positions are int64"),
         };
-        if value.is_exact_instance_of::<pyo3::types::PyInt>() && !matches!(self.storage.arr(), Arr::F32(_) | Arr::F64(_) | Arr::C64(_) | Arr::C128(_) | Arr::Bool(_)) {
+        if value.is_exact_instance_of::<pyo3::types::PyInt>() && !matches!(self.storage.arr(), Arr::F16(_) | Arr::F32(_) | Arr::F64(_) | Arr::C64(_) | Arr::C128(_) | Arr::Bool(_)) {
             if let Ok(v) = value.extract::<i128>() {
                 if let Some((lo, hi)) = int_bounds(self.dtype_name()) {
                     if v < lo || v > hi {

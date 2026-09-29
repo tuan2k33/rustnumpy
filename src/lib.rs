@@ -8,6 +8,7 @@ pub mod fft;
 pub mod gufunc;
 pub mod index;
 pub mod linalg;
+pub mod linalg_complex;
 pub mod logic;
 pub mod manipulation;
 pub mod mathfunc;

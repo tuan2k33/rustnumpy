@@ -25,6 +25,7 @@ impl Kind {
 
 fn float_mantissa_bits(float_bits: u8) -> u8 {
     match float_bits {
+        16 => 11,
         32 => 24,
         64 => 53,
         _ => 53,
@@ -32,7 +33,7 @@ fn float_mantissa_bits(float_bits: u8) -> u8 {
 }
 
 fn smallest_exact_float_for_int(int_bits: u8) -> u8 {
-    for float_bits in [32u8, 64] {
+    for float_bits in [16u8, 32, 64] {
         if int_bits <= float_mantissa_bits(float_bits) {
             return float_bits;
         }
@@ -236,6 +237,13 @@ impl DType for u64 {
     }
 }
 
+impl DType for half::f16 {
+    const KIND: Kind = Kind::Float(16);
+    fn type_name() -> &'static str {
+        "float16"
+    }
+}
+
 impl DType for f32 {
     const KIND: Kind = Kind::Float(32);
     fn type_name() -> &'static str {
@@ -271,6 +279,21 @@ pub fn common_dtype_of<A: DType, B: DType>() -> Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float16_promotion_matches_numpy() {
+        assert_eq!(common_dtype(Kind::Int(8), Kind::Float(16)), Kind::Float(16));
+        assert_eq!(common_dtype(Kind::Uint(8), Kind::Float(16)), Kind::Float(16));
+        assert_eq!(common_dtype(Kind::Int(16), Kind::Float(16)), Kind::Float(32));
+        assert_eq!(common_dtype(Kind::Int(32), Kind::Float(16)), Kind::Float(64));
+        assert_eq!(common_dtype(Kind::Bool, Kind::Float(16)), Kind::Float(16));
+        assert_eq!(common_dtype(Kind::Float(16), Kind::Float(32)), Kind::Float(32));
+        assert_eq!(common_dtype(Kind::Float(16), Kind::Complex(32)), Kind::Complex(32));
+        assert_eq!(can_cast(Kind::Int(8), Kind::Float(16)), CastSafety::Safe);
+        assert_eq!(can_cast(Kind::Int(16), Kind::Float(16)), CastSafety::SameKind);
+        assert_eq!(can_cast(Kind::Float(16), Kind::Float(32)), CastSafety::Safe);
+        assert_eq!(can_cast(Kind::Float(32), Kind::Float(16)), CastSafety::SameKind);
+    }
 
     #[test]
     fn kind_ordering_matches_nep50_rank() {

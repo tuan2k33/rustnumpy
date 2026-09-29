@@ -4,190 +4,10 @@ use crate::dynarray::{unsupported, Arr};
 use crate::ops::{out, out_array, resolve_binary, shape_err};
 use crate::shapefns::common_all;
 use crate::with_arr;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rustnumpy::logic;
-use rustnumpy::mathfunc;
 use rustnumpy::NdArray;
-
-macro_rules! same_arms {
-    ($x:expr, $y:expr, $p:ident, $q:ident => $body:expr, complex: $complex:expr) => {
-        match ($x, $y) {
-            (Arr::Bool($p), Arr::Bool($q)) => $body,
-            (Arr::I8($p), Arr::I8($q)) => $body,
-            (Arr::I16($p), Arr::I16($q)) => $body,
-            (Arr::I32($p), Arr::I32($q)) => $body,
-            (Arr::I64($p), Arr::I64($q)) => $body,
-            (Arr::U8($p), Arr::U8($q)) => $body,
-            (Arr::U16($p), Arr::U16($q)) => $body,
-            (Arr::U32($p), Arr::U32($q)) => $body,
-            (Arr::U64($p), Arr::U64($q)) => $body,
-            (Arr::F32($p), Arr::F32($q)) => $body,
-            (Arr::F64($p), Arr::F64($q)) => $body,
-            _ => return Err(unsupported("complex operands are not bound for this comparison")),
-        }
-    };
-}
-
-macro_rules! compare_fn {
-    ($name:ident, $core:path, eq) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let r = match (&x, &y) {
-                (Arr::C64(p), Arr::C64(q)) => $core(&p.view(), &q.view()).map_err(shape_err)?,
-                (Arr::C128(p), Arr::C128(q)) => $core(&p.view(), &q.view()).map_err(shape_err)?,
-                _ => same_arms!(&x, &y, p, q => $core(&p.view(), &q.view()).map_err(shape_err)?, complex: false),
-            };
-            out(py, Arr::from(r))
-        }
-    };
-    ($name:ident, $core:path, ord) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let r = same_arms!(&x, &y, p, q => $core(&p.view(), &q.view()).map_err(shape_err)?, complex: false);
-            out(py, Arr::from(r))
-        }
-    };
-}
-compare_fn!(equal, logic::equal, eq);
-compare_fn!(not_equal, logic::not_equal, eq);
-compare_fn!(less, logic::less, ord);
-compare_fn!(less_equal, logic::less_equal, ord);
-compare_fn!(greater, logic::greater, ord);
-compare_fn!(greater_equal, logic::greater_equal, ord);
-
-macro_rules! truthy_binary {
-    ($name:ident, $core:path) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let r = match (&x, &y) {
-                (Arr::C64(p), Arr::C64(q)) => $core(&p.view(), &q.view()).map_err(shape_err)?,
-                (Arr::C128(p), Arr::C128(q)) => $core(&p.view(), &q.view()).map_err(shape_err)?,
-                _ => same_arms!(&x, &y, p, q => $core(&p.view(), &q.view()).map_err(shape_err)?, complex: false),
-            };
-            out(py, Arr::from(r))
-        }
-    };
-}
-truthy_binary!(logical_and, logic::logical_and);
-truthy_binary!(logical_or, logic::logical_or);
-truthy_binary!(logical_xor, logic::logical_xor);
-
-#[pyfunction]
-pub fn logical_not(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    out(py, Arr::from(with_arr!(&arr, x => logic::logical_not(&x.view()))))
-}
-
-macro_rules! int_binary {
-    ($name:ident, $core:path) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let r = match (&x, &y) {
-                (Arr::Bool(p), Arr::Bool(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I8(p), Arr::I8(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I16(p), Arr::I16(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I32(p), Arr::I32(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I64(p), Arr::I64(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U8(p), Arr::U8(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U16(p), Arr::U16(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U32(p), Arr::U32(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U64(p), Arr::U64(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                _ => return Err(PyTypeError::new_err("ufunc only supports integer and boolean inputs")),
-            };
-            out(py, r)
-        }
-    };
-}
-int_binary!(bitwise_and, logic::bitwise_and);
-int_binary!(bitwise_or, logic::bitwise_or);
-int_binary!(bitwise_xor, logic::bitwise_xor);
-
-macro_rules! shift_binary {
-    ($name:ident, $core:path) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let r = match (&x, &y) {
-                (Arr::I8(p), Arr::I8(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I16(p), Arr::I16(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I32(p), Arr::I32(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I64(p), Arr::I64(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U8(p), Arr::U8(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U16(p), Arr::U16(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U32(p), Arr::U32(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U64(p), Arr::U64(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
-                _ => return Err(PyTypeError::new_err("ufunc only supports integer inputs")),
-            };
-            out(py, r)
-        }
-    };
-}
-shift_binary!(left_shift, logic::left_shift);
-shift_binary!(right_shift, logic::right_shift);
-
-#[pyfunction]
-pub fn invert(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let r = match &arr {
-        Arr::Bool(x) => Arr::from(logic::invert(&x.view())),
-        Arr::I8(x) => Arr::from(logic::invert(&x.view())),
-        Arr::I16(x) => Arr::from(logic::invert(&x.view())),
-        Arr::I32(x) => Arr::from(logic::invert(&x.view())),
-        Arr::I64(x) => Arr::from(logic::invert(&x.view())),
-        Arr::U8(x) => Arr::from(logic::invert(&x.view())),
-        Arr::U16(x) => Arr::from(logic::invert(&x.view())),
-        Arr::U32(x) => Arr::from(logic::invert(&x.view())),
-        Arr::U64(x) => Arr::from(logic::invert(&x.view())),
-        _ => return Err(PyTypeError::new_err("ufunc 'invert' not supported for the input types")),
-    };
-    out(py, r)
-}
-
-macro_rules! class_fn {
-    ($name:ident, $core:path) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = arr_of(py, a)?;
-            out(py, Arr::from(with_arr!(&arr, x => $core(&x.view()))))
-        }
-    };
-}
-class_fn!(isnan, logic::isnan);
-class_fn!(isinf, logic::isinf);
-class_fn!(isfinite, logic::isfinite);
-
-#[pyfunction]
-pub fn signbit(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let r = match &arr {
-        Arr::F32(x) => logic::signbit(&x.view()),
-        Arr::F64(x) => logic::signbit(&x.view()),
-        _ => return Err(unsupported("signbit is bound for float32/float64")),
-    };
-    out(py, Arr::from(r))
-}
-
-#[pyfunction]
-pub fn divide(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (mut x, mut y) = resolve_binary(py, a, b)?;
-    if !matches!(x, Arr::F32(_) | Arr::F64(_) | Arr::C64(_) | Arr::C128(_)) {
-        x = astype(&x, "float64")?;
-        y = astype(&y, "float64")?;
-    }
-    let r = match (&x, &y) {
-        (Arr::F32(p), Arr::F32(q)) => Arr::from(mathfunc::divide(&p.view(), &q.view()).map_err(shape_err)?),
-        (Arr::F64(p), Arr::F64(q)) => Arr::from(mathfunc::divide(&p.view(), &q.view()).map_err(shape_err)?),
-        (Arr::C64(p), Arr::C64(q)) => Arr::from(mathfunc::divide(&p.view(), &q.view()).map_err(shape_err)?),
-        (Arr::C128(p), Arr::C128(q)) => Arr::from(mathfunc::divide(&p.view(), &q.view()).map_err(shape_err)?),
-        _ => return Err(unsupported("unreachable divide dtype")),
-    };
-    out(py, r)
-}
 
 fn truth_arr(arr: &Arr) -> PyResult<NdArray<bool>> {
     match astype(arr, "bool")? {
@@ -224,14 +44,16 @@ fn arg_like(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, want_max:
     if arr.is_bool() {
         arr = astype(&arr, "uint8")?;
     }
-    if arr.is_complex() {
-        return Err(unsupported("complex argmax/argmin is not bound"));
-    }
     let ax = axis.map(|x| norm_axis(x, arr.ndim())).transpose()?;
-    let r = with_real_all!(&arr, x => logic::arg_extreme(&x.view(), ax, want_max).map_err(|e| match e {
+    let fail = |e: rustnumpy::ShapeError| match e {
         rustnumpy::ShapeError::ReduceNoIdentity => PyValueError::new_err("attempt to get argmax of an empty sequence"),
         other => shape_err(other),
-    })?);
+    };
+    let r = match &arr {
+        Arr::C64(x) => logic::arg_extreme(&crate::cxkey::to_keys(x).view(), ax, want_max).map_err(fail)?,
+        Arr::C128(x) => logic::arg_extreme(&crate::cxkey::to_keys(x).view(), ax, want_max).map_err(fail)?,
+        _ => with_real_all!(&arr, x => logic::arg_extreme(&x.view(), ax, want_max).map_err(fail)?),
+    };
     let data: Vec<i64> = r.as_slice().iter().map(|&i| i as i64).collect();
     out(py, Arr::from(NdArray::from_vec(data, r.shape()).map_err(shape_err)?))
 }
@@ -247,6 +69,7 @@ macro_rules! with_real_all {
             Arr::U16($a) => $body,
             Arr::U32($a) => $body,
             Arr::U64($a) => $body,
+            Arr::F16($a) => $body,
             Arr::F32($a) => $body,
             Arr::F64($a) => $body,
             _ => return Err(unsupported("bound for real integer and float dtypes only")),
@@ -277,6 +100,7 @@ macro_rules! cumulative {
             let ax = axis.map(|x| norm_axis(x, acc.ndim().max(1))).transpose()?;
             let ax = if acc.ndim() == 0 { None } else { ax };
             let r = match &acc {
+                Arr::F16(x) => Arr::from($core(&x.view(), ax).map_err(shape_err)?),
                 Arr::I64(x) => Arr::from($core(&x.view(), ax).map_err(shape_err)?),
                 Arr::U64(x) => Arr::from($core(&x.view(), ax).map_err(shape_err)?),
                 Arr::F32(x) => Arr::from($core(&x.view(), ax).map_err(shape_err)?),
@@ -339,6 +163,7 @@ pub fn clip(py: Python<'_>, a: &Bound<'_, PyAny>, a_min: Option<&Bound<'_, PyAny
         Arr::U16(_) => go!(U16),
         Arr::U32(_) => go!(U32),
         Arr::U64(_) => go!(U64),
+        Arr::F16(_) => go!(F16),
         Arr::F32(_) => go!(F32),
         Arr::F64(_) => go!(F64),
         _ => return Err(unsupported("clip is bound for real integer and float dtypes only")),
@@ -357,6 +182,7 @@ fn arrays_of(py: Python<'_>, seq: &Bound<'_, PyAny>) -> PyResult<Vec<Arr>> {
 macro_rules! join_fn {
     ($name:ident, $core:path) => {
         fn $name(arrs: &[Arr], axis: usize) -> PyResult<Arr> {
+            crate::createfns::alloc_guard(arrs.iter().map(|a| a.shape().iter().product::<usize>()).fold(0usize, usize::saturating_add), 16)?;
             macro_rules! per {
                 ($v:ident) => {{
                     let list: Vec<&NdArray<_>> = arrs.iter().map(|a| match a { Arr::$v(x) => x, _ => unreachable!("common dtype") }).collect();
@@ -373,6 +199,7 @@ macro_rules! join_fn {
                 Arr::U16(_) => per!(U16),
                 Arr::U32(_) => per!(U32),
                 Arr::U64(_) => per!(U64),
+                Arr::F16(_) => per!(F16),
                 Arr::F32(_) => per!(F32),
                 Arr::F64(_) => per!(F64),
                 Arr::C64(_) => per!(C64),
@@ -449,11 +276,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     macro_rules! reg {
         ($($f:ident),* $(,)?) => {$( m.add_function(wrap_pyfunction!($f, m)?)?; )*};
     }
-    reg!(
-        equal, not_equal, less, less_equal, greater, greater_equal, logical_and, logical_or, logical_xor, logical_not,
-        bitwise_and, bitwise_or, bitwise_xor, left_shift, right_shift, invert, isnan, isinf, isfinite, signbit, divide, any,
-        all, count_nonzero, argmax, argmin, cumsum, cumprod, clip, concatenate, stack, vstack, hstack
-    );
-    m.add("true_divide", wrap_pyfunction!(divide, m)?)?;
+    reg!(any, all, count_nonzero, argmax, argmin, cumsum, cumprod, clip, concatenate, stack, vstack, hstack);
     Ok(())
 }

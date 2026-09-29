@@ -1,12 +1,10 @@
-use crate::casting::{astype, common_arrs};
+use crate::casting::astype;
 use crate::dynarray::{unsupported, value_err, Arr, C32, C64};
-use crate::{dispatch2, with_arr};
+use crate::dispatch2;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyInt};
-use rustnumpy::dispatch::{map_weak_float, map_weak_int, zip_with_promoted, Common, Out, WrapAdd, WrapMul};
-use rustnumpy::mathfunc::{self, Arith};
-use rustnumpy::reductions::FloatIsh;
+use rustnumpy::dispatch::{zip_with_promoted, Common, Out};
 use rustnumpy::{NdArray, ShapeError};
 
 pub fn shape_err(e: ShapeError) -> PyErr {
@@ -20,6 +18,7 @@ pub enum Operand {
     Arr(Arr),
     WeakInt(i64),
     WeakFloat(f64),
+    WeakComplex(f64, f64),
 }
 
 impl Operand {
@@ -27,11 +26,18 @@ impl Operand {
         if obj.is_exact_instance_of::<PyInt>() {
             return match obj.extract::<i64>() {
                 Ok(v) => Ok(Operand::WeakInt(v)),
-                Err(_) => Err(unsupported("Python int outside the int64 range")),
+                Err(_) => match obj.extract::<u64>() {
+                    Ok(v) => Ok(Operand::Arr(Arr::scalar(v))),
+                    Err(_) => Err(unsupported("Python int outside the int64/uint64 range")),
+                },
             };
         }
         if obj.is_exact_instance_of::<PyFloat>() {
             return Ok(Operand::WeakFloat(obj.extract::<f64>()?));
+        }
+        if obj.is_exact_instance_of::<pyo3::types::PyComplex>() {
+            let c = obj.downcast::<pyo3::types::PyComplex>()?;
+            return Ok(Operand::WeakComplex(c.real(), c.imag()));
         }
         Ok(Operand::Arr(Arr::from_object(py, obj)?))
     }
@@ -41,8 +47,56 @@ impl Operand {
             Operand::Arr(a) => Ok(a),
             Operand::WeakInt(v) => Ok(Arr::scalar(v)),
             Operand::WeakFloat(v) => Ok(Arr::scalar(v)),
+            Operand::WeakComplex(re, im) => Ok(Arr::scalar(C64::new(re, im))),
         }
     }
+
+    fn weak(&self) -> Option<crate::typefns::Weak> {
+        use crate::typefns::Weak;
+        match self {
+            Operand::Arr(_) => None,
+            Operand::WeakInt(_) => Some(Weak::Int),
+            Operand::WeakFloat(_) => Some(Weak::Float),
+            Operand::WeakComplex(..) => Some(Weak::Complex),
+        }
+    }
+
+    pub fn strong_dtype(&self) -> Option<&'static str> {
+        match self {
+            Operand::Arr(a) => Some(a.dtype_name()),
+            _ => None,
+        }
+    }
+}
+
+pub fn common_name(a: &Operand, b: &Operand) -> &'static str {
+    use crate::typefns::{kind_of_name, weak_rank, with_weak};
+    let strong = [a.strong_dtype(), b.strong_dtype()].into_iter().flatten().map(kind_of_name).reduce(rustnumpy::common_dtype);
+    let widest = [a.weak(), b.weak()].into_iter().flatten().max_by_key(|&w| weak_rank(w));
+    let kind = match (strong, widest) {
+        (Some(k), Some(w)) => with_weak(k, w),
+        (Some(k), None) => k,
+        (None, Some(w)) => with_weak(rustnumpy::Kind::Bool, w),
+        (None, None) => unreachable!("an operand is either strong or weak"),
+    };
+    crate::casting::kind_name(kind)
+}
+
+pub fn materialize(op: Operand, target: &'static str) -> PyResult<Arr> {
+    if let Operand::WeakInt(v) = &op {
+        if let Some((lo, hi)) = int_range(target) {
+            if (*v as i128) < lo || (*v as i128) > hi {
+                return Err(PyOverflowError::new_err(format!("Python integer {v} out of bounds for {target}")));
+            }
+        }
+    }
+    let arr = match op {
+        Operand::Arr(a) => a,
+        Operand::WeakInt(v) => Arr::scalar(v),
+        Operand::WeakFloat(v) => Arr::scalar(v),
+        Operand::WeakComplex(re, im) => Arr::scalar(C64::new(re, im)),
+    };
+    if arr.dtype_name() == target { Ok(arr) } else { astype(&arr, target) }
 }
 
 pub fn out(py: Python<'_>, a: Arr) -> PyResult<Py<PyAny>> {
@@ -66,7 +120,7 @@ bsub_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
 macro_rules! bsub_plain {
     ($($t:ty),*) => {$(impl BSub for $t { fn bsub(self, r: Self) -> Self { self - r } })*};
 }
-bsub_plain!(f32, f64, C32, C64);
+bsub_plain!(half::f16, f32, f64, C32, C64);
 impl BSub for bool {
     fn bsub(self, _: Self) -> Self {
         unreachable!("boolean subtract is rejected before dispatch")
@@ -83,160 +137,30 @@ where
 }
 
 macro_rules! arith_fn {
-    ($name:ident, $prom:expr, $wint:expr, $wfloat:expr, $rev_int:expr, $rev_float:expr, $bool_check:expr) => {
+    ($name:ident, $prom:expr, $bool_check:expr) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (oa, ob) = (Operand::parse(py, a)?, Operand::parse(py, b)?);
-            let result: Arr = match (oa, ob) {
-                (Operand::Arr(x), Operand::Arr(y)) => {
-                    if $bool_check && x.is_bool() && y.is_bool() {
-                        return Err(pyo3::exceptions::PyTypeError::new_err(
-                            "numpy boolean subtract, the `-` operator, is not supported",
-                        ));
-                    }
-                    dispatch2!(&x, &y, p, q => Arr::from($prom(&p.view(), &q.view()).map_err(shape_err)?))
-                }
-                (Operand::Arr(x), Operand::WeakInt(s)) => {
-                    with_arr!(&x, p => Arr::from(map_weak_int(&p.view(), s, $wint).map_err(shape_err)?))
-                }
-                (Operand::Arr(x), Operand::WeakFloat(s)) => {
-                    with_arr!(&x, p => Arr::from(map_weak_float(&p.view(), s, $wfloat).map_err(shape_err)?))
-                }
-                (Operand::WeakInt(s), Operand::Arr(x)) => {
-                    with_arr!(&x, p => Arr::from(map_weak_int(&p.view(), s, $rev_int).map_err(shape_err)?))
-                }
-                (Operand::WeakFloat(s), Operand::Arr(x)) => {
-                    with_arr!(&x, p => Arr::from(map_weak_float(&p.view(), s, $rev_float).map_err(shape_err)?))
-                }
-                (x, y) => {
-                    let (x, y) = (x.into_arr(py)?, y.into_arr(py)?);
-                    dispatch2!(&x, &y, p, q => Arr::from($prom(&p.view(), &q.view()).map_err(shape_err)?))
-                }
-            };
+            let (x, y) = resolve_binary(py, a, b)?;
+            if $bool_check && x.is_bool() && y.is_bool() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "numpy boolean subtract, the `-` operator, is not supported, use the bitwise_xor, the `^` operator, or the logical_xor function instead.",
+                ));
+            }
+            let result: Arr = dispatch2!(&x, &y, p, q => Arr::from($prom(&p.view(), &q.view()).map_err(shape_err)?));
             out(py, result)
         }
     };
 }
 
-arith_fn!(
-    add,
-    rustnumpy::add,
-    |x, y| x.wrap_add(y),
-    |x, y| x.wrap_add(y),
-    |x, y| y.wrap_add(x),
-    |x, y| y.wrap_add(x),
-    false
-);
-arith_fn!(
-    multiply,
-    rustnumpy::mul,
-    |x, y| x.wrap_mul(y),
-    |x, y| x.wrap_mul(y),
-    |x, y| y.wrap_mul(x),
-    |x, y| y.wrap_mul(x),
-    false
-);
-arith_fn!(
-    subtract,
-    sub_promoted,
-    |x, y| x.bsub(y),
-    |x, y| x.bsub(y),
-    |x, y| y.bsub(x),
-    |x, y| y.bsub(x),
-    true
-);
+arith_fn!(add, rustnumpy::add, false);
+arith_fn!(multiply, rustnumpy::mul, false);
+arith_fn!(subtract, sub_promoted, true);
 
 #[pyfunction]
 pub fn astype_(py: Python<'_>, a: &Bound<'_, PyAny>, dtype: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let arr = Arr::from_object(py, a)?;
     out_array(py, astype(&arr, crate::dtypes::parse_dtype(dtype)?)?)
 }
-
-macro_rules! unary_float {
-    ($($name:ident => $f:path),* $(,)?) => {$(
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = Arr::from_object(py, a)?;
-            let result = match &arr {
-                Arr::F32(x) => Arr::from($f(&x.view())),
-                Arr::F64(x) => Arr::from($f(&x.view())),
-                _ => return Err(unsupported("float math is bound for float32/float64 only")),
-            };
-            out(py, result)
-        }
-    )*};
-}
-
-unary_float! {
-    sqrt => mathfunc::sqrt, cbrt => mathfunc::cbrt, exp => mathfunc::exp, exp2 => mathfunc::exp2,
-    expm1 => mathfunc::expm1, log => mathfunc::log, log2 => mathfunc::log2, log10 => mathfunc::log10,
-    log1p => mathfunc::log1p, sin => mathfunc::sin, cos => mathfunc::cos, tan => mathfunc::tan,
-    arcsin => mathfunc::arcsin, arccos => mathfunc::arccos, arctan => mathfunc::arctan,
-    sinh => mathfunc::sinh, cosh => mathfunc::cosh, tanh => mathfunc::tanh,
-    arcsinh => mathfunc::arcsinh, arccosh => mathfunc::arccosh, arctanh => mathfunc::arctanh,
-    floor => mathfunc::floor, ceil => mathfunc::ceil, trunc => mathfunc::trunc, rint => mathfunc::rint,
-    reciprocal => mathfunc::reciprocal, degrees => mathfunc::degrees, radians => mathfunc::radians,
-}
-
-macro_rules! unary_arith {
-    ($($name:ident => $f:path),* $(,)?) => {$(
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = Arr::from_object(py, a)?;
-            let result = match &arr {
-                Arr::I8(x) => Arr::from($f(&x.view())),
-                Arr::I16(x) => Arr::from($f(&x.view())),
-                Arr::I32(x) => Arr::from($f(&x.view())),
-                Arr::I64(x) => Arr::from($f(&x.view())),
-                Arr::U8(x) => Arr::from($f(&x.view())),
-                Arr::U16(x) => Arr::from($f(&x.view())),
-                Arr::U32(x) => Arr::from($f(&x.view())),
-                Arr::U64(x) => Arr::from($f(&x.view())),
-                Arr::F32(x) => Arr::from($f(&x.view())),
-                Arr::F64(x) => Arr::from($f(&x.view())),
-                _ => return Err(unsupported("bound for real integer and float dtypes only")),
-            };
-            out(py, result)
-        }
-    )*};
-}
-
-unary_arith! { sign => mathfunc::sign }
-
-macro_rules! unary_arith_complex {
-    ($name:ident, $real:path, $c32:expr, $c64:expr) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = Arr::from_object(py, a)?;
-            let result = match &arr {
-                Arr::I8(x) => Arr::from($real(&x.view())),
-                Arr::I16(x) => Arr::from($real(&x.view())),
-                Arr::I32(x) => Arr::from($real(&x.view())),
-                Arr::I64(x) => Arr::from($real(&x.view())),
-                Arr::U8(x) => Arr::from($real(&x.view())),
-                Arr::U16(x) => Arr::from($real(&x.view())),
-                Arr::U32(x) => Arr::from($real(&x.view())),
-                Arr::U64(x) => Arr::from($real(&x.view())),
-                Arr::F32(x) => Arr::from($real(&x.view())),
-                Arr::F64(x) => Arr::from($real(&x.view())),
-                Arr::C64(x) => ($c32)(x),
-                Arr::C128(x) => ($c64)(x),
-                Arr::Bool(_) => return Err(unsupported("boolean input is not bound for this function")),
-            };
-            out(py, result)
-        }
-    };
-}
-
-unary_arith_complex!(negative, mathfunc::negative,
-    |x: &NdArray<C32>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| -c)),
-    |x: &NdArray<C64>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| -c)));
-unary_arith_complex!(square, mathfunc::square,
-    |x: &NdArray<C32>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c * c)),
-    |x: &NdArray<C64>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c * c)));
-unary_arith_complex!(absolute, mathfunc::abs,
-    |x: &NdArray<C32>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c.norm())),
-    |x: &NdArray<C64>| Arr::from(rustnumpy::logic::map_to(&x.view(), |c| c.norm())));
 
 fn int_range(dtype: &str) -> Option<(i128, i128)> {
     Some(match dtype {
@@ -252,117 +176,22 @@ fn int_range(dtype: &str) -> Option<(i128, i128)> {
     })
 }
 
-fn weak_scalar_like(py: Python<'_>, target: &str, value: &Bound<'_, PyAny>) -> PyResult<Arr> {
-    astype(&Arr::from_object(py, value)?, target)
-}
-
 pub fn resolve_binary(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(Arr, Arr)> {
     let (oa, ob) = (Operand::parse(py, a)?, Operand::parse(py, b)?);
-    match (oa, ob) {
-        (Operand::Arr(x), Operand::Arr(y)) => common_arrs(&x, &y),
-        (Operand::Arr(x), w @ (Operand::WeakInt(_) | Operand::WeakFloat(_))) => {
-            let (target, value) = weak_target(&x, &w, b)?;
-            let y = weak_scalar_like(py, target, &value)?;
-            Ok((astype(&x, target)?, y))
-        }
-        (w @ (Operand::WeakInt(_) | Operand::WeakFloat(_)), Operand::Arr(y)) => {
-            let (target, value) = weak_target(&y, &w, a)?;
-            let x = weak_scalar_like(py, target, &value)?;
-            Ok((x, astype(&y, target)?))
-        }
-        (x, y) => common_arrs(&x.into_arr(py)?, &y.into_arr(py)?),
-    }
+    let name = common_name(&oa, &ob);
+    Ok((materialize(oa, name)?, materialize(ob, name)?))
 }
 
-fn weak_target<'py>(arr: &Arr, weak: &Operand, original: &Bound<'py, PyAny>) -> PyResult<(&'static str, Bound<'py, PyAny>)> {
-    let name = arr.dtype_name();
-    let target = match weak {
-        Operand::WeakInt(_) => if arr.is_bool() { "int64" } else { name },
-        _ => if arr.is_bool() || arr.is_int() { "float64" } else { name },
-    };
-    if let (Operand::WeakInt(v), Some((lo, hi))) = (weak, int_range(target)) {
-        if (*v as i128) < lo || (*v as i128) > hi {
-            return Err(PyOverflowError::new_err(format!("Python integer {v} out of bounds for {target}")));
-        }
-    }
-    Ok((target, original.clone()))
-}
-
-macro_rules! binary_same_type {
-    ($($name:ident => $f:path);* $(;)?) => {$(
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let result = match (&x, &y) {
-                (Arr::F32(p), Arr::F32(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::F64(p), Arr::F64(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I8(p), Arr::I8(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I16(p), Arr::I16(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I32(p), Arr::I32(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::I64(p), Arr::I64(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U8(p), Arr::U8(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U16(p), Arr::U16(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U32(p), Arr::U32(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::U64(p), Arr::U64(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                _ => return Err(unsupported("bound for real integer and float dtypes only")),
-            };
-            out(py, result)
-        }
-    )*};
-}
-
-fn maximum_f<T: FloatIsh>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::maximum(a, b)
-}
-fn minimum_f<T: FloatIsh>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::minimum(a, b)
-}
-fn fmax_f<T: FloatIsh>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::fmax(a, b)
-}
-fn fmin_f<T: FloatIsh>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::fmin(a, b)
-}
-fn floor_divide_f<T: Arith>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::floor_divide(a, b)
-}
-fn remainder_f<T: Arith>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::remainder(a, b)
-}
-fn power_f<T: Arith>(a: &rustnumpy::ArrayView<T>, b: &rustnumpy::ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    mathfunc::power(a, b)
-}
-
-binary_same_type! {
-    maximum => maximum_f;
-    minimum => minimum_f;
-    fmax => fmax_f;
-    fmin => fmin_f;
-    floor_divide => floor_divide_f;
-    remainder => remainder_f;
-    power => power_f;
-}
-
-macro_rules! binary_float_only {
-    ($($name:ident => $f:path);* $(;)?) => {$(
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let result = match (&x, &y) {
-                (Arr::F32(p), Arr::F32(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                (Arr::F64(p), Arr::F64(q)) => Arr::from($f(&p.view(), &q.view()).map_err(shape_err)?),
-                _ => return Err(unsupported("bound for float32/float64 operands only")),
-            };
-            out(py, result)
-        }
-    )*};
-}
-
-binary_float_only! {
-    arctan2 => mathfunc::arctan2;
-    hypot => mathfunc::hypot;
-    copysign => mathfunc::copysign;
-    fmod => mathfunc::fmod;
+pub fn resolve_loop(
+    py: Python<'_>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    pick: impl Fn(&'static str, [Option<&'static str>; 2]) -> PyResult<&'static str>,
+) -> PyResult<(Arr, Arr)> {
+    let (oa, ob) = (Operand::parse(py, a)?, Operand::parse(py, b)?);
+    let name = common_name(&oa, &ob);
+    let target = pick(name, [oa.strong_dtype(), ob.strong_dtype()])?;
+    Ok((materialize(oa, target)?, materialize(ob, target)?))
 }
 
 #[pyfunction]
@@ -393,11 +222,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     macro_rules! reg {
         ($($f:ident),* $(,)?) => {$( m.add_function(wrap_pyfunction!($f, m)?)?; )*};
     }
-    reg!(
-        add, subtract, multiply, astype_, sqrt, cbrt, exp, exp2, expm1, log, log2, log10, log1p, sin, cos, tan, arcsin,
-        arccos, arctan, sinh, cosh, tanh, arcsinh, arccosh, arctanh, floor, ceil, trunc, rint, reciprocal, degrees,
-        radians, absolute, negative, square, sign, maximum, minimum, fmax, fmin, floor_divide, remainder, power, arctan2,
-        hypot, copysign, fmod
-    );
+    reg!(add, subtract, multiply, astype_);
     Ok(())
 }

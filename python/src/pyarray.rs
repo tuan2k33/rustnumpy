@@ -67,6 +67,30 @@ impl PyArray {
         self.storage.arr().dtype_name()
     }
 
+    pub fn require_0d(&self) -> PyResult<()> {
+        if self.shape.is_empty() {
+            Ok(())
+        } else {
+            Err(PyTypeError::new_err("only 0-dimensional arrays can be converted to Python scalars"))
+        }
+    }
+
+    pub fn alias(&self) -> PyArray {
+        PyArray { storage: Arc::clone(&self.storage), shape: self.shape.clone(), strides: self.strides.clone(), offset: self.offset }
+    }
+
+    pub fn owns_storage(&self) -> bool {
+        let full_shape = self.storage.arr().shape();
+        self.offset == 0 && self.shape == full_shape && self.strides == c_contiguous_strides(&full_shape)
+            && Arc::strong_count(&self.storage) == 1
+    }
+
+    pub fn whole_storage_view(&self) -> PyArray {
+        let shape = self.storage.arr().shape();
+        let strides = c_contiguous_strides(&shape);
+        PyArray { storage: Arc::clone(&self.storage), shape, strides, offset: 0 }
+    }
+
     pub fn size(&self) -> usize {
         self.shape.iter().product()
     }
@@ -130,6 +154,7 @@ impl PyArray {
             (Arr::U16(d), Arr::U16(s)) => copy!(d, s),
             (Arr::U32(d), Arr::U32(s)) => copy!(d, s),
             (Arr::U64(d), Arr::U64(s)) => copy!(d, s),
+            (Arr::F16(d), Arr::F16(s)) => copy!(d, s),
             (Arr::F32(d), Arr::F32(s)) => copy!(d, s),
             (Arr::F64(d), Arr::F64(s)) => copy!(d, s),
             (Arr::C64(d), Arr::C64(s)) => copy!(d, s),
@@ -152,7 +177,7 @@ pub fn as_array(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<PyArray> {
     Ok(PyArray::from_arr(Arr::from_object(py, obj)?))
 }
 
-fn shape_tuple<'py>(py: Python<'py>, shape: &[usize]) -> PyResult<Bound<'py, PyTuple>> {
+pub fn shape_tuple<'py>(py: Python<'py>, shape: &[usize]) -> PyResult<Bound<'py, PyTuple>> {
     PyTuple::new(py, shape.iter().copied())
 }
 
@@ -273,22 +298,25 @@ impl PyArray {
     }
 
     fn __float__(&self, py: Python<'_>) -> PyResult<f64> {
+        self.require_0d()?;
         self.item(py)?.bind(py).extract::<f64>().or_else(|_| self.item(py)?.bind(py).call_method0("__float__")?.extract())
     }
 
     fn __int__(&self, py: Python<'_>) -> PyResult<i64> {
+        self.require_0d()?;
         let v = self.item(py)?;
         v.bind(py).call_method0("__int__")?.extract()
     }
 
     fn __index__(&self, py: Python<'_>) -> PyResult<i64> {
-        if !matches!(self.storage.arr(), Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)) || self.size() != 1 {
+        if !matches!(self.storage.arr(), Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)) || !self.shape.is_empty() {
             return Err(PyTypeError::new_err("only integer scalar arrays can be converted to a scalar index"));
         }
         self.__int__(py)
     }
 
     fn __complex__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.require_0d()?;
         let v = self.item(py)?;
         Ok(py.get_type::<pyo3::types::PyComplex>().call1((v,))?.unbind())
     }
@@ -312,9 +340,21 @@ impl PyArray {
         wrap(py, PyArray::from_arr(self.to_arr()))
     }
 
-    #[pyo3(signature = (dtype, copy=true))]
-    fn astype(&self, py: Python<'_>, dtype: &Bound<'_, PyAny>, copy: bool) -> PyResult<Py<PyAny>> {
+    #[pyo3(signature = (dtype, order="K", casting="unsafe", subok=true, copy=true))]
+    fn astype(&self, py: Python<'_>, dtype: &Bound<'_, PyAny>, order: &str, casting: &str, subok: bool, copy: bool) -> PyResult<Py<PyAny>> {
+        let _ = (order, subok);
         let name = parse_dtype(dtype)?;
+        let safety = rustnumpy::can_cast(self.storage.arr().kind(), crate::typefns::kind_of_name(name));
+        let allowed = match casting {
+            "no" | "equiv" => safety == rustnumpy::CastSafety::Equivalent,
+            "safe" => matches!(safety, rustnumpy::CastSafety::Equivalent | rustnumpy::CastSafety::Safe),
+            "same_kind" => !matches!(safety, rustnumpy::CastSafety::Unsafe),
+            "unsafe" => true,
+            other => return Err(PyValueError::new_err(format!("casting must be one of 'no', 'equiv', 'safe', 'same_kind', or 'unsafe', got '{other}'"))),
+        };
+        if !allowed {
+            return Err(PyTypeError::new_err(format!("Cannot cast array data from dtype('{}') to dtype('{name}') according to the rule '{casting}'", self.dtype_name())));
+        }
         if !copy && name == self.dtype_name() {
             return wrap(py, PyArray { storage: Arc::clone(&self.storage), shape: self.shape.clone(), strides: self.strides.clone(), offset: self.offset });
         }
@@ -380,12 +420,12 @@ impl PyArray {
         crate::ops::imag(py, &Bound::new(py, PyArray { storage: Arc::clone(&self.storage), shape: self.shape.clone(), strides: self.strides.clone(), offset: self.offset })?.into_any())
     }
 
-    fn __repr__(&self) -> PyResult<String> {
-        Ok(crate::repr::array_repr(self))
+    fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
+        slf.py().import("rustnumpy._print")?.getattr("array_repr")?.call1((slf,))?.extract()
     }
 
-    fn __str__(&self) -> PyResult<String> {
-        Ok(crate::repr::array_str(self))
+    fn __str__(slf: &Bound<'_, Self>) -> PyResult<String> {
+        slf.py().import("rustnumpy._print")?.getattr("array_str")?.call1((slf,))?.extract()
     }
 
     fn __iter__(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {

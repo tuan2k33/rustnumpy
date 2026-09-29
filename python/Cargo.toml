@@ -15,5 +15,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 rustnumpy = { path = ".." }
 num-complex = "0.4"
+half = { version = "2", features = ["num-traits"] }
 num-traits = "0.2"
 pyo3 = { version = "0.26", features = ["extension-module", "multiple-pymethods"] }

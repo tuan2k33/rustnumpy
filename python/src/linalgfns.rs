@@ -9,7 +9,7 @@ use rustnumpy::{Complex64, NdArray};
 
 pyo3::create_exception!(rustnumpy, LinAlgError, PyValueError);
 
-fn la_err(e: linalg::LinalgError) -> PyErr {
+pub fn la_err(e: linalg::LinalgError) -> PyErr {
     if matches!(e, linalg::LinalgError::Empty) {
         return unsupported("empty matrix input is not bound");
     }
@@ -25,6 +25,9 @@ fn f64_input_any(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<F64Input> {
     let arr = Operand::parse(py, obj)?.into_arr(py)?;
     if arr.is_complex() {
         return Err(unsupported("complex linalg is not bound"));
+    }
+    if matches!(arr, Arr::F16(_)) {
+        return Err(pyo3::exceptions::PyTypeError::new_err("array type float16 is unsupported in linalg"));
     }
     let single = matches!(arr, Arr::F32(_));
     let Arr::F64(a) = astype(&arr, "float64")? else { unreachable!("cast to float64") };
@@ -195,7 +198,7 @@ pub fn matrix_rank(py: Python<'_>, a: &Bound<'_, PyAny>, tol: Option<f64>) -> Py
 pub fn lstsq(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, rcond: Option<f64>) -> PyResult<Py<PyAny>> {
     let (ia, ib) = (f64_input(py, a)?, f64_rhs(py, b)?);
     let single = ia.single && ib.single;
-    let rcond = rcond.map(|r| if r < 0.0 { f64::EPSILON } else { r });
+    let rcond = rcond.map(|r| if r < 0.0 { f64::EPSILON / 2.0 } else { r });
     let r = linalg::lstsq(&ia.a, &ib.a, rcond).map_err(la_err)?;
     let res = ret_vec(py, r.residuals, single)?;
     let rank = out(py, Arr::from(NdArray::from_vec(vec![r.rank as i32], &[]).map_err(shape_err)?))?;

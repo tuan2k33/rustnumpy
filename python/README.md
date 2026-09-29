@@ -72,3 +72,8 @@ Unsupported dtypes (`float16`, `object`, strings...) and options raise
 read and write `.npy` (float64 only). 0-d results are Python scalars for
 `bool`/`int64`/`float64`/`complex128` and 0-d arrays for other dtypes. See
 "Step 26" in `../NumPy.md` for the design and its limits.
+
+
+## Layout and limits (step 26b)
+
+`rustnumpy._core` is the compiled module; `rustnumpy` is a small Python package over it, with `rustnumpy.linalg`, `rustnumpy.fft` and `rustnumpy.random`. It supports 14 dtypes (`bool`, 8 integer types, `float16/32/64`, `complex64/128`), ufunc objects (`out=`, `where=`, `dtype=`, `reduce/accumulate/outer/reduceat/at`), NumPy's printing, `.npy`/`.npz` I/O, pickling and DLPack. Not supported: structured/datetime/string/object dtypes, masked arrays, `longdouble`, complex `linalg`, the legacy `np.random.*` functions and `np.matrix`. Details and the list of deliberate differences from NumPy are in `NumPy.md` ("Step 26b").

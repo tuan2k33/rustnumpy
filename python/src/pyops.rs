@@ -1,7 +1,7 @@
 use crate::dynarray::Arr;
 use crate::ops::{self};
 use crate::pyarray::PyArray;
-use crate::{arrayfns, logicfns, shapefns};
+use crate::{shapefns, umath};
 use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -61,14 +61,14 @@ binary_methods!(
     (__add__, __radd__, __iadd__, ops::add, "add"),
     (__sub__, __rsub__, __isub__, ops::subtract, "subtract"),
     (__mul__, __rmul__, __imul__, ops::multiply, "multiply"),
-    (__truediv__, __rtruediv__, __itruediv__, logicfns::divide, "divide"),
-    (__floordiv__, __rfloordiv__, __ifloordiv__, ops::floor_divide, "floor_divide"),
-    (__mod__, __rmod__, __imod__, ops::remainder, "remainder"),
-    (__and__, __rand__, __iand__, logicfns::bitwise_and, "bitwise_and"),
-    (__or__, __ror__, __ior__, logicfns::bitwise_or, "bitwise_or"),
-    (__xor__, __rxor__, __ixor__, logicfns::bitwise_xor, "bitwise_xor"),
-    (__lshift__, __rlshift__, __ilshift__, logicfns::left_shift, "left_shift"),
-    (__rshift__, __rrshift__, __irshift__, logicfns::right_shift, "right_shift"),
+    (__truediv__, __rtruediv__, __itruediv__, umath::divide, "divide"),
+    (__floordiv__, __rfloordiv__, __ifloordiv__, umath::floor_divide, "floor_divide"),
+    (__mod__, __rmod__, __imod__, umath::remainder, "remainder"),
+    (__and__, __rand__, __iand__, umath::bitwise_and, "bitwise_and"),
+    (__or__, __ror__, __ior__, umath::bitwise_or, "bitwise_or"),
+    (__xor__, __rxor__, __ixor__, umath::bitwise_xor, "bitwise_xor"),
+    (__lshift__, __rlshift__, __ilshift__, umath::left_shift, "left_shift"),
+    (__rshift__, __rrshift__, __irshift__, umath::right_shift, "right_shift"),
 );
 
 #[pymethods]
@@ -77,19 +77,19 @@ impl PyArray {
         if modulo.is_some_and(|m| !m.is_none()) {
             return Ok(slf.py().NotImplemented());
         }
-        binop(slf, other, ops::power, false)
+        binop(slf, other, umath::power, false)
     }
 
     fn __rpow__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, modulo: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
         if modulo.is_some_and(|m| !m.is_none()) {
             return Ok(slf.py().NotImplemented());
         }
-        binop(slf, other, ops::power, true)
+        binop(slf, other, umath::power, true)
     }
 
     fn __ipow__(slf: PyRefMut<'_, Self>, other: &Bound<'_, PyAny>, _modulo: Option<&Bound<'_, PyAny>>) -> PyResult<()> {
         let py = other.py();
-        inplace(&slf, py, other, ops::power, "power")
+        inplace(&slf, py, other, umath::power, "power")
     }
 
     fn __matmul__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
@@ -101,7 +101,7 @@ impl PyArray {
     }
 
     fn __neg__(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        unary(slf, ops::negative)
+        unary(slf, umath::negative)
     }
 
     fn __pos__(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
@@ -109,125 +109,22 @@ impl PyArray {
     }
 
     fn __abs__(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        unary(slf, ops::absolute)
+        unary(slf, umath::absolute)
     }
 
     fn __invert__(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        unary(slf, logicfns::invert)
+        unary(slf, umath::invert)
     }
 
     fn __richcmp__(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>, op: CompareOp) -> PyResult<Py<PyAny>> {
         let f: Bin = match op {
-            CompareOp::Eq => logicfns::equal,
-            CompareOp::Ne => logicfns::not_equal,
-            CompareOp::Lt => logicfns::less,
-            CompareOp::Le => logicfns::less_equal,
-            CompareOp::Gt => logicfns::greater,
-            CompareOp::Ge => logicfns::greater_equal,
+            CompareOp::Eq => umath::equal,
+            CompareOp::Ne => umath::not_equal,
+            CompareOp::Lt => umath::less,
+            CompareOp::Le => umath::less_equal,
+            CompareOp::Gt => umath::greater,
+            CompareOp::Ge => umath::greater_equal,
         };
         binop(slf, other, f, false)
-    }
-
-    #[pyo3(signature = (axis=None, keepdims=false))]
-    fn sum(slf: &Bound<'_, Self>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-        arrayfns::sum(slf.py(), slf.as_any(), axis, keepdims)
-    }
-
-    #[pyo3(signature = (axis=None, keepdims=false))]
-    fn prod(slf: &Bound<'_, Self>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-        arrayfns::prod(slf.py(), slf.as_any(), axis, keepdims)
-    }
-
-    #[pyo3(signature = (axis=None, keepdims=false))]
-    fn max(slf: &Bound<'_, Self>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-        arrayfns::max(slf.py(), slf.as_any(), axis, keepdims)
-    }
-
-    #[pyo3(signature = (axis=None, keepdims=false))]
-    fn min(slf: &Bound<'_, Self>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-        arrayfns::min(slf.py(), slf.as_any(), axis, keepdims)
-    }
-
-    #[pyo3(signature = (axis=None))]
-    fn mean(slf: &Bound<'_, Self>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-        arrayfns::mean(slf.py(), slf.as_any(), axis)
-    }
-
-    #[pyo3(signature = (axis=None, ddof=0))]
-    fn var(slf: &Bound<'_, Self>, axis: Option<isize>, ddof: usize) -> PyResult<Py<PyAny>> {
-        arrayfns::var(slf.py(), slf.as_any(), axis, ddof)
-    }
-
-    #[pyo3(signature = (axis=None, ddof=0))]
-    fn std(slf: &Bound<'_, Self>, axis: Option<isize>, ddof: usize) -> PyResult<Py<PyAny>> {
-        arrayfns::std_(slf.py(), slf.as_any(), axis, ddof)
-    }
-
-    #[pyo3(signature = (axis=None))]
-    fn argmax(slf: &Bound<'_, Self>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-        logicfns::argmax(slf.py(), slf.as_any(), axis)
-    }
-
-    #[pyo3(signature = (axis=None))]
-    fn argmin(slf: &Bound<'_, Self>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-        logicfns::argmin(slf.py(), slf.as_any(), axis)
-    }
-
-    #[pyo3(signature = (axis=None, keepdims=false))]
-    fn any(slf: &Bound<'_, Self>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-        logicfns::any(slf.py(), slf.as_any(), axis, keepdims)
-    }
-
-    #[pyo3(signature = (axis=None, keepdims=false))]
-    fn all(slf: &Bound<'_, Self>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-        logicfns::all(slf.py(), slf.as_any(), axis, keepdims)
-    }
-
-    #[pyo3(signature = (axis=None))]
-    fn cumsum(slf: &Bound<'_, Self>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-        logicfns::cumsum(slf.py(), slf.as_any(), axis)
-    }
-
-    #[pyo3(signature = (axis=None))]
-    fn cumprod(slf: &Bound<'_, Self>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-        logicfns::cumprod(slf.py(), slf.as_any(), axis)
-    }
-
-    #[pyo3(signature = (a_min=None, a_max=None))]
-    fn clip(slf: &Bound<'_, Self>, a_min: Option<&Bound<'_, PyAny>>, a_max: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
-        logicfns::clip(slf.py(), slf.as_any(), a_min, a_max)
-    }
-
-    #[pyo3(signature = (axis=-1))]
-    fn argsort(slf: &Bound<'_, Self>, axis: isize) -> PyResult<Py<PyAny>> {
-        arrayfns::argsort(slf.py(), slf.as_any(), axis)
-    }
-
-    #[pyo3(signature = (axis=-1))]
-    fn sort(slf: &Bound<'_, Self>, axis: isize) -> PyResult<()> {
-        let py = slf.py();
-        let sorted = arrayfns::sort(py, slf.as_any(), axis)?;
-        let value = Arr::from_object(py, sorted.bind(py))?;
-        let this = slf.borrow();
-        this.write_positions(&this.flat_positions(), &value)
-    }
-
-    fn dot(slf: &Bound<'_, Self>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        shapefns::dot(slf.py(), slf.as_any(), other)
-    }
-
-    #[pyo3(signature = (offset=0))]
-    fn trace(slf: &Bound<'_, Self>, offset: isize) -> PyResult<Py<PyAny>> {
-        shapefns::trace(slf.py(), slf.as_any(), offset)
-    }
-
-    #[pyo3(signature = (offset=0))]
-    fn diagonal(slf: &Bound<'_, Self>, offset: isize) -> PyResult<Py<PyAny>> {
-        crate::viewfns::diagonal(slf.py(), slf.as_any(), offset)
-    }
-
-    #[pyo3(signature = (repeats, axis=None))]
-    fn repeat(slf: &Bound<'_, Self>, repeats: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-        shapefns::repeat(slf.py(), slf.as_any(), repeats, axis)
     }
 }

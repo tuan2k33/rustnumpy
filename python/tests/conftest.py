@@ -4,9 +4,9 @@ import pytest
 import rustnumpy as rnp
 
 DTYPES = ["bool", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64",
-          "float32", "float64", "complex64", "complex128"]
+          "float16", "float32", "float64", "complex64", "complex128"]
 INT_DTYPES = [d for d in DTYPES if d.startswith(("int", "uint"))]
-FLOAT_DTYPES = ["float32", "float64"]
+FLOAT_DTYPES = ["float16", "float32", "float64"]
 REAL_DTYPES = INT_DTYPES + FLOAT_DTYPES
 
 

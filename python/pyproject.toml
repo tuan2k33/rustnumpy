@@ -18,6 +18,5 @@ classifiers = [
 ]
 
 [tool.maturin]
-# Importable as `import rustnumpy` — matches #[pyo3(name = "rustnumpy")] on the
-# #[pymodule] function in src/lib.rs.
-module-name = "rustnumpy"
+python-source = "python_src"
+module-name = "rustnumpy._core"

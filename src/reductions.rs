@@ -14,6 +14,12 @@ macro_rules! impl_floatish_for_ints {
 }
 impl_floatish_for_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
 
+impl FloatIsh for half::f16 {
+    fn is_nan_ish(self) -> bool {
+        self.is_nan()
+    }
+}
+
 impl FloatIsh for f32 {
     fn is_nan_ish(self) -> bool {
         self.is_nan()
@@ -40,6 +46,12 @@ macro_rules! impl_as_f64_for_ints {
     };
 }
 impl_as_f64_for_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
+
+impl AsF64 for half::f16 {
+    fn as_f64(self) -> f64 {
+        f64::from(self)
+    }
+}
 
 impl AsF64 for f32 {
     fn as_f64(self) -> f64 {

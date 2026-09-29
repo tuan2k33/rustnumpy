@@ -17,8 +17,34 @@ fn dtype_or(dtype: Option<&Bound<'_, PyAny>>, default: &'static str) -> PyResult
     dtype.map_or(Ok(default), parse_dtype)
 }
 
+fn available_bytes() -> usize {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|t| {
+            t.lines().find(|l| l.starts_with("MemAvailable:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok())
+        })
+        .map_or(usize::MAX / 2, |kb| kb.saturating_mul(1024))
+}
+
+pub fn alloc_guard(elems: usize, bytes_per: usize) -> PyResult<()> {
+    let bytes = elems.checked_mul(bytes_per).filter(|&b| b <= isize::MAX as usize);
+    let ok = bytes.is_some_and(|b| b <= available_bytes() / 2);
+    if ok {
+        Ok(())
+    } else {
+        Err(pyo3::exceptions::PyMemoryError::new_err(format!(
+            "Unable to allocate an array with {elems} elements of {bytes_per} bytes"
+        )))
+    }
+}
+
+pub fn shape_elems(shape: &[usize]) -> PyResult<usize> {
+    shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d)).ok_or_else(|| PyValueError::new_err("array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size."))
+}
+
 pub fn filled(shape: &[usize], value: f64, dtype: &str) -> PyResult<Arr> {
-    let n: usize = shape.iter().product();
+    let n = shape_elems(shape)?;
+    alloc_guard(n, 16)?;
     let base = Arr::from(NdArray::from_vec(vec![value; n], shape).map_err(shape_err)?);
     astype(&base, dtype)
 }
@@ -50,6 +76,7 @@ fn full_like_arr(py: Python<'_>, shape: &[usize], value: &Bound<'_, PyAny>, dtyp
     if v.ndim() != 0 {
         return Err(unsupported("full() needs a scalar fill value"));
     }
+    alloc_guard(shape_elems(shape)?, 16)?;
     Ok(with_arr!(&v, a => Arr::from(rustnumpy::creation::full(shape, a.as_slice()[0]))))
 }
 
@@ -102,12 +129,13 @@ pub fn arange(
     let all_int = ops.iter().all(|o| match o {
         Operand::WeakInt(_) => true,
         Operand::Arr(a) => a.ndim() == 0 && matches!(a, Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)),
-        Operand::WeakFloat(_) => false,
+        Operand::WeakFloat(_) | Operand::WeakComplex(..) => false,
     });
     let as_f64 = |o: &Operand| -> PyResult<f64> {
         match o {
             Operand::WeakInt(v) => Ok(*v as f64),
             Operand::WeakFloat(v) => Ok(*v),
+            Operand::WeakComplex(..) => Err(pyo3::exceptions::PyTypeError::new_err("arange does not accept complex bounds")),
             Operand::Arr(a) => match astype(a, "float64")? {
                 Arr::F64(x) if x.ndim() == 0 => Ok(x.as_slice()[0]),
                 _ => Err(unsupported("arange bounds must be scalars")),
@@ -135,6 +163,7 @@ pub fn arange(
 #[pyfunction]
 #[pyo3(signature = (start, stop, num=50, endpoint=true, dtype=None))]
 pub fn linspace(py: Python<'_>, start: f64, stop: f64, num: usize, endpoint: bool, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
+    alloc_guard(num, 16)?;
     let r = Arr::from(rustnumpy::creation::linspace(start, stop, num, endpoint));
     let r = match dtype {
         Some(d) => astype(&r, parse_dtype(d)?)?,
@@ -146,6 +175,7 @@ pub fn linspace(py: Python<'_>, start: f64, stop: f64, num: usize, endpoint: boo
 #[pyfunction]
 #[pyo3(signature = (n, m=None, k=0, dtype=None))]
 pub fn eye(py: Python<'_>, n: usize, m: Option<usize>, k: isize, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
+    alloc_guard(n.saturating_mul(m.unwrap_or(n)), 16)?;
     let r = Arr::from(rustnumpy::creation::eye(n, m.unwrap_or(n), k, 1.0f64));
     let r = match dtype {
         Some(d) => astype(&r, parse_dtype(d)?)?,

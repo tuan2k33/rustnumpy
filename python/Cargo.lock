@@ -1121,6 +1121,7 @@ name = "rustnumpy"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "half",
  "num-complex",
  "num-traits",
  "rand 0.10.3",
@@ -1134,6 +1135,7 @@ dependencies = [
 name = "rustnumpy-python"
 version = "0.1.0"
 dependencies = [
+ "half",
  "num-complex",
  "num-traits",
  "pyo3",

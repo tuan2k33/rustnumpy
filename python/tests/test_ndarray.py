@@ -17,9 +17,9 @@ def test_import_and_basic_use_need_no_numpy():
         "b = (a @ a.T + 1) / 2\n"
         "assert b.shape == (2, 2) and abs(b.tolist()[0][0] - 3.0) < 1e-12\n"
         "assert rn.sqrt(rn.array([4.0]))[0] == 2.0\n"
-        "assert rn.default_rng(42).random() == 0.7739560485559633\n"
+        "assert rn.random.default_rng(42).random() == 0.7739560485559633\n"
         "assert rn.linalg_ok if hasattr(rn, 'linalg_ok') else True\n"
-        "assert abs(rn.det(a) - (-1.5)) < 1e-12\n"
+        "assert abs(rn.linalg.det(a) - (-1.5)) < 1e-12\n"
         "assert 'numpy' not in [m for m, v in sys.modules.items() if v is not None]\n"
         "print('ok')\n"
     )
@@ -57,8 +57,9 @@ def test_dtype_objects_compare_with_strings_types_and_numpy_dtypes():
     assert hash(rn.float32) == hash(rn.dtype("float32"))
     assert repr(rn.float32) == "dtype('float32')"
     assert {rn.float64: 1}[rn.dtype(float)] == 1
+    assert rn.dtype("float16") == rn.float16 and rn.float16.itemsize == 2
     with pytest.raises((TypeError, NotImplementedError)):
-        rn.dtype("float16")
+        rn.dtype("longdouble")
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -105,7 +106,7 @@ def test_import_from_other_buffer_providers():
     with pytest.raises((TypeError, NotImplementedError)):
         rn.array("abc")
     with pytest.raises(NotImplementedError):
-        rn.array(np.zeros(3, np.float16))
+        rn.array(np.array([1], dtype=object))
 
 
 def test_views_share_storage_and_copies_do_not():
@@ -313,7 +314,7 @@ def test_repr_and_str_match_numpy_for_common_cases():
         assert str(a).replace(" ", "") == str(e).replace(" ", ""), (str(a), str(e))
         assert repr(a).replace(" ", "") == repr(e).replace(" ", ""), (repr(a), repr(e))
     assert repr(rn.array([1, 2], dtype="int8")) == "array([1, 2], dtype=int8)"
-    assert repr(rn.zeros((0, 3))) == "array([], shape=(0, 3))"
+    assert repr(rn.zeros((0, 3))) == "array([], shape=(0, 3), dtype=float64)"
     assert "..." in repr(rn.arange(2000))
 
 

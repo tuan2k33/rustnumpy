@@ -8,7 +8,7 @@ AXES = [None, 0, 1, -1]
 
 
 def float_tol(dtype):
-    return {"float32": (1e-5, 1e-30), "complex64": (1e-5, 1e-30), "complex128": (1e-10, 1e-300)}.get(str(dtype), (1e-11, 1e-300))
+    return {"float16": (3e-3, 1e-4), "float32": (1e-5, 1e-30), "complex64": (1e-5, 1e-30), "complex128": (1e-10, 1e-300)}.get(str(dtype), (1e-11, 1e-300))
 
 
 @pytest.mark.parametrize("dtype", DTYPES)
@@ -57,8 +57,9 @@ def test_min_max_of_empty_raise_value_error():
 def clean(dtype, shape=(4, 6), seed=13):
     x = sample(dtype, shape, seed)
     if np.dtype(dtype).kind == "f":
-        x = np.nan_to_num(x, nan=0.5, posinf=1e3, neginf=-1e3)
-        x = np.clip(x, -1e6, 1e6).astype(dtype)
+        lim = 30.0 if dtype == "float16" else 1e3
+        x = np.nan_to_num(x, nan=0.5, posinf=lim, neginf=-lim)
+        x = np.clip(x, -lim * 1e3 if dtype != "float16" else -lim, lim * 1e3 if dtype != "float16" else lim).astype(dtype)
     return x
 
 
@@ -96,7 +97,8 @@ def test_percentile(dtype, q):
 
 def with_nans(dtype):
     x = sample(dtype, (30,), seed=14)
-    x = np.clip(np.nan_to_num(x, nan=0.0, posinf=1e3, neginf=-1e3), -1e6, 1e6).astype(dtype)
+    lim = 30.0 if dtype == "float16" else 1e3
+    x = np.clip(np.nan_to_num(x, nan=0.0, posinf=lim, neginf=-lim), -lim * (1 if dtype == "float16" else 1e3), lim * (1 if dtype == "float16" else 1e3)).astype(dtype)
     x[[2, 9, 17]] = np.nan
     return x
 
@@ -110,9 +112,11 @@ def test_nan_functions(name, dtype):
     assert_same(getattr(rnp, name)(x), expected, max(rtol, 1e-5), atol)
 
 
-def test_axis_not_yet_bound_falls_back_cleanly():
-    with pytest.raises(NotImplementedError):
-        rnp.mean(np.ones((2, 2)), axis=0)
+def test_statistics_accept_axis():
+    x = np.random.default_rng(3).standard_normal((3, 4, 5))
+    for axis in (0, 1, 2, -1):
+        for name in ("mean", "var", "std", "median"):
+            np.testing.assert_allclose(getattr(rnp, name)(x, axis=axis), getattr(np, name)(x, axis=axis), rtol=1e-12)
 
 
 @pytest.mark.parametrize("ddof", [0, 1])

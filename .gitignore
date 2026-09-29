@@ -4,3 +4,4 @@ python/dist
 python/*.egg-info
 __pycache__/
 *.pyc
+python/python_src/rustnumpy/*.so

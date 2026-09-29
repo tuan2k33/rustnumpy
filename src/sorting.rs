@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 fn total_cmp<T: FloatIsh>(a: &T, b: &T) -> Ordering {
     match (a.is_nan_ish(), b.is_nan_ish()) {
-        (true, true) => Ordering::Equal,
+        (true, true) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
         (true, false) => Ordering::Greater,
         (false, true) => Ordering::Less,
         (false, false) => a.partial_cmp(b).unwrap_or(Ordering::Equal),

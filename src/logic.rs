@@ -52,6 +52,12 @@ macro_rules! truthy_num {
 }
 truthy_num!(i8, i16, i32, i64, u8, u16, u32, u64, f32, f64);
 
+impl Truthy for half::f16 {
+    fn truthy(self) -> bool {
+        self != half::f16::ZERO
+    }
+}
+
 impl Truthy for bool {
     fn truthy(self) -> bool {
         self
@@ -183,6 +189,12 @@ macro_rules! float_class {
     )*};
 }
 float_class!(f32, f64);
+
+impl FloatClass for half::f16 {
+    fn nan(self) -> bool { self.is_nan() }
+    fn inf(self) -> bool { self.is_infinite() }
+    fn finite(self) -> bool { self.is_finite() }
+}
 
 macro_rules! int_class {
     ($($t:ty),*) => {$(impl FloatClass for $t {

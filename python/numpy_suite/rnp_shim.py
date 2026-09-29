@@ -236,8 +236,8 @@ def _tol_for(x):
 
 def _sorted_eigs(w):
     w = np.asarray(w)
-    order = np.lexsort((np.round(w.imag, 6), np.round(w.real, 6)))
-    return w[order]
+    order = np.lexsort((np.round(w.imag, 6), np.round(w.real, 6)), axis=-1)
+    return np.take_along_axis(w, order, axis=-1)
 
 
 def _eig_cmp(ours, theirs, args, kw):
@@ -247,7 +247,7 @@ def _eig_cmp(ours, theirs, args, kw):
         return f"dtype {ours[0].dtype}/{ours[1].dtype} != {theirs[0].dtype}/{theirs[1].dtype}"
     if not _close(_sorted_eigs(ours[0]), _sorted_eigs(theirs[0]), rtol * 5, atol * 5):
         return "eigenvalues"
-    if not _close(a @ ours[1], ours[1] * ours[0], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
+    if not _close(a @ ours[1], ours[1] * ours[0][..., None, :], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
         return "A v != lambda v"
     return None
 
@@ -259,8 +259,8 @@ def _eigh_cmp(ours, theirs, args, kw):
         return "dtype"
     if not _close(ours[0], theirs[0], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
         return "eigenvalues"
-    sym = np.tril(a) + np.tril(a, -1).T
-    if not _close(sym @ ours[1], ours[1] * ours[0], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
+    sym = np.tril(a) + np.swapaxes(np.tril(a, -1), -1, -2)
+    if not _close(sym @ ours[1], ours[1] * ours[0][..., None, :], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
         return "A v != lambda v"
     return None
 
@@ -276,7 +276,8 @@ def _svd_cmp(ours, theirs, args, kw):
     scale = max(1.0, float(np.abs(a).max(initial=0)))
     if not _close(s, theirs[1], rtol * 5, atol * 5 * scale):
         return "singular values"
-    if not _close((u * s) @ vh, a, rtol * 20, atol * 20 * scale):
+    k = s.shape[-1]
+    if not _close((u[..., :, :k] * s[..., None, :]) @ vh[..., :k, :], a, rtol * 20, atol * 20 * scale):
         return "U S Vh != A"
     return None
 
@@ -327,9 +328,9 @@ SHAPE_FUNCS = {
     "unique_values": (rnp.unique_values, ()),
 }
 
-LINALG = {n: getattr(rnp, n) for n in (
+LINALG = {n: getattr(rnp.linalg, n) for n in (
     "inv det slogdet solve qr cholesky eigh eigvalsh eig eigvals svd svdvals pinv matrix_rank lstsq cond norm matrix_power").split()}
-FFT = {n: getattr(rnp, n) for n in (
+FFT = {n: getattr(rnp.fft, n) for n in (
     "fft ifft rfft irfft hfft ihfft fftn ifftn fft2 ifft2 rfftn irfftn fftfreq rfftfreq fftshift ifftshift").split()}
 
 

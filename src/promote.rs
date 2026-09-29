@@ -50,6 +50,36 @@ macro_rules! widen_bool {
     };
 }
 
+macro_rules! widen_prim {
+    ($a:ty => $o:ty) => {
+        impl Widen<$o> for $a {
+            fn widen(self) -> $o {
+                num_traits::AsPrimitive::<$o>::as_(self)
+            }
+        }
+    };
+}
+
+macro_rules! widen_prim_complex {
+    ($a:ty => $f:ty) => {
+        impl Widen<Complex<$f>> for $a {
+            fn widen(self) -> Complex<$f> {
+                Complex::new(num_traits::AsPrimitive::<$f>::as_(self), 0.0)
+            }
+        }
+    };
+}
+
+macro_rules! widen_bool_half {
+    () => {
+        impl Widen<half::f16> for bool {
+            fn widen(self) -> half::f16 {
+                half::f16::from_f32(f32::from(self as u8))
+            }
+        }
+    };
+}
+
 macro_rules! widen_bool_complex {
     ($f:ty) => {
         impl Widen<Complex<$f>> for bool {
@@ -89,6 +119,7 @@ promote!(bool, u8 => u8);
 promote!(bool, u16 => u16);
 promote!(bool, u32 => u32);
 promote!(bool, u64 => u64);
+promote!(bool, half::f16 => half::f16);
 promote!(bool, f32 => f32);
 promote!(bool, f64 => f64);
 promote!(bool, Complex<f32> => Complex<f32>);
@@ -102,6 +133,7 @@ promote!(i8, u8 => i16);
 promote!(i8, u16 => i32);
 promote!(i8, u32 => i64);
 promote!(i8, u64 => f64);
+promote!(i8, half::f16 => half::f16);
 promote!(i8, f32 => f32);
 promote!(i8, f64 => f64);
 promote!(i8, Complex<f32> => Complex<f32>);
@@ -115,6 +147,7 @@ promote!(i16, u8 => i16);
 promote!(i16, u16 => i32);
 promote!(i16, u32 => i64);
 promote!(i16, u64 => f64);
+promote!(i16, half::f16 => f32);
 promote!(i16, f32 => f32);
 promote!(i16, f64 => f64);
 promote!(i16, Complex<f32> => Complex<f32>);
@@ -128,6 +161,7 @@ promote!(i32, u8 => i32);
 promote!(i32, u16 => i32);
 promote!(i32, u32 => i64);
 promote!(i32, u64 => f64);
+promote!(i32, half::f16 => f64);
 promote!(i32, f32 => f64);
 promote!(i32, f64 => f64);
 promote!(i32, Complex<f32> => Complex<f64>);
@@ -141,6 +175,7 @@ promote!(i64, u8 => i64);
 promote!(i64, u16 => i64);
 promote!(i64, u32 => i64);
 promote!(i64, u64 => f64);
+promote!(i64, half::f16 => f64);
 promote!(i64, f32 => f64);
 promote!(i64, f64 => f64);
 promote!(i64, Complex<f32> => Complex<f64>);
@@ -154,6 +189,7 @@ promote!(u8, u8 => u8);
 promote!(u8, u16 => u16);
 promote!(u8, u32 => u32);
 promote!(u8, u64 => u64);
+promote!(u8, half::f16 => half::f16);
 promote!(u8, f32 => f32);
 promote!(u8, f64 => f64);
 promote!(u8, Complex<f32> => Complex<f32>);
@@ -167,6 +203,7 @@ promote!(u16, u8 => u16);
 promote!(u16, u16 => u16);
 promote!(u16, u32 => u32);
 promote!(u16, u64 => u64);
+promote!(u16, half::f16 => f32);
 promote!(u16, f32 => f32);
 promote!(u16, f64 => f64);
 promote!(u16, Complex<f32> => Complex<f32>);
@@ -180,6 +217,7 @@ promote!(u32, u8 => u32);
 promote!(u32, u16 => u32);
 promote!(u32, u32 => u32);
 promote!(u32, u64 => u64);
+promote!(u32, half::f16 => f64);
 promote!(u32, f32 => f64);
 promote!(u32, f64 => f64);
 promote!(u32, Complex<f32> => Complex<f64>);
@@ -193,10 +231,25 @@ promote!(u64, u8 => u64);
 promote!(u64, u16 => u64);
 promote!(u64, u32 => u64);
 promote!(u64, u64 => u64);
+promote!(u64, half::f16 => f64);
 promote!(u64, f32 => f64);
 promote!(u64, f64 => f64);
 promote!(u64, Complex<f32> => Complex<f64>);
 promote!(u64, Complex<f64> => Complex<f64>);
+promote!(half::f16, bool => half::f16);
+promote!(half::f16, i8 => half::f16);
+promote!(half::f16, i16 => f32);
+promote!(half::f16, i32 => f64);
+promote!(half::f16, i64 => f64);
+promote!(half::f16, u8 => half::f16);
+promote!(half::f16, u16 => f32);
+promote!(half::f16, u32 => f64);
+promote!(half::f16, u64 => f64);
+promote!(half::f16, half::f16 => half::f16);
+promote!(half::f16, f32 => f32);
+promote!(half::f16, f64 => f64);
+promote!(half::f16, Complex<f32> => Complex<f32>);
+promote!(half::f16, Complex<f64> => Complex<f64>);
 promote!(f32, bool => f32);
 promote!(f32, i8 => f32);
 promote!(f32, i16 => f32);
@@ -206,6 +259,7 @@ promote!(f32, u8 => f32);
 promote!(f32, u16 => f32);
 promote!(f32, u32 => f64);
 promote!(f32, u64 => f64);
+promote!(f32, half::f16 => f32);
 promote!(f32, f32 => f32);
 promote!(f32, f64 => f64);
 promote!(f32, Complex<f32> => Complex<f32>);
@@ -219,6 +273,7 @@ promote!(f64, u8 => f64);
 promote!(f64, u16 => f64);
 promote!(f64, u32 => f64);
 promote!(f64, u64 => f64);
+promote!(f64, half::f16 => f64);
 promote!(f64, f32 => f64);
 promote!(f64, f64 => f64);
 promote!(f64, Complex<f32> => Complex<f64>);
@@ -232,6 +287,7 @@ promote!(Complex<f32>, u8 => Complex<f32>);
 promote!(Complex<f32>, u16 => Complex<f32>);
 promote!(Complex<f32>, u32 => Complex<f64>);
 promote!(Complex<f32>, u64 => Complex<f64>);
+promote!(Complex<f32>, half::f16 => Complex<f32>);
 promote!(Complex<f32>, f32 => Complex<f32>);
 promote!(Complex<f32>, f64 => Complex<f64>);
 promote!(Complex<f32>, Complex<f32> => Complex<f32>);
@@ -245,6 +301,7 @@ promote!(Complex<f64>, u8 => Complex<f64>);
 promote!(Complex<f64>, u16 => Complex<f64>);
 promote!(Complex<f64>, u32 => Complex<f64>);
 promote!(Complex<f64>, u64 => Complex<f64>);
+promote!(Complex<f64>, half::f16 => Complex<f64>);
 promote!(Complex<f64>, f32 => Complex<f64>);
 promote!(Complex<f64>, f64 => Complex<f64>);
 promote!(Complex<f64>, Complex<f32> => Complex<f64>);
@@ -268,6 +325,8 @@ promote_weak!(u32, WeakInt => u32);
 promote_weak!(u32, WeakFloat => f64);
 promote_weak!(u64, WeakInt => u64);
 promote_weak!(u64, WeakFloat => f64);
+promote_weak!(half::f16, WeakInt => half::f16);
+promote_weak!(half::f16, WeakFloat => half::f16);
 promote_weak!(f32, WeakInt => f32);
 promote_weak!(f32, WeakFloat => f32);
 promote_weak!(f64, WeakInt => f64);
@@ -290,6 +349,7 @@ widen_bool!(u8);
 widen_bool!(u16);
 widen_bool!(u32);
 widen_bool!(u64);
+widen_bool_half!();
 widen_bool!(f32);
 widen_bool!(f64);
 widen_bool_complex!(f32);
@@ -302,6 +362,7 @@ impl Widen<i8> for i8 {
 widen_as!(i8 => i16);
 widen_as!(i8 => i32);
 widen_as!(i8 => i64);
+widen_prim!(i8 => half::f16);
 widen_as!(i8 => f32);
 widen_as!(i8 => f64);
 widen_real_complex!(i8 => f32);
@@ -314,6 +375,7 @@ impl Widen<i16> for i16 {
 }
 widen_as!(i16 => i32);
 widen_as!(i16 => i64);
+widen_prim!(i16 => half::f16);
 widen_as!(i16 => f32);
 widen_as!(i16 => f64);
 widen_real_complex!(i16 => f32);
@@ -326,6 +388,7 @@ impl Widen<i32> for i32 {
     }
 }
 widen_as!(i32 => i64);
+widen_prim!(i32 => half::f16);
 widen_as!(i32 => f32);
 widen_as!(i32 => f64);
 widen_real_complex!(i32 => f32);
@@ -338,6 +401,7 @@ impl Widen<i64> for i64 {
         self
     }
 }
+widen_prim!(i64 => half::f16);
 widen_as!(i64 => f32);
 widen_as!(i64 => f64);
 widen_real_complex!(i64 => f32);
@@ -354,6 +418,7 @@ impl Widen<u8> for u8 {
 widen_as!(u8 => u16);
 widen_as!(u8 => u32);
 widen_as!(u8 => u64);
+widen_prim!(u8 => half::f16);
 widen_as!(u8 => f32);
 widen_as!(u8 => f64);
 widen_real_complex!(u8 => f32);
@@ -370,6 +435,7 @@ impl Widen<u16> for u16 {
 }
 widen_as!(u16 => u32);
 widen_as!(u16 => u64);
+widen_prim!(u16 => half::f16);
 widen_as!(u16 => f32);
 widen_as!(u16 => f64);
 widen_real_complex!(u16 => f32);
@@ -386,6 +452,7 @@ impl Widen<u32> for u32 {
     }
 }
 widen_as!(u32 => u64);
+widen_prim!(u32 => half::f16);
 widen_as!(u32 => f32);
 widen_as!(u32 => f64);
 widen_real_complex!(u32 => f32);
@@ -402,10 +469,21 @@ impl Widen<u64> for u64 {
         self
     }
 }
+widen_prim!(u64 => half::f16);
 widen_as!(u64 => f32);
 widen_as!(u64 => f64);
 widen_real_complex!(u64 => f32);
 widen_real_complex!(u64 => f64);
+impl Widen<half::f16> for half::f16 {
+    fn widen(self) -> half::f16 {
+        self
+    }
+}
+widen_prim!(half::f16 => f32);
+widen_prim!(half::f16 => f64);
+widen_prim_complex!(half::f16 => f32);
+widen_prim_complex!(half::f16 => f64);
+widen_prim!(f32 => half::f16);
 impl Widen<f32> for f32 {
     fn widen(self) -> f32 {
         self
@@ -414,6 +492,7 @@ impl Widen<f32> for f32 {
 widen_as!(f32 => f64);
 widen_real_complex!(f32 => f32);
 widen_real_complex!(f32 => f64);
+widen_prim!(f64 => half::f16);
 widen_as!(f64 => f32);
 impl Widen<f64> for f64 {
     fn widen(self) -> f64 {

@@ -105,6 +105,7 @@ pub fn diagonal(py: Python<'_>, a: &Bound<'_, PyAny>, offset: isize) -> PyResult
 }
 
 #[pyfunction]
+#[pyo3(signature = (a, dtype=None))]
 pub fn asarray(py: Python<'_>, a: &Bound<'_, PyAny>, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
     let arr = as_array(py, a)?;
     match dtype {
