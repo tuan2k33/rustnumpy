@@ -418,7 +418,6 @@ pub fn eig(a: &NdArray) -> Result<(Vec<Complex64>, NdArray<Complex64>), LinalgEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::assert_allclose_default;
 
     fn arr(data: Vec<f64>, shape: &[usize]) -> NdArray {
         NdArray::from_vec(data, shape).unwrap()
@@ -433,7 +432,7 @@ mod tests {
         let a = sample_a();
         let b = arr(vec![1.0, 2.0], &[2]);
         let x = solve(&a, &b).unwrap();
-        assert_allclose_default(&x.view(), &arr(vec![0.5, -1.0 / 3.0], &[2]).view()).unwrap();
+        close_all(x.as_slice(), arr(vec![0.5, -1.0 / 3.0], &[2]).as_slice());
     }
 
     #[test]
@@ -441,7 +440,7 @@ mod tests {
         let a = sample_a();
         let inv_a = inv(&a).unwrap();
         let expected = arr(vec![-0.5, 0.5, 1.0, -2.0 / 3.0], &[2, 2]);
-        assert_allclose_default(&inv_a.view(), &expected.view()).unwrap();
+        close_all(inv_a.as_slice(), expected.as_slice());
     }
 
     #[test]
@@ -463,7 +462,7 @@ mod tests {
         let q_mat = to_mat(&q).unwrap();
         let r_mat = to_mat(&r).unwrap();
         let product = &q_mat * &r_mat;
-        assert_allclose_default(&from_mat(product.as_ref()).view(), &a.view()).unwrap();
+        close_all(from_mat(product.as_ref()).as_slice(), a.as_slice());
     }
 
     #[test]
@@ -472,7 +471,7 @@ mod tests {
         let s = arr(vec![4.0, 2.0, 2.0, 3.0], &[2, 2]);
         let l = cholesky(&s).unwrap();
         let expected = arr(vec![2.0, 0.0, 1.0, 2.0_f64.sqrt()], &[2, 2]);
-        assert_allclose_default(&l.view(), &expected.view()).unwrap();
+        close_all(l.as_slice(), expected.as_slice());
     }
 
     #[test]
@@ -517,7 +516,7 @@ mod tests {
         let vt_mat = to_mat(&vt).unwrap();
         let s_mat = Mat::from_fn(2, 2, |i, j| if i == j { s[i] } else { 0.0 });
         let product = &(&u_mat * &s_mat) * &vt_mat;
-        assert_allclose_default(&from_mat(product.as_ref()).view(), &a.view()).unwrap();
+        close_all(from_mat(product.as_ref()).as_slice(), a.as_slice());
     }
 
     #[test]
@@ -543,14 +542,13 @@ mod tests {
     fn matrix_power_matches_numpy() {
         let a = sample_a();
         let cubed = matrix_power(&a, 3).unwrap();
-        assert_allclose_default(&cubed.view(), &arr(vec![262.0, 165.0, 330.0, 207.0], &[2, 2]).view())
-            .unwrap();
+        close_all(cubed.as_slice(), arr(vec![262.0, 165.0, 330.0, 207.0], &[2, 2]).as_slice());
 
         let zeroth = matrix_power(&a, 0).unwrap();
-        assert_allclose_default(&zeroth.view(), &arr(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]).view()).unwrap();
+        close_all(zeroth.as_slice(), arr(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]).as_slice());
 
         let inverse = matrix_power(&a, -1).unwrap();
-        assert_allclose_default(&inverse.view(), &inv(&a).unwrap().view()).unwrap();
+        close_all(inverse.as_slice(), inv(&a).unwrap().as_slice());
     }
 
     fn close(got: f64, want: f64) {

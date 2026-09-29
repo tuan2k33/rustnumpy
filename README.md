@@ -29,9 +29,6 @@ NumPy behavior is out of scope by design.
 - A packed structured/record dtype, fixed-ratio-unit `datetime64`/
   `timedelta64` with NaT semantics, `StringDType` (NEP 55) plus a
   `numpy.strings`-shaped subset of string ufuncs.
-- A `numpy.testing` equivalent (`assert_array_equal`, `assert_allclose`,
-  `assert_array_almost_equal`), so this project's own tests never depend
-  on a running NumPy.
 - Whole-array reductions/statistics, `lib`-layer utilities
   (`unique`/`concatenate`/`stack`/`split`/`interp`/`gradient`/...).
 - Full `linalg` (`solve`/`inv`/`det`/`qr`/`cholesky`/`eigh`/`eigvals`/`svd`/

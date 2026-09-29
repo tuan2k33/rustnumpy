@@ -19,7 +19,7 @@ Two facts that shape everything else in this repo:
   Worth Dropping" section before reproducing any old quirk.
 - **This is the numeric-core-only public snapshot** (`NumPy.md`'s steps
   1–17: container, views, dtype/casting, ufuncs, allocator, PyO3 binding,
-  indexing, testing, reductions, `lib`-utilities, `linalg`, `fft`,
+  indexing, reductions, `lib`-utilities, `linalg`, `fft`,
   `random`, `polynomial`, the Array API audit, and the free-threading +
   packaging audit). Steps 26–28 (structured/datetime dtypes, StringDType,
   masked arrays) exist in `NumPy.md`'s plan and in git history, but their
@@ -104,7 +104,7 @@ masks and `reduce`/`accumulate`/`outer_with`. Integer arithmetic uses
 `WrapAdd`/`WrapSub`/`WrapMul` so it wraps like NumPy in debug builds too;
 don't reintroduce plain `+`/`*` on generic integer `T`. `ndarray.rs` depends only on
 `error`/`shape`/`view`. Everything above that (`ufunc`, `reductions`,
-`testing`, `index`, `utils`, `linalg`, `fft`, `random`, `polynomial`,
+`index`, `utils`, `linalg`, `fft`, `random`, `polynomial`,
 `npy`) depends on `ndarray` (and usually `view` too, for the ones that
 operate on borrowed slices rather than whole owned arrays).
 
@@ -123,7 +123,7 @@ actual data race, and that's load-bearing, not an oversight to "fix".
 
 Every fallible public function returns a `Result` with a module-scoped
 error enum (`ShapeError`, `LinalgError`, `FftError`, `RandomError`,
-`ReductionError`, `ArrayAssertionError`, `NpyError`) rather than
+`ReductionError`, `NpyError`) rather than
 panicking — the PyO3 layer (`python/src/lib.rs`) maps each of these to a
 specific Python exception type (`ValueError`, `OSError`, ...) rather than
 letting a Rust panic cross the FFI boundary.
@@ -136,7 +136,9 @@ implementation time (see `NumPy.md` for exactly which NumPy version and
 which venv), and expected values are baked into the tests as literals.
 There is no live NumPy dependency in `cargo test --lib`; the only place
 that talks to a real Python/NumPy process is `python/verify_against_numpy.py`
-and `scripts/gen_fixtures.py`.
+and `scripts/gen_fixtures.py`. There is no `numpy.testing` port (it was
+dropped, see `NumPy.md`): each module's tests use small local helpers
+(`close`, `close_all`, ...) with a per-element tolerance.
 
 ## Layout (module ↔ NumPy namespace)
 
@@ -165,10 +167,9 @@ rustnumpy/
 │   ├── fft.rs                  numpy.fft              (fft/ifft/rfft/irfft/fftn/...), via rustfft
 │   ├── random.rs               numpy.random           (NEP 19 Generator), via rand_pcg/rand_distr
 │   ├── polynomial.rs           numpy.polynomial       (Chebyshev/Hermite/Laguerre/Legendre)
-│   ├── testing.rs              numpy.testing          (assert_array_equal/assert_allclose/...)
 │   ├── npy.rs                  .npy format            (NEP 1 read/write)
 │   └── allocator.rs             NEP 49 Allocator trait (System, BumpArena, PooledVec)
-├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step19_promotion.rs)
+├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step19_promotion.rs; the old step9_testing was removed with numpy.testing)
 ├── tests/fixtures/*.npy       .npy files written by real NumPy, read back by npy.rs's tests
 ├── scripts/gen_fixtures.py    regenerates tests/fixtures/ (needs a real NumPy install)
 └── python/                    separate PyO3 binding crate (own Cargo.toml, path-deps on root)

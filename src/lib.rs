@@ -18,7 +18,6 @@ pub mod reductions;
 pub mod selection;
 pub mod shape;
 pub mod sorting;
-pub mod testing;
 pub mod ufunc;
 pub mod utils;
 pub mod view;
@@ -55,10 +54,6 @@ pub use reductions::{
 };
 pub use selection::{choose, select, where_cond, ChooseMode};
 pub use sorting::{argsort, searchsorted, sort, Side};
-pub use testing::{
-    assert_allclose, assert_allclose_default, assert_array_almost_equal,
-    assert_array_almost_equal_default, assert_array_equal, ArrayAssertionError,
-};
 pub use ufunc::{
     add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, multiply, sub,
     subtract, zip_with, zip_with_into, zip_with_parallel,

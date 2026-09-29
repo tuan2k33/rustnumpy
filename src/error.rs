@@ -7,7 +7,6 @@ pub enum Error {
     Fft(crate::fft::FftError),
     Random(crate::random::RandomError),
     Reduction(crate::reductions::ReductionError),
-    Assertion(crate::testing::ArrayAssertionError),
     Npy(crate::npy::NpyError),
 }
 
@@ -19,7 +18,6 @@ impl fmt::Display for Error {
             Error::Fft(e) => write!(f, "{e}"),
             Error::Random(e) => write!(f, "{e}"),
             Error::Reduction(e) => write!(f, "{e}"),
-            Error::Assertion(e) => write!(f, "{e}"),
             Error::Npy(e) => write!(f, "{e}"),
         }
     }
@@ -33,7 +31,6 @@ impl std::error::Error for Error {
             Error::Fft(e) => Some(e),
             Error::Random(e) => Some(e),
             Error::Reduction(e) => Some(e),
-            Error::Assertion(e) => Some(e),
             Error::Npy(e) => Some(e),
         }
     }
@@ -62,11 +59,6 @@ impl From<crate::random::RandomError> for Error {
 impl From<crate::reductions::ReductionError> for Error {
     fn from(e: crate::reductions::ReductionError) -> Self {
         Error::Reduction(e)
-    }
-}
-impl From<crate::testing::ArrayAssertionError> for Error {
-    fn from(e: crate::testing::ArrayAssertionError) -> Self {
-        Error::Assertion(e)
     }
 }
 impl From<crate::npy::NpyError> for Error {
