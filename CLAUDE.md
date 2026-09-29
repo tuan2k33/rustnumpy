@@ -4,191 +4,94 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A from-scratch, step-by-step Rust port of NumPy's core ideas — not a
-binding, not a drop-in replacement. Every design decision is driven by
-NumPy's own NEPs (Enhancement Proposals), and the *entire* rationale for
-why the code looks the way it does lives in **[`NumPy.md`](NumPy.md)**,
-not in code comments. Read `NumPy.md` before making architectural
-changes (deliberate differences from NumPy are listed in `docs/CONVENTIONS.md`); it is the authoritative design/plan document and is kept up to
-date after every change.
+A from-scratch, step-by-step Rust port of NumPy's core ideas, plus a standalone Python package (`import rustnumpy`) built on it. Every design decision is driven by NumPy's own NEPs, and the rationale for why the code looks the way it does lives in **[`NumPy.md`](NumPy.md)** (design, per-step logs, the NEP status table), not in code comments. Deliberate differences from NumPy are listed in **[`docs/CONVENTIONS.md`](docs/CONVENTIONS.md)**; read both before making architectural changes, and update them after.
 
-Two facts that shape everything else in this repo:
+Facts that shape everything else:
 
-- **Target is NumPy >= 2.5 semantics only.** Deprecated/backward-compat-only
-  NumPy behavior is out of scope by design — see `NumPy.md`'s "NumPy Parts
-  Worth Dropping" section before reproducing any old quirk.
-- **This is the numeric-core-only public snapshot** (`NumPy.md`'s steps
-  1–17: container, views, dtype/casting, ufuncs, allocator, PyO3 binding,
-  indexing, reductions, `lib`-utilities, `linalg`, `fft`,
-  `random`, `polynomial`, the Array API audit, and the free-threading +
-  packaging audit). Steps 27–29 (structured/datetime dtypes, StringDType,
-  masked arrays) exist in `NumPy.md`'s plan and in git history, but their
-  source files aren't part of this snapshot. Step 18 (core array
-  mechanics: reshape, sorting, selection, math ufuncs, matmul/einsum,
-  gufuncs, the strided iterator) has since landed on top of steps 1–17.
-
-**Source comments were deliberately stripped** from every `.rs` file in
-this snapshot (see the "Public snapshot" commit). Do not expect `//`,
-`///`, or `//!` explanations in the code — the design rationale, NEP
-citations, and "verified against real NumPy X.Y.Z" notes all live in
-`NumPy.md` instead. When adding new code, put substantial design
-rationale in `NumPy.md`, not in a doc comment, to stay consistent with
-this snapshot's style.
+- **Target is NumPy >= 2.5 semantics only.** Deprecated or backward-compat-only NumPy behaviour is out of scope (see "NumPy Parts Worth Dropping" in `NumPy.md`). The oracle is stock NumPy 2.5.3.
+- **Working rule for failing comparisons:** print and analyse the failure first. It is a bug only if NumPy's behaviour is the intended one; otherwise record it in `docs/CONVENTIONS.md`. Do not "fix" a difference just because a test fails.
+- **State of the tree:** steps 1-26c of `NumPy.md` are here. Steps 27-28 (structured/datetime dtypes, StringDType) were written earlier but are not in this tree (git history: `5a3933f`, `083b9af`); step 29 (masked arrays) is not started.
+- **Source comments were deliberately stripped** from every `.rs` file. Put design rationale in `NumPy.md`, not in doc comments, and match the surrounding uncommented style.
+- **`rust-version = 1.85`**: clippy rejects newer std APIs (e.g. `is_multiple_of`); use the older spelling.
 
 ## Commands
 
+Core crate (needs no Python):
+
 ```sh
-cargo build                                   # core library
-cargo build --examples                        # every examples/*.rs
-cargo test --lib                               # full test suite (embedded #[cfg(test)] per module)
-cargo test --lib dtype::                       # one module's tests, e.g. dtype.rs
-cargo test --lib can_cast_int_to_uint_is_always_unsafe   # one test by name
-cargo clippy --all-targets -- -D warnings      # must be clean before any commit
-cargo run --example step12_linalg              # run a specific example (see examples/ for the full list)
+cargo build
+cargo test --lib                                  # all core tests (each module has #[cfg(test)] mod tests)
+cargo test --lib npy::                            # one module; or one test by name
+cargo clippy --all-targets -- -D warnings         # must be clean before any commit
+cargo build --examples && cargo run --example step12_linalg
 ```
 
-The `python/` PyO3 binding is a **separate crate** (its own `Cargo.toml`,
-path-dependency on the root crate) specifically so the core crate's
-`cargo build`/`cargo test`/`cargo clippy` never need PyO3 present:
+Python package (`python/` is a **separate crate**, path-dependency on the root, so core builds never need PyO3):
 
 ```sh
 cd python
-cargo build                                    # builds as a plain rlib too, no Python needed
-python -m maturin develop --release            # build + install into the active venv (needs VIRTUAL_ENV set)
-python -m pytest tests -q                       # ~11,000 tests; NumPy is only the oracle here, the package never imports it
+cargo build --release
+python -m maturin develop --release               # build + install into the active venv
+# quick dev loop without installing (the .so is gitignored):
+cp target/release/librustnumpy_python.so python_src/rustnumpy/_core.cpython-314-x86_64-linux-gnu.so
+PYTHONPATH=python_src python -m pytest tests -q -n 3     # ~11,300 tests, compares against a real NumPy in the same process
+PYTHONPATH=python_src python -m pytest tests/test_lib.py -k bigint    # one case
 ```
 
-There is no top-level test runner beyond `cargo test --lib` — every
-module's tests live in its own `#[cfg(test)] mod tests` block at the
-bottom of that file, and `.npy`-format tests read fixtures from
-`tests/fixtures/*.npy` (regenerate via `scripts/gen_fixtures.py`, which
-needs a real NumPy install to write them).
+The test environment needs NumPy >= 2.5, pytest, pytest-xdist (`python/requirements-dev.txt`). Run big test sessions under `ulimit -v 8000000`: an earlier allocation test exhausted WSL memory, and `createfns::alloc_guard` (MemAvailable / 2) exists for that reason.
+
+Conformance against the official Array API suite (spec 2025.12; clone `data-apis/array-api-tests` with its submodule, plus `hypothesis pytest-json-report pytest-xdist pytest-timeout`):
+
+```sh
+ARRAY_API_TESTS_MODULE=rustnumpy ARRAY_API_TESTS_VERSION=2025.12 \
+  python -m pytest array_api_tests -n 3 --max-examples=20 --hypothesis-disable-deadline -W ignore --timeout=120
+```
+
+Reference numbers (step 26c): rustnumpy 1335 passed / 41 failed, stock NumPy 2.5.3 1331 / 46; counts vary by a few between runs (Hypothesis draws). Also: `python/numpy_suite/run_suite.py` runs NumPy's own test files through a shim (see `NumPy.md`, "Step 25"). `.npy` fixtures in `tests/fixtures/` come from `scripts/gen_fixtures.py` (needs NumPy); `src/promote.rs` is generated by `scripts/gen_promote.py`, never hand-edited.
 
 ## Architecture
 
-### The generic container and its dependents
+### Core (`src/`)
 
-`NdArray<T = f64>` (`src/ndarray.rs`) is the one core type everything
-else is built on: `{ data: Vec<T>, shape: Vec<usize>, strides: Vec<isize> }`.
-The default type parameter means every other module can keep writing the
-bare, unqualified name `NdArray`/`ArrayView`/`ArrayViewMut` in a type
-position and it resolves to `<f64>` automatically — monomorphization
-does the rest, the same way NumPy's own `.c.src` templates expand per
-dtype at build time, except the Rust compiler does it instead of a
-codegen tool. `ArrayView`/`ArrayViewMut` (`src/view.rs`) borrow `&[T]`/
-`&mut [T]` plus their own `shape`/`strides`/`offset`, so slicing and
-broadcasting never copy data — Rust's borrow checker (not manual
-discipline, unlike NumPy's C core) is what prevents an `ArrayView` and
-an `ArrayViewMut` from aliasing the same buffer.
+`NdArray<T = f64>` (`ndarray.rs`) is the one container: `{ data: Vec<T>, shape, strides }`. `ArrayView`/`ArrayViewMut` (`view.rs`) borrow slices plus their own shape/strides/offset, so slicing and broadcasting never copy. Generic over the 14 dtypes through the `DType` trait (`dtype.rs`: `Kind`, `common_dtype`, `can_cast`, NEP 50).
 
-**Not every module is generic over `T` yet.** `ufunc.rs`/`reductions.rs`
-are (bounded per-function by the relevant `std::ops`/`PartialOrd` trait,
-e.g. `add<T: Copy + Add<Output = T>>`), so they work on any of the
-integer/float/complex types `dtype.rs`'s `DType` trait covers. `fft.rs` is generic over `f32`/`f64`, `npy.rs` over every dtype;
-`linalg.rs`/`random.rs`/`polynomial.rs` are still hardcoded to plain `NdArray`
-(`f64`), matching the fact that `faer` and real NumPy's LAPACK bindings upcast to `float64`.
+Dependency shape: `shape.rs` and `error.rs` are leaves; `dtype.rs` and `allocator.rs` are standalone; `ndarray.rs` depends on `error`/`shape`/`view`; everything else builds on `ndarray`. `allocator.rs` is deliberately not wired into `NdArray` (decided in step 5).
 
-### Module dependency shape (leaves → core → everything else)
+- **Promotion** (`promote.rs` generated, `dispatch.rs`): `Common<B>`, weak scalars, `*_assign`, `where=`, `reduce`/`accumulate`. Integer arithmetic goes through `WrapAdd`/`WrapSub`/`WrapMul` so it wraps like NumPy in debug builds; don't use plain `+`/`*` on generic integer `T`.
+- **Errors** (`error.rs`): `ShapeError` is for shape/axis/index problems only. Everything else an op can reject is `OpError` (which wraps `ShapeError` and `ReductionError`, so `?` converts). `Error` is an opt-in umbrella over all module errors. The PyO3 layer maps them to Python exceptions; a Rust panic must never cross the FFI boundary.
+- **Genericity:** `ufunc`/`reductions`/`manipulation`/`npy` (via `NpyElement`)/`fft` (f32/f64, via `FftFloat`) are generic; `linalg`/`random`/`polynomial` stay `f64` (faer and LAPACK upcast anyway). `fft.rs` is two-tier on purpose: 1-D line kernels on slices, n-D functions on `NdArray`.
+- `index.rs` exposes explicit `.oindex()` / `.vindex()` instead of NumPy's context-dependent `__getitem__` (NEP 21 stance). `BumpArena` is `Send` but deliberately not `Sync`.
 
-`shape.rs` (stride/broadcast math, `IndexIter`) and `error.rs`
-(`ShapeError`) are pure leaves with no `use crate::` deps. `dtype.rs`
-(NEP 50: `Kind`, `DType` trait, `common_dtype`, `can_cast`) and
-`allocator.rs` (NEP 49: `Allocator` trait, `System`, `BumpArena`,
-`PooledVec`) are also standalone — `ufunc::add`/`sub`/`mul` do promote mixed dtypes at compile
-time (step 19): `promote.rs` is *generated* from real NumPy by
-`scripts/gen_promote.py` — regenerate it, never hand-edit it — and
-`dispatch.rs` holds `Common<B>`, weak Python scalars, `*_assign`, `where=`
-masks and `reduce`/`accumulate`/`outer_with`. Integer arithmetic uses
-`WrapAdd`/`WrapSub`/`WrapMul` so it wraps like NumPy in debug builds too;
-don't reintroduce plain `+`/`*` on generic integer `T`. `ndarray.rs` depends only on
-`error`/`shape`/`view`. Everything above that (`ufunc`, `reductions`,
-`index`, `manipulation`, `linalg`, `fft`, `random`, `polynomial`,
-`npy`) depends on `ndarray` (and usually `view` too, for the ones that
-operate on borrowed slices rather than whole owned arrays).
+### Python package (`python/`, `import rustnumpy`)
 
-`index.rs` splits fancy indexing into explicit `.oindex()` (outer/
-orthogonal, NumPy's actual current default) vs `.vindex()` (vectorized,
-NEP 21's never-shipped proposal) rather than one method with implicit
-mode-switching — this split is a deliberate divergence from real NumPy's
-single, context-dependent `__getitem__`.
+Standalone array library that **never imports NumPy** (`tests/test_ndarray.py` blocks the import; NumPy is only the test oracle). `rustnumpy._core` is the compiled module (`python/src/`); `python/python_src/rustnumpy/` is a Python layer over it.
 
-`allocator.rs`'s `BumpArena` is `Send` but deliberately **not** `Sync`
-(an explicit `unsafe impl Send`, see the type's usage in tests) — its
-`Cell<usize>` bump offset makes concurrent `&BumpArena` allocation an
-actual data race, and that's load-bearing, not an oversight to "fix".
+- Native side: `Arr` (`dynarray.rs`) is a 14-variant enum of `NdArray<T>`; function modules convert any input to `Arr`, call the core, wrap the result. `pyarray.rs` holds the few `unsafe` blocks (SAFETY comments; the `Sync` claim assumes the GIL). `ops.rs` has `Operand` (array or weak Python int/float/complex) and NEP 50 loop resolution; `umath.rs` has every ufunc kernel and complex special values.
+- Python side: `_ufunc.py` (ufunc objects with `out=`/`where=`/`reduce`...), `_reductions.py`, `_manip.py`, `_numeric.py`, `_creation.py`, `_indexing.py`, `_io.py` (`.npy`/`.npz` for every dtype), `_print.py` (port of NumPy's printing), `linalg.py`, `fft.py` (n-D composed from 1-D line transforms; norm scaling is in `linalgfns.rs`), `random.py`, `_arrayapi.py` (`__array_namespace_info__`), `_scalars.py`.
+- **0-d results** for `bool`/`int64`/`float64`/`complex128` are scalar objects (`float`/`int`/`complex` subclasses, plain class for bool) with `.dtype`/`.shape`/`.astype`, strong under NEP 50 like `np.float64`; other dtypes give 0-d arrays. Internal Python code that feeds such a value back into an op must be aware it is strong, not weak (use `float(x)` to get a weak Python number). Details in `docs/CONVENTIONS.md`.
+- Matrices with a zero dimension are answered from their shapes in `linalg.py` (`_guard`); the numeric kernels never see them. SVD rescales extreme magnitudes before calling faer.
 
-### Error handling
+### Tests
 
-Every fallible public function returns a `Result` with a module-scoped
-error enum (`ShapeError`, `OpError`, `LinalgError`, `FftError`, `RandomError`,
-`ReductionError`, `NpyError`) rather than
-panicking — the PyO3 layer (`python/src/lib.rs`) maps each of these to a
-specific Python exception type (`ValueError`, `OSError`, ...) rather than
-letting a Rust panic cross the FFI boundary.
+Rust: small tolerance-based tests per module with expected values baked in as literals (checked against real NumPy when written); no live NumPy in `cargo test`. Python: differential tests against real NumPy in the same process. `tests/test_lib.py` `CASES` is the easiest place to add a regression (a lambda taking `(m, A)` run against both NumPy and rustnumpy; results and raised exception types are compared), `test_ufunc_matrix.py` covers dtype x ufunc promotion, `difftest.py` has the comparison helpers.
 
-### The Python package (`python/`, importable as `rustnumpy`)
-
-A standalone array library, not a NumPy accessory: it has its own `ndarray`
-(`Arc<Storage>` + signed element strides + offset, so slicing/transposing/
-reshaping are real views) and `dtype` types, and **never imports NumPy**
-(`python/tests/test_ndarray.py` proves it by blocking the import). Other
-libraries reach it only through the buffer protocol / `__array_interface__`.
-The native module is `rustnumpy._core`; `python/python_src/rustnumpy/` is a thin
-Python layer (ufunc objects with `out=`/`where=`/`reduce`, composite functions,
-printing, I/O, `linalg`/`fft`/`random` submodules). Native function modules turn any
-input into the core's `Arr` (a 14-variant enum of
-`NdArray<T>`, including `float16`), call the core, and wrap the result; `pyarray.rs` holds the
-few `unsafe` blocks (each has a SAFETY comment, and the `Sync` claim assumes
-the GIL). NumPy is used only by the pytest suites and `numpy_suite/` as the
-oracle. Don't add `import numpy` to `python/src/`.
-
-### Testing convention
-
-Tests are **tolerance-based, not exact-equality**, throughout — every
-formula/edge case was checked against a real NumPy install at
-implementation time (see `NumPy.md` for exactly which NumPy version and
-which venv), and expected values are baked into the tests as literals.
-There is no live NumPy dependency in `cargo test --lib`; the only place
-that talks to a real Python/NumPy process is the pytest suite in `python/tests/`
-and `scripts/gen_fixtures.py`. There is no `numpy.testing` port (it was
-dropped, see `NumPy.md`): each module's tests use small local helpers
-(`close`, `close_all`, ...) with a per-element tolerance.
-
-## Layout (module ↔ NumPy namespace)
+## Layout
 
 ```
-rustnumpy/
-├── NumPy.md                  ← the actual design doc / plan; read this, not code comments
-├── src/
-│   ├── ndarray.rs             NdArray<T>            (core container, all subpackages build on this)
-│   ├── view.rs                 ArrayView/ArrayViewMut (borrowed views: numpy's non-copying slices)
-│   ├── shape.rs                 strides/broadcast/IndexIter (internal, no numpy.* equivalent)
-│   ├── error.rs                  ShapeError (shape problems), OpError (everything else an op can reject), Error umbrella
-│   ├── dtype.rs                numpy.dtype            (Kind/DType, NEP 50 promotion, can_cast)
-│   ├── ufunc.rs                numpy's ufunc machinery (add/sub/mul, broadcasting, out=, rayon)
-│   ├── reductions.rs           ndarray reduction methods (sum/mean/var/std/median/percentile/nan*)
-│   ├── index.rs                fancy indexing         (oindex/vindex, NEP 21)
-│   ├── sorting.rs              sort/argsort/searchsorted (NaN last, stable argsort)
-│   ├── selection.rs            where/select/choose
-│   ├── mathfunc.rs             named elementwise math (sqrt/exp/log/trig/rounding/power/...)
-│   ├── contraction.rs          matmul/dot/tensordot/outer/einsum (one strided odometer engine)
-│   ├── gufunc.rs               NEP 20 generalized ufuncs + vecdot
-│   ├── manipulation.rs         view ops (permute_dims/moveaxis/flip/squeeze/expand_dims/unstack/broadcast_arrays), repeat/roll, unique*/intersect1d/union1d, concatenate/stack/split/array_split/tile, interp/gradient
-│   ├── dispatch.rs             NEP 50 promotion in ufuncs, weak scalars, *_assign, where=, reduce/accumulate/outer
-│   ├── promote.rs              GENERATED promotion/cast tables (scripts/gen_promote.py)
-│   ├── linalg.rs               numpy.linalg           (solve/inv/det/qr/cholesky/eigh/svd/norms), via faer
-│   ├── fft.rs                  numpy.fft              (1-D line kernels on slices + NdArray n-d functions, f32/f64), via rustfft
-│   ├── random.rs               numpy.random           (NEP 19 Generator), via rand_pcg/rand_distr
-│   ├── polynomial.rs           numpy.polynomial       (Chebyshev/Hermite/Laguerre/Legendre)
-│   ├── npy.rs                  .npy format            (NEP 1 read/write, every dtype via NpyElement, Fortran order, big-endian)
-│   └── allocator.rs             NEP 49 Allocator trait (System, BumpArena, PooledVec)
-├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step19_promotion.rs; the old step9_testing was removed with numpy.testing)
-├── tests/fixtures/*.npy       .npy files written by real NumPy, read back by npy.rs's tests
-├── scripts/gen_fixtures.py    regenerates tests/fixtures/ (needs a real NumPy install)
-└── python/                    separate PyO3 binding crate (own Cargo.toml, path-deps on root)
-    ├── src/pyarray.rs           `rustnumpy.ndarray`: Arc<Storage> + shape/strides/offset, views, buffer protocol
-    ├── src/{pyops,pyindex}.rs   operators/methods and __getitem__/__setitem__ on that type
-    ├── src/{ops,arrayfns,shapefns,viewfns,logicfns,createfns,linalgfns,rngfns}.rs   the function surface
-    ├── numpy_suite/             rnp_shim: runs NumPy's own test files against the package (shadow/serve modes)
-    └── tests/                   pytest suite (~11,000 cases) comparing against a real NumPy install
+├── NumPy.md               design doc, per-step logs, NEP status table
+├── docs/CONVENTIONS.md    deliberate differences from NumPy
+├── src/                   core crate (one file per NumPy area)
+│   ├── ndarray, view, shape, error, dtype, promote(generated), dispatch, allocator
+│   ├── ufunc, mathfunc, logic, reductions, sorting, selection, index, creation
+│   ├── manipulation       view ops, unique*/set ops, concatenate/stack/split/tile, interp/gradient
+│   ├── contraction, gufunc    matmul/dot/tensordot/einsum, NEP 20 gufuncs
+│   ├── linalg, linalg_complex, fft, random, polynomial, npy
+├── examples/              one runnable demo per early step
+├── tests/fixtures/*.npy   written by real NumPy (scripts/gen_fixtures.py)
+├── scripts/               gen_fixtures.py, gen_promote.py
+└── python/                PyO3 binding crate + Python package
+    ├── src/               native modules (dynarray, pyarray, pyindex, ops, umath, arrayfns, shapefns, logicfns, createfns, linalgfns, clinalgfns, ...)
+    ├── python_src/rustnumpy/   Python layer (see above)
+    ├── tests/             pytest suite (differential vs NumPy)
+    └── numpy_suite/       shim that runs NumPy's own test files against the package
 ```
