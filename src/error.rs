@@ -90,7 +90,7 @@ pub enum ShapeError {
 
     FancyIndexOutOfBounds { axis: usize, index: usize, dim: usize },
 
-    NonAdjacentFancyIndices { axes: Vec<usize> },
+    BooleanAxisMismatch { axis: usize, expected: usize, got: usize },
 
     FancyIndexNotBroadcastable { lengths: Vec<usize> },
 
@@ -158,10 +158,9 @@ impl fmt::Display for ShapeError {
             ShapeError::FancyIndexOutOfBounds { axis, index, dim } => {
                 write!(f, "fancy index {index} is out of bounds for axis {axis} with size {dim}")
             }
-            ShapeError::NonAdjacentFancyIndices { axes } => write!(
+            ShapeError::BooleanAxisMismatch { axis, expected, got } => write!(
                 f,
-                "vindex requires adjacent fancy axes, got non-adjacent axes {axes:?} \
-                 (use oindex, or reorder axes so the fancy ones are next to each other)"
+                "boolean index did not match indexed array along axis {axis}; size of axis is {expected} but size of corresponding boolean axis is {got}"
             ),
             ShapeError::FancyIndexNotBroadcastable { lengths } => {
                 write!(f, "fancy index arrays with lengths {lengths:?} could not be broadcast together")

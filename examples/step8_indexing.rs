@@ -27,9 +27,14 @@ fn main() {
     println!("  shape={:?}  data={:?}\n", out.shape(), out.as_slice());
 
     let b = arange(&[2, 3, 4]);
-    let err = b
+    let out = b
         .vindex(&[AxisIndex::Fancy(vec![0, 1]), AxisIndex::Full, AxisIndex::Fancy(vec![0, 1])])
-        .unwrap_err();
-    println!("b.vindex with non-adjacent fancy axes -> Err (real NumPy's axis-jump rule is not implemented):");
-    println!("  {err}");
+        .unwrap();
+    println!("b.vindex with non-adjacent fancy axes (NumPy moves the merged axis to the front):");
+    println!("  shape={:?}  data={:?}\n", out.shape(), out.as_slice());
+
+    let rows = rustnumpy::NdArray::from_vec(vec![true, false], &[2]).unwrap();
+    let out = b.boolean_index_nd(&rows).unwrap();
+    println!("b.boolean_index_nd(mask over axis 0)  (== b[[True, False]])");
+    println!("  shape={:?}", out.shape());
 }
