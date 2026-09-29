@@ -13,8 +13,6 @@ pub enum FftError {
 
     LengthMismatch { expected: usize, got: usize },
 
-    ShapeMismatch { data_len: usize, shape: Vec<usize> },
-
     Not2D { ndim: usize },
 }
 
@@ -25,11 +23,6 @@ impl std::fmt::Display for FftError {
             FftError::LengthMismatch { expected, got } => {
                 write!(f, "expected length {expected}, got {got}")
             }
-            FftError::ShapeMismatch { data_len, shape } => write!(
-                f,
-                "data has {data_len} elements but shape {shape:?} needs {}",
-                shape.iter().product::<usize>()
-            ),
             FftError::Not2D { ndim } => write!(f, "expected a 2-D array, got {ndim} dimensions"),
         }
     }
@@ -37,40 +30,9 @@ impl std::fmt::Display for FftError {
 
 impl std::error::Error for FftError {}
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComplexArray {
-    data: Vec<Complex64>,
-    shape: Vec<usize>,
-}
-
-impl ComplexArray {
-
-    pub fn from_vec(data: Vec<Complex64>, shape: &[usize]) -> Result<Self, FftError> {
-        let expected: usize = shape.iter().product();
-        if data.len() != expected {
-            return Err(FftError::ShapeMismatch { data_len: data.len(), shape: shape.to_vec() });
-        }
-        Ok(Self { data, shape: shape.to_vec() })
-    }
-
-    pub fn from_real(a: &NdArray) -> Self {
-        Self {
-            data: a.as_slice().iter().map(|&x| Complex64::new(x, 0.0)).collect(),
-            shape: a.shape().to_vec(),
-        }
-    }
-
-    pub fn shape(&self) -> &[usize] {
-        &self.shape
-    }
-
-    pub fn ndim(&self) -> usize {
-        self.shape.len()
-    }
-
-    pub fn as_slice(&self) -> &[Complex64] {
-        &self.data
-    }
+pub fn to_complex(a: &NdArray) -> NdArray<Complex64> {
+    let data: Vec<Complex64> = a.as_slice().iter().map(|&x| Complex64::new(x, 0.0)).collect();
+    NdArray::from_vec(data, a.shape()).expect("same element count as the input")
 }
 
 pub fn fft(input: &[Complex64]) -> Result<Vec<Complex64>, FftError> {
@@ -105,38 +67,125 @@ pub fn rfft(input: &[f64]) -> Result<Vec<Complex64>, FftError> {
     Ok(full[..input.len() / 2 + 1].to_vec())
 }
 
+fn fit_to<T: Copy + Default>(input: &[T], len: usize) -> Vec<T> {
+    let mut v: Vec<T> = input.iter().copied().take(len).collect();
+    v.resize(len, T::default());
+    v
+}
+
 pub fn irfft(input: &[Complex64], n: usize) -> Result<Vec<f64>, FftError> {
     if n == 0 {
         return Err(FftError::EmptyInput);
     }
-    let expected = n / 2 + 1;
-    if input.len() != expected {
-        return Err(FftError::LengthMismatch { expected, got: input.len() });
-    }
-    let full: Vec<Complex64> =
-        (0..n).map(|k| if k <= n / 2 { input[k] } else { input[n - k].conj() }).collect();
+    let half = fit_to(input, n / 2 + 1);
+    let full: Vec<Complex64> = (0..n).map(|k| if k <= n / 2 { half[k] } else { half[n - k].conj() }).collect();
     Ok(ifft(&full)?.iter().map(|c| c.re).collect())
 }
 
-pub fn fftn(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+pub fn hfft(input: &[Complex64], n: Option<usize>) -> Result<Vec<f64>, FftError> {
+    if input.is_empty() {
+        return Err(FftError::EmptyInput);
+    }
+    let n = n.unwrap_or(2 * (input.len() - 1));
+    let conj: Vec<Complex64> = input.iter().map(|c| c.conj()).collect();
+    Ok(irfft(&conj, n)?.into_iter().map(|x| x * n as f64).collect())
+}
+
+pub fn ihfft(input: &[f64], n: Option<usize>) -> Result<Vec<Complex64>, FftError> {
+    if input.is_empty() {
+        return Err(FftError::EmptyInput);
+    }
+    let n = n.unwrap_or(input.len());
+    if n == 0 {
+        return Err(FftError::EmptyInput);
+    }
+    let spectrum = rfft(&fit_to(input, n))?;
+    Ok(spectrum.into_iter().map(|c| c.conj() / n as f64).collect())
+}
+
+pub fn fftn(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
     transform_every_axis(input, fft)
 }
 
-pub fn ifftn(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+pub fn ifftn(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
     transform_every_axis(input, ifft)
 }
 
-pub fn fft2(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+pub fn rfftn(input: &NdArray) -> Result<NdArray<Complex64>, FftError> {
+    if input.ndim() == 0 || input.shape().contains(&0) {
+        return Err(FftError::EmptyInput);
+    }
+    let last = input.ndim() - 1;
+    let n = input.shape()[last];
+    let mut data: Vec<Complex64> = Vec::with_capacity(input.len() / n * (n / 2 + 1));
+    for line in input.as_slice().chunks(n) {
+        data.extend(rfft(line)?);
+    }
+    let mut shape = input.shape().to_vec();
+    shape[last] = n / 2 + 1;
+    for axis in 0..last {
+        transform_axis_in_place(&mut data, &shape, axis, &fft)?;
+    }
+    Ok(NdArray::from_vec(data, &shape).expect("half-spectrum element count"))
+}
+
+pub fn irfftn(input: &NdArray<Complex64>, s: Option<&[usize]>) -> Result<NdArray, FftError> {
+    if input.ndim() == 0 || input.shape().contains(&0) {
+        return Err(FftError::EmptyInput);
+    }
+    let last = input.ndim() - 1;
+    let default_shape: Vec<usize> = input
+        .shape()
+        .iter()
+        .enumerate()
+        .map(|(axis, &d)| if axis == last { 2 * (d - 1) } else { d })
+        .collect();
+    let out_shape = s.map_or(default_shape, <[usize]>::to_vec);
+    if out_shape.len() != input.ndim() {
+        return Err(FftError::LengthMismatch { expected: input.ndim(), got: out_shape.len() });
+    }
+    for (&want, &got) in input.shape()[..last].iter().zip(&out_shape[..last]) {
+        if got != want {
+            return Err(FftError::LengthMismatch { expected: want, got });
+        }
+    }
+    let mut data = input.as_slice().to_vec();
+    for axis in 0..last {
+        transform_axis_in_place(&mut data, input.shape(), axis, &ifft)?;
+    }
+    let width = input.shape()[last];
+    let mut out: Vec<f64> = Vec::with_capacity(out_shape.iter().product());
+    for line in data.chunks(width) {
+        out.extend(irfft(line, out_shape[last])?);
+    }
+    Ok(NdArray::from_vec(out, &out_shape).expect("real output element count"))
+}
+
+pub fn rfft2(input: &NdArray) -> Result<NdArray<Complex64>, FftError> {
+    if input.ndim() != 2 {
+        return Err(FftError::Not2D { ndim: input.ndim() });
+    }
+    rfftn(input)
+}
+
+pub fn irfft2(input: &NdArray<Complex64>, s: Option<&[usize]>) -> Result<NdArray, FftError> {
+    if input.ndim() != 2 {
+        return Err(FftError::Not2D { ndim: input.ndim() });
+    }
+    irfftn(input, s)
+}
+
+pub fn fft2(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
     require_2d(input)?;
     fftn(input)
 }
 
-pub fn ifft2(input: &ComplexArray) -> Result<ComplexArray, FftError> {
+pub fn ifft2(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
     require_2d(input)?;
     ifftn(input)
 }
 
-fn require_2d(input: &ComplexArray) -> Result<(), FftError> {
+fn require_2d(input: &NdArray<Complex64>) -> Result<(), FftError> {
     if input.ndim() != 2 {
         return Err(FftError::Not2D { ndim: input.ndim() });
     }
@@ -144,17 +193,17 @@ fn require_2d(input: &ComplexArray) -> Result<(), FftError> {
 }
 
 fn transform_every_axis(
-    input: &ComplexArray,
+    input: &NdArray<Complex64>,
     per_line: impl Fn(&[Complex64]) -> Result<Vec<Complex64>, FftError>,
-) -> Result<ComplexArray, FftError> {
-    if input.shape.is_empty() || input.shape.contains(&0) {
+) -> Result<NdArray<Complex64>, FftError> {
+    if input.ndim() == 0 || input.shape().contains(&0) {
         return Err(FftError::EmptyInput);
     }
-    let mut data = input.data.clone();
+    let mut data = input.as_slice().to_vec();
     for axis in 0..input.ndim() {
-        transform_axis_in_place(&mut data, &input.shape, axis, &per_line)?;
+        transform_axis_in_place(&mut data, input.shape(), axis, &per_line)?;
     }
-    Ok(ComplexArray { data, shape: input.shape.clone() })
+    Ok(NdArray::from_vec(data, input.shape()).expect("transform keeps the element count"))
 }
 
 fn transform_axis_in_place(
@@ -291,13 +340,126 @@ mod tests {
     }
 
     #[test]
-    fn irfft_rejects_wrong_length() {
-
-        let spectrum = rfft(&[1.0, 2.0, 3.0, 4.0]).unwrap();
-        assert_eq!(
-            irfft(&spectrum, 6).unwrap_err(),
-            FftError::LengthMismatch { expected: 4, got: 3 }
+    fn irfft_crops_or_zero_pads_the_spectrum_like_numpy() {
+        let five: Vec<Complex64> = [1.0, 2.0, 3.0, 4.0, 5.0].iter().map(|&r| Complex64::new(r, 0.0)).collect();
+        assert_reals_close(&irfft(&five, 4).unwrap(), &[2.0, -0.5, 0.0, -0.5]);
+        let two: Vec<Complex64> = [1.0, 2.0].iter().map(|&r| Complex64::new(r, 0.0)).collect();
+        assert_reals_close(
+            &irfft(&two, 6).unwrap(),
+            &[0.8333333333333333, 0.5, -0.16666666666666666, -0.4999999999999999, -0.16666666666666666, 0.4999999999999999],
         );
+        assert_eq!(irfft(&two, 0).unwrap_err(), FftError::EmptyInput);
+    }
+
+    #[test]
+    fn hfft_and_ihfft_match_numpy() {
+        let c = |v: &[f64]| -> Vec<Complex64> { v.iter().map(|&r| Complex64::new(r, 0.0)).collect() };
+        assert_reals_close(&hfft(&c(&[1.0, 2.0, 3.0]), None).unwrap(), &[8.0, -2.0, 0.0, -2.0]);
+        assert_reals_close(
+            &hfft(&c(&[1.0, 2.0, 3.0]), Some(5)).unwrap(),
+            &[11.0, -2.618033988749895, -0.3819660112501051, -0.3819660112501051, -2.618033988749895],
+        );
+        assert_reals_close(&hfft(&c(&[1.0, 2.0, 3.0, 4.0, 5.0]), Some(4)).unwrap(), &[8.0, -2.0, 0.0, -2.0]);
+        assert_reals_close(
+            &hfft(&c(&[1.0, 2.0]), Some(6)).unwrap(),
+            &[5.0, 3.0, -1.0, -3.0, -1.0, 3.0],
+        );
+        let mixed = [Complex64::new(1.0, 0.0), Complex64::new(2.0, 1.0), Complex64::new(3.0, -1.0), Complex64::new(4.0, 2.0)];
+        assert_reals_close(&hfft(&mixed, None).unwrap(), &[15.0, -4.0, 3.4641016151377544, -1.0000000000000002, -3.4641016151377544, -4.0]);
+        assert_complex_close(
+            &ihfft(&[1.0, 2.0, 3.0, 4.0], None).unwrap(),
+            &[Complex64::new(2.5, 0.0), Complex64::new(-0.5, -0.5), Complex64::new(-0.5, 0.0)],
+        );
+        assert_complex_close(
+            &ihfft(&[1.0, 2.0, 3.0, 4.0, 5.0], None).unwrap(),
+            &[Complex64::new(3.0, 0.0), Complex64::new(-0.5, -0.6881909602355867), Complex64::new(-0.5, -0.1624598481164532)],
+        );
+        assert_complex_close(
+            &ihfft(&[1.0, 2.0, 3.0, 4.0], Some(6)).unwrap(),
+            &[
+                Complex64::new(1.6666666666666665, 0.0),
+                Complex64::new(-0.5833333333333333, 0.721687836487032),
+                Complex64::new(0.4166666666666666, -0.14433756729740646),
+                Complex64::new(-0.3333333333333333, 0.0),
+            ],
+        );
+        assert_complex_close(&ihfft(&[1.0, 2.0, 3.0, 4.0], Some(2)).unwrap(), &[Complex64::new(1.5, 0.0), Complex64::new(-0.5, 0.0)]);
+        assert_reals_close(&hfft(&ihfft(&[1.0, 2.0, 3.0, 4.0, 5.0], None).unwrap(), Some(5)).unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        assert_eq!(hfft(&[], None).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(ihfft(&[], None).unwrap_err(), FftError::EmptyInput);
+    }
+
+    #[test]
+    fn hfft_ignores_the_imaginary_part_of_the_dc_term() {
+        let with_imag_dc = [Complex64::new(1.0, 5.0), Complex64::new(2.0, 0.0), Complex64::new(3.0, 0.0)];
+        assert_reals_close(&hfft(&with_imag_dc, Some(4)).unwrap(), &[8.0, -2.0, 0.0, -2.0]);
+    }
+
+    #[test]
+    fn rfftn_matches_numpy_2d_and_3d() {
+        let x = NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+        let expected = [Complex64::new(21.0, 0.0), Complex64::new(-3.0, 1.7320508075688772), Complex64::new(-9.0, 0.0), Complex64::new(0.0, 0.0)];
+        let r = rfftn(&x).unwrap();
+        assert_eq!(r.shape(), &[2, 2]);
+        assert_complex_close(r.as_slice(), &expected);
+        assert_complex_close(rfft2(&x).unwrap().as_slice(), &expected);
+        assert_eq!(irfft2(&rfft2(&x).unwrap(), Some(&[2, 3])).unwrap().as_slice(), irfft2(&r, Some(&[2, 3])).unwrap().as_slice());
+        assert_reals_close(irfft2(&r, Some(&[2, 3])).unwrap().as_slice(), x.as_slice());
+
+        let cube = NdArray::from_vec((0..24).map(f64::from).collect(), &[2, 3, 4]).unwrap();
+        let r3 = rfftn(&cube).unwrap();
+        assert_eq!(r3.shape(), &[2, 3, 3]);
+        for (idx, want) in [
+            ([0, 0, 0], Complex64::new(276.0, 0.0)),
+            ([0, 0, 1], Complex64::new(-12.0, 12.0)),
+            ([0, 0, 2], Complex64::new(-12.0, 0.0)),
+            ([0, 1, 0], Complex64::new(-48.0, 27.712812921102035)),
+            ([0, 1, 1], Complex64::new(0.0, 0.0)),
+            ([1, 0, 0], Complex64::new(-144.0, 0.0)),
+            ([1, 2, 1], Complex64::new(0.0, 0.0)),
+        ] {
+            assert_complex_close(&[r3.get(&idx).unwrap()], &[want]);
+        }
+        assert_reals_close(irfftn(&r3, Some(&[2, 3, 4])).unwrap().as_slice(), cube.as_slice());
+        assert_eq!(irfftn(&r3, None).unwrap().shape(), &[2, 3, 4]);
+    }
+
+    #[test]
+    fn rfftn_roundtrips_odd_last_axis_and_irfftn_matches_numpy_on_complex_input() {
+        let odd = NdArray::from_vec((0..30).map(|i| (i as f64).powf(1.5)).collect(), &[2, 3, 5]).unwrap();
+        let r = rfftn(&odd).unwrap();
+        assert_eq!(r.shape(), &[2, 3, 3]);
+        assert_complex_close(&[r.get(&[1, 1, 2]).unwrap()], &[Complex64::new(3.1862317226683015, -2.004341290755435)]);
+        assert_complex_close(&[r.get(&[0, 2, 1]).unwrap()], &[Complex64::new(16.09341902929033, -7.829419978640091)]);
+        assert_complex_close(&[r.get(&[0, 0, 0]).unwrap()], &[Complex64::new(1890.3019945571912, 0.0)]);
+        assert_reals_close(irfftn(&r, Some(&[2, 3, 5])).unwrap().as_slice(), odd.as_slice());
+
+        let c = NdArray::from_vec(
+            vec![
+                Complex64::new(1.0, 2.0),
+                Complex64::new(3.0, -1.0),
+                Complex64::new(2.0, 0.0),
+                Complex64::new(0.0, 0.5),
+                Complex64::new(1.0, 0.0),
+                Complex64::new(4.0, 4.0),
+            ],
+            &[2, 3],
+        )
+        .unwrap();
+        let out = irfftn(&c, Some(&[2, 4])).unwrap();
+        assert_reals_close(out.as_slice(), &[1.875, -0.375, -0.125, -0.875, 0.375, 0.625, -0.625, 0.125]);
+        assert_eq!(irfftn(&c, None).unwrap().shape(), &[2, 4]);
+    }
+
+    #[test]
+    fn rfftn_family_rejects_bad_input() {
+        assert_eq!(rfftn(&NdArray::zeros(&[0, 3])).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(rfft2(&NdArray::zeros(&[2, 2, 2])).unwrap_err(), FftError::Not2D { ndim: 3 });
+        let r = rfftn(&NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap()).unwrap();
+        assert!(matches!(irfftn(&r, Some(&[3, 2])), Err(FftError::LengthMismatch { .. })));
+        assert!(matches!(irfftn(&r, Some(&[2])), Err(FftError::LengthMismatch { .. })));
+        let one_wide: NdArray<Complex64> = NdArray::zeros(&[2, 1]);
+        assert_eq!(irfftn(&one_wide, None).unwrap_err(), FftError::EmptyInput);
     }
 
     #[test]
@@ -329,7 +491,7 @@ mod tests {
     #[test]
     fn fft2_matches_numpy() {
 
-        let a = ComplexArray::from_vec(
+        let a = NdArray::from_vec(
             [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(|r| Complex64::new(r, 0.0)).to_vec(),
             &[2, 3],
         )
@@ -348,13 +510,13 @@ mod tests {
 
     #[test]
     fn fft2_rejects_non_2d() {
-        let a = ComplexArray::from_vec(vec![Complex64::new(1.0, 0.0)], &[1, 1, 1]).unwrap();
+        let a = NdArray::from_vec(vec![Complex64::new(1.0, 0.0)], &[1, 1, 1]).unwrap();
         assert_eq!(fft2(&a).unwrap_err(), FftError::Not2D { ndim: 3 });
     }
 
     #[test]
     fn ifft2_of_fft2_roundtrips() {
-        let a = ComplexArray::from_vec(
+        let a = NdArray::from_vec(
             [1.0, 2.0, 3.0, 4.0, 5.0, 6.0].map(|r| Complex64::new(r, 0.0)).to_vec(),
             &[2, 3],
         )
@@ -367,7 +529,7 @@ mod tests {
     fn fftn_matches_numpy_for_3d_input() {
 
         let data: Vec<Complex64> = (0..24).map(|i| Complex64::new(i as f64, 0.0)).collect();
-        let a = ComplexArray::from_vec(data, &[2, 3, 4]).unwrap();
+        let a = NdArray::from_vec(data, &[2, 3, 4]).unwrap();
         let result = fftn(&a).unwrap();
         assert_eq!(result.shape(), &[2, 3, 4]);
 
@@ -380,17 +542,9 @@ mod tests {
     #[test]
     fn ifftn_of_fftn_roundtrips_for_3d_input() {
         let data: Vec<Complex64> = (0..24).map(|i| Complex64::new(i as f64, 0.0)).collect();
-        let a = ComplexArray::from_vec(data, &[2, 3, 4]).unwrap();
+        let a = NdArray::from_vec(data, &[2, 3, 4]).unwrap();
         let back = ifftn(&fftn(&a).unwrap()).unwrap();
         assert_complex_close(back.as_slice(), a.as_slice());
-    }
-
-    #[test]
-    fn complex_array_from_vec_rejects_mismatched_shape() {
-        assert_eq!(
-            ComplexArray::from_vec(vec![Complex64::new(1.0, 0.0)], &[2, 2]).unwrap_err(),
-            FftError::ShapeMismatch { data_len: 1, shape: vec![2, 2] }
-        );
     }
 
     #[test]

@@ -27,8 +27,8 @@ pub use contraction::{dot, einsum, matmul, outer, tensordot, tensordot_n};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
 pub use error::{Error, ShapeError};
 pub use fft::{
-    fft, fft2, fftfreq, fftn, fftshift, ifft, ifft2, ifftn, ifftshift, irfft, rfft, rfftfreq,
-    Complex64, ComplexArray, FftError,
+    fft, fft2, fftfreq, fftn, fftshift, hfft, ifft, ifft2, ifftn, ifftshift, ihfft, irfft, irfft2,
+    irfftn, rfft, rfft2, rfftfreq, rfftn, to_complex, Complex64, FftError,
 };
 pub use gufunc::{gufunc, vecdot, Signature};
 pub use index::AxisIndex;

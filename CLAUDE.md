@@ -86,7 +86,7 @@ are (bounded per-function by the relevant `std::ops`/`PartialOrd` trait,
 e.g. `add<T: Copy + Add<Output = T>>`), so they work on any of the
 integer/float/complex types `dtype.rs`'s `DType` trait covers. `linalg.rs`/
 `fft.rs`/`random.rs`/`polynomial.rs` are still hardcoded to plain `NdArray`
-(`f64`)/`Complex64`, matching the fact that `faer`/`rustfft` themselves
+(`f64`)/`NdArray<Complex64>`, matching the fact that `faer`/`rustfft` themselves
 only support `f32`/`f64`/`Complex<f32/f64>`, and real NumPy's own
 LAPACK/FFT bindings upcast every input to `float64` internally too.
 
