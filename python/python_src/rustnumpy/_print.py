@@ -433,13 +433,61 @@ def array_repr(arr, max_line_width=None, precision=None, suppress_small=None):
     return arr_str + spacer + extra_str
 
 
+_SCI_ABOVE = {"float16": 1e3, "float32": 1e6, "float64": 1e16}
+
+
+def _scalar_float_str(x, dtype_name, trim):
+    if x != x:
+        return "nan"
+    if x in (float("inf"), float("-inf")):
+        return "inf" if x > 0 else "-inf"
+    sign = "-" if math.copysign(1.0, x) < 0 else ""
+    ax = abs(x)
+    if ax == 0:
+        return sign + ("0" if trim else "0.0")
+    mant, _, exp = _shortest(ax, dtype_name).lower().partition("e")
+    exp10 = int(exp) if exp else 0
+    if not exp:
+        int_part, _, frac = mant.partition(".")
+        digits = (int_part + frac).lstrip("0")
+        exp10 = len(int_part.lstrip("0")) - 1 if int_part.strip("0") else -(len(frac) - len(frac.lstrip("0"))) - 1
+    else:
+        digits = mant.replace(".", "")
+    digits = digits.rstrip("0") or "0"
+    if ax >= _SCI_ABOVE[dtype_name] or ax < 1e-4:
+        text = digits[0] + ("." + digits[1:] if len(digits) > 1 else "")
+        return "%s%se%s%02d" % (sign, text, "-" if exp10 < 0 else "+", abs(exp10))
+    if exp10 >= 0:
+        whole = digits[: exp10 + 1].ljust(exp10 + 1, "0")
+        frac = digits[exp10 + 1 :]
+    else:
+        whole, frac = "0", "0" * (-exp10 - 1) + digits
+    return sign + whole + ("." + frac if frac else ("" if trim else ".0"))
+
+
+def _scalar_str(a):
+    name = a.dtype.name
+    value = a.item()
+    if name in ("float16", "float32"):
+        return _scalar_float_str(value, name, False)
+    if name == "complex64":
+        re_s = _scalar_float_str(value.real, "float32", True)
+        im_s = _scalar_float_str(value.imag, "float32", True)
+        if value.real == 0 and math.copysign(1.0, value.real) > 0:
+            return im_s + "j"
+        if not im_s.startswith("-"):
+            im_s = "+" + im_s
+        return "(%s%sj)" % (re_s, im_s)
+    return str(value)
+
+
 def array_str(a, max_line_width=None, precision=None, suppress_small=None):
     from . import _core
 
     a = _core.asarray(a)
     opts = _resolve(None, max_line_width, precision, suppress_small)
     if a.ndim == 0:
-        return str(a.item())
+        return _scalar_str(a)
     if a.size == 0:
         return "[]"
     return _array2string(a, opts, " ", "", "", opts["linewidth"])

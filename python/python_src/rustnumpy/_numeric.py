@@ -1089,7 +1089,10 @@ class _Finfo:
         self.dtype = dt
 
     def __repr__(self):
-        return "finfo(resolution=%s, min=%s, max=%s, dtype=%s)" % (self.resolution, self.min, self.max, self.dtype.name)
+        from ._print import _shortest
+
+        shown = lambda v: repr(float(_shortest(v, self.dtype.name)))
+        return "finfo(resolution=%s, min=%s, max=%s, dtype=%s)" % (shown(self.resolution), shown(self.min), shown(self.max), self.dtype.name)
 
 
 def finfo(dtype):

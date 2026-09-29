@@ -33,14 +33,14 @@ fn npy_err_to_py(e: rustnumpy::NpyError) -> PyErr {
 #[pyfunction]
 fn save(py: Python<'_>, path: &str, arr: &Bound<'_, PyAny>) -> PyResult<()> {
     match crate::casting::astype(&Arr::from_object(py, arr)?, "float64")? {
-        Arr::F64(a) => rustnumpy::save_npy(path, &a).map_err(npy_err_to_py),
+        Arr::F64(a) => rustnumpy::save_npy::<f64, _>(path, &a).map_err(npy_err_to_py),
         _ => unreachable!("cast to float64"),
     }
 }
 
 #[pyfunction]
 fn load(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
-    let a = rustnumpy::load_npy(path).map_err(npy_err_to_py)?;
+    let a = rustnumpy::load_npy::<f64, _>(path).map_err(npy_err_to_py)?;
     ops::out_array(py, Arr::from(a))
 }
 

@@ -303,11 +303,30 @@ fn ret_real(py: Python<'_>, a: NdArray<f64>, single: bool) -> PyResult<Py<PyAny>
     ret(py, a, single)
 }
 
-fn check_norm(norm: &Option<String>) -> PyResult<()> {
-    match norm.as_deref() {
-        None | Some("backward") => Ok(()),
-        Some(_) => Err(unsupported("only the default norm='backward' is bound")),
+fn norm_factor(norm: &Option<String>, n: usize, inverse: bool) -> PyResult<f64> {
+    let n = n as f64;
+    let desired = match norm.as_deref() {
+        None | Some("backward") => if inverse { 1.0 / n } else { 1.0 },
+        Some("ortho") => 1.0 / n.sqrt(),
+        Some("forward") => if inverse { 1.0 } else { 1.0 / n },
+        Some(other) => return Err(PyValueError::new_err(format!("Invalid norm value {other}; should be \"backward\", \"ortho\" or \"forward\"."))),
+    };
+    // the core transforms already carry the "backward" scaling
+    Ok(desired * if inverse { n } else { 1.0 })
+}
+
+fn scaled_c(mut v: Vec<Complex64>, f: f64) -> Vec<Complex64> {
+    if f != 1.0 {
+        v.iter_mut().for_each(|z| *z = Complex64::new(z.re * f, z.im * f));
     }
+    v
+}
+
+fn scaled_r(mut v: Vec<f64>, f: f64) -> Vec<f64> {
+    if f != 1.0 {
+        v.iter_mut().for_each(|x| *x *= f);
+    }
+    v
 }
 
 fn fft_err(e: rustnumpy::FftError) -> PyErr {
@@ -345,31 +364,31 @@ fn fit<T: Copy + Default>(line: &[T], n: usize) -> Vec<T> {
 }
 
 macro_rules! fft_c2c {
-    ($name:ident, $core:path) => {
+    ($name:ident, $core:path, $inverse:expr) => {
         #[pyfunction]
         #[pyo3(signature = (a, n=None, axis=-1, norm=None))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize, norm: Option<String>) -> PyResult<Py<PyAny>> {
-            check_norm(&norm)?;
             let (x, single) = complex_input(py, a)?;
             let r = lines_apply(&x, axis, |line| {
                 let src = match n { Some(k) => fit(line, k), None => line.to_vec() };
-                $core(&src).map_err(fft_err)
+                let f = norm_factor(&norm, src.len(), $inverse)?;
+                Ok(scaled_c($core(&src).map_err(fft_err)?, f))
             })?;
             ret_complex(py, r, single)
         }
     };
 }
-fft_c2c!(fft, rustnumpy::fft);
-fft_c2c!(ifft, rustnumpy::ifft);
+fft_c2c!(fft, rustnumpy::fft, false);
+fft_c2c!(ifft, rustnumpy::ifft, true);
 
 #[pyfunction]
 #[pyo3(signature = (a, n=None, axis=-1, norm=None))]
 pub fn rfft(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
     let (x, single) = real_input(py, a)?;
     let r = lines_apply(&x, axis, |line| {
         let src = match n { Some(k) => fit(line, k), None => line.to_vec() };
-        rustnumpy::rfft(&src).map_err(fft_err)
+        let f = norm_factor(&norm, src.len(), false)?;
+        Ok(scaled_c(rustnumpy::rfft(&src).map_err(fft_err)?, f))
     })?;
     ret_complex(py, r, single)
 }
@@ -377,11 +396,11 @@ pub fn rfft(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize,
 #[pyfunction]
 #[pyo3(signature = (a, n=None, axis=-1, norm=None))]
 pub fn irfft(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
     let (x, single) = complex_input(py, a)?;
     let r = lines_apply(&x, axis, |line| {
         let len = n.unwrap_or(2 * line.len().saturating_sub(1));
-        rustnumpy::irfft(line, len).map_err(fft_err)
+        let f = norm_factor(&norm, len, true)?;
+        Ok(scaled_r(rustnumpy::irfft(line, len).map_err(fft_err)?, f))
     })?;
     ret_real(py, r, single)
 }
@@ -389,119 +408,25 @@ pub fn irfft(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize
 #[pyfunction]
 #[pyo3(signature = (a, n=None, axis=-1, norm=None))]
 pub fn hfft(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
     let (x, single) = complex_input(py, a)?;
-    let r = lines_apply(&x, axis, |line| rustnumpy::hfft(line, n).map_err(fft_err))?;
+    let r = lines_apply(&x, axis, |line| {
+        let out = rustnumpy::hfft(line, n).map_err(fft_err)?;
+        let f = norm_factor(&norm, out.len(), false)?;
+        Ok(scaled_r(out, f))
+    })?;
     ret_real(py, r, single)
 }
 
 #[pyfunction]
 #[pyo3(signature = (a, n=None, axis=-1, norm=None))]
 pub fn ihfft(py: Python<'_>, a: &Bound<'_, PyAny>, n: Option<usize>, axis: isize, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
     let (x, single) = real_input(py, a)?;
-    let r = lines_apply(&x, axis, |line| rustnumpy::ihfft(line, n).map_err(fft_err))?;
+    let r = lines_apply(&x, axis, |line| {
+        let f = norm_factor(&norm, n.unwrap_or(line.len()), true)?;
+        Ok(scaled_c(rustnumpy::ihfft(line, n).map_err(fft_err)?, f))
+    })?;
     ret_complex(py, r, single)
 }
-
-macro_rules! fft_nd {
-    ($name:ident, $core:path) => {
-        #[pyfunction]
-        #[pyo3(signature = (a, s=None, axes=None, norm=None))]
-        pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, s: Option<Bound<'_, PyAny>>, axes: Option<Bound<'_, PyAny>>, norm: Option<String>) -> PyResult<Py<PyAny>> {
-            check_norm(&norm)?;
-            if s.is_some() || axes.is_some() {
-                return Err(unsupported("s= and axes= are not bound; the transform runs over all axes"));
-            }
-            let (x, single) = complex_input(py, a)?;
-            ret_complex(py, $core(&x).map_err(fft_err)?, single)
-        }
-    };
-}
-fft_nd!(fftn, rustnumpy::fftn);
-fft_nd!(ifftn, rustnumpy::ifftn);
-
-#[pyfunction]
-#[pyo3(signature = (a, s=None, axes=None, norm=None))]
-pub fn fft2(py: Python<'_>, a: &Bound<'_, PyAny>, s: Option<Bound<'_, PyAny>>, axes: Option<Bound<'_, PyAny>>, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
-    if s.is_some() || axes.is_some() {
-        return Err(unsupported("s= and axes= are not bound"));
-    }
-    let (x, single) = complex_input(py, a)?;
-    if x.ndim() != 2 {
-        return Err(unsupported("fft2 is bound for 2-D input only"));
-    }
-    ret_complex(py, rustnumpy::fft2(&x).map_err(fft_err)?, single)
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, s=None, axes=None, norm=None))]
-pub fn ifft2(py: Python<'_>, a: &Bound<'_, PyAny>, s: Option<Bound<'_, PyAny>>, axes: Option<Bound<'_, PyAny>>, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
-    if s.is_some() || axes.is_some() {
-        return Err(unsupported("s= and axes= are not bound"));
-    }
-    let (x, single) = complex_input(py, a)?;
-    if x.ndim() != 2 {
-        return Err(unsupported("ifft2 is bound for 2-D input only"));
-    }
-    ret_complex(py, rustnumpy::ifft2(&x).map_err(fft_err)?, single)
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, s=None, axes=None, norm=None))]
-pub fn rfftn(py: Python<'_>, a: &Bound<'_, PyAny>, s: Option<Bound<'_, PyAny>>, axes: Option<Bound<'_, PyAny>>, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
-    if s.is_some() || axes.is_some() {
-        return Err(unsupported("s= and axes= are not bound"));
-    }
-    let (x, single) = real_input(py, a)?;
-    ret_complex(py, rustnumpy::rfftn(&x).map_err(fft_err)?, single)
-}
-
-#[pyfunction]
-#[pyo3(signature = (a, s=None, axes=None, norm=None))]
-pub fn irfftn(py: Python<'_>, a: &Bound<'_, PyAny>, s: Option<Bound<'_, PyAny>>, axes: Option<Bound<'_, PyAny>>, norm: Option<String>) -> PyResult<Py<PyAny>> {
-    check_norm(&norm)?;
-    if axes.is_some() {
-        return Err(unsupported("axes= is not bound"));
-    }
-    let (x, single) = complex_input(py, a)?;
-    let shape: Option<Vec<usize>> = match &s {
-        None => None,
-        Some(o) => Some(o.extract().map_err(|_| unsupported("s= with negative or non-integer entries is not bound"))?),
-    };
-    ret_real(py, rustnumpy::irfftn(&x, shape.as_deref()).map_err(fft_err)?, single)
-}
-
-#[pyfunction]
-#[pyo3(signature = (n, d=1.0))]
-pub fn fftfreq(py: Python<'_>, n: usize, d: f64) -> PyResult<Py<PyAny>> {
-    ret_vec(py, rustnumpy::fftfreq(n, d).map_err(fft_err)?, false)
-}
-
-#[pyfunction]
-#[pyo3(signature = (n, d=1.0))]
-pub fn rfftfreq(py: Python<'_>, n: usize, d: f64) -> PyResult<Py<PyAny>> {
-    ret_vec(py, rustnumpy::rfftfreq(n, d).map_err(fft_err)?, false)
-}
-
-macro_rules! shift_fn {
-    ($name:ident, $core:path) => {
-        #[pyfunction]
-        pub fn $name(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = Operand::parse(py, x)?.into_arr(py)?;
-            if arr.ndim() != 1 {
-                return Err(unsupported("shift is bound for 1-D input only"));
-            }
-            let result = crate::with_arr!(&arr, a => Arr::from(NdArray::from_vec($core(a.as_slice()), a.shape()).map_err(shape_err)?));
-            out_array(py, result)
-        }
-    };
-}
-shift_fn!(fftshift, rustnumpy::fftshift);
-shift_fn!(ifftshift, rustnumpy::ifftshift);
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     macro_rules! reg {
@@ -509,8 +434,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
     reg!(
         inv, qr_complete, cholesky, det, slogdet, solve, qr, eigh, eigvalsh, eigvals, eig, svd, svdvals, pinv, matrix_rank, lstsq, cond,
-        norm, matrix_power, fft, ifft, rfft, irfft, hfft, ihfft, fftn, ifftn, fft2, ifft2, rfftn, irfftn, fftfreq, rfftfreq,
-        fftshift, ifftshift
+        norm, matrix_power, fft, ifft, rfft, irfft, hfft, ihfft
     );
     m.add("LinAlgError", m.py().get_type::<LinAlgError>())?;
     Ok(())

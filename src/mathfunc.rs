@@ -1,4 +1,4 @@
-use crate::error::ShapeError;
+use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
 use crate::reductions::FloatIsh;
 use crate::ufunc::{map, zip_with};
@@ -283,7 +283,7 @@ pub fn remainder<T: Arith>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray
     zip_with(a, b, T::mod_)
 }
 
-pub fn power<T: Arith>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+pub fn power<T: Arith>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, OpError> {
     let failed = Cell::new(false);
     let out = zip_with(a, b, |x, y| {
         x.pow_(y).unwrap_or_else(|| {
@@ -292,7 +292,7 @@ pub fn power<T: Arith>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>,
         })
     })?;
     if failed.get() {
-        return Err(ShapeError::NegativeIntegerPower);
+        return Err(OpError::NegativeIntegerPower);
     }
     Ok(out)
 }
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(power(&arr(vec![2i64, 3]).view(), &arr(vec![3, 4]).view()).unwrap().as_slice(), &[8, 81]);
         assert_eq!(
             power(&arr(vec![2i64]).view(), &arr(vec![-1]).view()).unwrap_err(),
-            ShapeError::NegativeIntegerPower
+            OpError::NegativeIntegerPower
         );
         same(
             &power(&arr(vec![2.0, 0.0, -8.0]).view(), &arr(vec![3.0, 0.0, 1.0 / 3.0]).view()).unwrap(),

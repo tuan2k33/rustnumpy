@@ -1,5 +1,6 @@
+use crate::reductions::ReductionError;
 use crate::dtype::DType;
-use crate::error::ShapeError;
+use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
 use crate::promote::{Promote, PromoteWeak, Widen};
 use crate::shape::{broadcast_shapes, IndexIter};
@@ -184,16 +185,16 @@ pub fn map_weak_int<A>(
     a: &ArrayView<A>,
     s: i64,
     f: impl Fn(<A as PromoteWeak<WeakInt>>::Output, <A as PromoteWeak<WeakInt>>::Output) -> <A as PromoteWeak<WeakInt>>::Output,
-) -> Result<NdArray<<A as PromoteWeak<WeakInt>>::Output>, ShapeError>
+) -> Result<NdArray<<A as PromoteWeak<WeakInt>>::Output>, OpError>
 where
     A: PromoteWeak<WeakInt> + Widen<<A as PromoteWeak<WeakInt>>::Output>,
     <A as PromoteWeak<WeakInt>>::Output: FromWeak,
 {
     type O<A> = <A as PromoteWeak<WeakInt>>::Output;
     let scalar = <O<A> as FromWeak>::from_weak_int(s)
-        .ok_or(ShapeError::WeakScalarOverflow { value: s, dtype: <O<A> as DType>::type_name() })?;
+        .ok_or(OpError::WeakScalarOverflow { value: s, dtype: <O<A> as DType>::type_name() })?;
     let data: Vec<O<A>> = a.iter().map(|x| f(x.widen(), scalar)).collect();
-    NdArray::from_vec(data, a.shape())
+    NdArray::from_vec(data, a.shape()).map_err(OpError::from)
 }
 
 pub fn map_weak_float<A>(
@@ -213,7 +214,7 @@ where
 
 macro_rules! weak_ops {
     ($($int:ident, $float:ident => $op:ident, $bound:ident);* $(;)?) => {$(
-        pub fn $int<A>(a: &ArrayView<A>, s: i64) -> Result<NdArray<<A as PromoteWeak<WeakInt>>::Output>, ShapeError>
+        pub fn $int<A>(a: &ArrayView<A>, s: i64) -> Result<NdArray<<A as PromoteWeak<WeakInt>>::Output>, OpError>
         where
             A: PromoteWeak<WeakInt> + Widen<<A as PromoteWeak<WeakInt>>::Output>,
             <A as PromoteWeak<WeakInt>>::Output: FromWeak + $bound,
@@ -342,10 +343,10 @@ pub fn reduce<T: Copy>(
     axis: usize,
     opts: ReduceOptions<T>,
     f: impl Fn(T, T) -> T,
-) -> Result<NdArray<T>, ShapeError> {
+) -> Result<NdArray<T>, OpError> {
     check_axis(axis, view.ndim())?;
     if opts.where_.is_some() && opts.initial.is_none() {
-        return Err(ShapeError::ReduceWhereNeedsInitial);
+        return Err(ReductionError::WhereNeedsInitial.into());
     }
     let owned = view.to_owned();
     let mask = opts.where_.map(|m| m.broadcast_to(view.shape()).map(|m| m.to_owned())).transpose()?;
@@ -353,7 +354,7 @@ pub fn reduce<T: Copy>(
     let outer: usize = owned.shape()[..axis].iter().product();
     let inner: usize = owned.shape()[axis + 1..].iter().product();
     if n == 0 && opts.initial.is_none() {
-        return Err(ShapeError::ReduceNoIdentity);
+        return Err(ReductionError::EmptyInput.into());
     }
     let src = owned.as_slice();
     let mut data = Vec::with_capacity(outer * inner);
@@ -370,7 +371,7 @@ pub fn reduce<T: Copy>(
                     None => src[at],
                 });
             }
-            data.push(acc.ok_or(ShapeError::ReduceNoIdentity)?);
+            data.push(acc.ok_or(ReductionError::EmptyInput)?);
         }
     }
     let mut shape: Vec<usize> = owned.shape().to_vec();
@@ -379,7 +380,7 @@ pub fn reduce<T: Copy>(
     } else {
         shape.remove(axis);
     }
-    NdArray::from_vec(data, &shape)
+    NdArray::from_vec(data, &shape).map_err(OpError::from)
 }
 
 pub fn accumulate<T: Copy>(view: &ArrayView<T>, axis: usize, f: impl Fn(T, T) -> T) -> Result<NdArray<T>, ShapeError> {
@@ -498,12 +499,12 @@ mod tests {
         assert_eq!(r.as_slice(), &[4]);
         assert_eq!(
             add_weak_int(&i8s.view(), 300).unwrap_err(),
-            ShapeError::WeakScalarOverflow { value: 300, dtype: "int8" }
+            OpError::WeakScalarOverflow { value: 300, dtype: "int8" }
         );
         let u8s = arr(vec![1u8]);
         assert_eq!(
             add_weak_int(&u8s.view(), -1).unwrap_err(),
-            ShapeError::WeakScalarOverflow { value: -1, dtype: "uint8" }
+            OpError::WeakScalarOverflow { value: -1, dtype: "uint8" }
         );
         assert_eq!(add_weak_int(&u8s.view(), 255).unwrap().as_slice(), &[0u8]);
         assert!(add_weak_int(&u8s.view(), 256).is_err());
@@ -593,14 +594,14 @@ mod tests {
         assert_eq!(keep.shape(), &[2, 1]);
         let seeded = reduce(&m.view(), 1, ReduceOptions { initial: Some(10), ..Default::default() }, sum).unwrap();
         assert_eq!(seeded.as_slice(), &[13, 22]);
-        assert_eq!(reduce(&m.view(), 2, ReduceOptions::default(), sum).unwrap_err(), ShapeError::AxisOutOfBounds { axis: 2, ndim: 2 });
+        assert_eq!(reduce(&m.view(), 2, ReduceOptions::default(), sum).unwrap_err(), OpError::Shape(ShapeError::AxisOutOfBounds { axis: 2, ndim: 2 }));
     }
 
     #[test]
     fn reduce_on_empty_axes_needs_an_identity_or_initial() {
         let empty: NdArray<f64> = NdArray::zeros(&[0, 3]);
         let max = |x: f64, y: f64| if x >= y { x } else { y };
-        assert_eq!(reduce(&empty.view(), 0, ReduceOptions::default(), max).unwrap_err(), ShapeError::ReduceNoIdentity);
+        assert_eq!(reduce(&empty.view(), 0, ReduceOptions::default(), max).unwrap_err(), OpError::Reduction(ReductionError::EmptyInput));
         let with_initial = reduce(&empty.view(), 0, ReduceOptions { initial: Some(-1.0), ..Default::default() }, max).unwrap();
         assert_eq!(with_initial.as_slice(), &[-1.0, -1.0, -1.0]);
         let sum = reduce(&empty.view(), 0, ReduceOptions { initial: Some(0.0), ..Default::default() }, |x, y| x + y).unwrap();
@@ -615,7 +616,7 @@ mod tests {
         let opts = |initial| ReduceOptions { initial, where_: Some(&mask_view), keepdims: false };
         let masked = reduce(&x.view(), 0, opts(Some(0)), |a, b| a + b);
         assert_eq!(masked.unwrap().as_slice(), &[4]);
-        assert_eq!(reduce(&x.view(), 0, opts(None), |a, b| a + b).unwrap_err(), ShapeError::ReduceWhereNeedsInitial);
+        assert_eq!(reduce(&x.view(), 0, opts(None), |a, b| a + b).unwrap_err(), OpError::Reduction(ReductionError::WhereNeedsInitial));
 
         let m = NdArray::from_vec((0..6).collect::<Vec<i64>>(), &[2, 3]).unwrap();
         let row_mask = NdArray::from_vec(vec![true, false, true], &[1, 3]).unwrap();

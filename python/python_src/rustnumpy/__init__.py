@@ -61,6 +61,7 @@ from ._extra import (
     format_float_scientific, typecodes, little_endian, getbufsize, setbufsize, show_config, emath, flatiter,
 )
 from . import _extra as exceptions
+from ._arrayapi import __array_namespace_info__, __array_api_version__
 
 intc = int32
 int_ = int64

@@ -3,6 +3,7 @@ use std::fmt;
 #[derive(Debug)]
 pub enum Error {
     Shape(ShapeError),
+    Op(OpError),
     Linalg(crate::linalg::LinalgError),
     Fft(crate::fft::FftError),
     Random(crate::random::RandomError),
@@ -14,6 +15,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Shape(e) => write!(f, "{e}"),
+            Error::Op(e) => write!(f, "{e}"),
             Error::Linalg(e) => write!(f, "{e}"),
             Error::Fft(e) => write!(f, "{e}"),
             Error::Random(e) => write!(f, "{e}"),
@@ -27,6 +29,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Shape(e) => Some(e),
+            Error::Op(e) => Some(e),
             Error::Linalg(e) => Some(e),
             Error::Fft(e) => Some(e),
             Error::Random(e) => Some(e),
@@ -39,6 +42,11 @@ impl std::error::Error for Error {
 impl From<ShapeError> for Error {
     fn from(e: ShapeError) -> Self {
         Error::Shape(e)
+    }
+}
+impl From<OpError> for Error {
+    fn from(e: OpError) -> Self {
+        Error::Op(e)
     }
 }
 impl From<crate::linalg::LinalgError> for Error {
@@ -69,78 +77,34 @@ impl From<crate::npy::NpyError> for Error {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShapeError {
-
     DataShapeMismatch { data_len: usize, shape: Vec<usize> },
-
     IndexOutOfBounds { index: Vec<usize>, shape: Vec<usize> },
-
     NotBroadcastable { lhs: Vec<usize>, rhs: Vec<usize> },
-
     InvalidSlice { shape: Vec<usize>, ranges: Vec<(usize, usize)> },
-
     IndexRankMismatch { expected: usize, got: usize },
-
     FancyIndexOutOfBounds { axis: usize, index: usize, dim: usize },
-
     BooleanAxisMismatch { axis: usize, expected: usize, got: usize },
-
     FancyIndexNotBroadcastable { lengths: Vec<usize> },
-
     BooleanMaskShapeMismatch { mask_len: usize, array_shape: Vec<usize> },
-
     EmptyArrayList,
-
     AxisOutOfBounds { axis: usize, ndim: usize },
-
     ConcatShapeMismatch { axis: usize, shapes: Vec<Vec<usize>> },
-
     StackShapeMismatch { shapes: Vec<Vec<usize>> },
-
     NotEvenlyDivisible { axis_len: usize, sections: usize },
-
     ReshapeMismatch { size: usize, shape: Vec<isize> },
-
     MultipleUnknownDims,
-
     NotContiguous { shape: Vec<usize>, strides: Vec<isize> },
-
     ZeroSections,
-
-    ChoiceIndexOutOfBounds { index: i64, choices: usize },
-
     ChoiceShapeMismatch { shapes: Vec<Vec<usize>> },
-
-    NegativeIntegerPower,
-
     ZeroDimOperand,
-
     ContractionMismatch { lhs: Vec<usize>, rhs: Vec<usize> },
-
-    InvalidEinsum { reason: String },
-
-    InvalidGufunc { reason: String },
-
-    WeakScalarOverflow { value: i64, dtype: &'static str },
-
-    ReduceNoIdentity,
-
-    ReduceWhereNeedsInitial,
-
     InvalidAxis { axis: isize, ndim: usize },
-
     RepeatedAxis,
-
     PermutationMismatch { axes: usize, ndim: usize },
-
     SqueezeNotOne { axis: usize, size: usize },
-
     AxisCountMismatch { source: usize, destination: usize },
-
     RepeatLengthMismatch { repeats: usize, len: usize },
-
     RollShiftAxisMismatch { shifts: usize, axes: usize },
-
-    InvalidArange,
 }
 
 impl fmt::Display for ShapeError {
@@ -202,24 +166,10 @@ impl fmt::Display for ShapeError {
                 "cannot reshape a non-contiguous view without copying (shape {shape:?}, strides {strides:?}); call to_owned() first"
             ),
             ShapeError::ZeroSections => write!(f, "number sections must be larger than 0"),
-            ShapeError::ChoiceIndexOutOfBounds { index, choices } => {
-                write!(f, "invalid entry {index} in choice array with {choices} choices")
-            }
             ShapeError::ZeroDimOperand => write!(f, "operand does not have enough dimensions (has 0, needs at least 1)"),
             ShapeError::ContractionMismatch { lhs, rhs } => {
                 write!(f, "shapes {lhs:?} and {rhs:?} are not aligned for contraction")
             }
-            ShapeError::InvalidEinsum { reason } => write!(f, "invalid einsum: {reason}"),
-            ShapeError::WeakScalarOverflow { value, dtype } => {
-                write!(f, "Python integer {value} out of bounds for {dtype}")
-            }
-            ShapeError::ReduceNoIdentity => {
-                write!(f, "zero-size array to reduction operation which has no identity")
-            }
-            ShapeError::ReduceWhereNeedsInitial => write!(
-                f,
-                "a reduction with a where mask and no identity needs an explicit initial value"
-            ),
             ShapeError::InvalidAxis { axis, ndim } => {
                 write!(f, "axis {axis} is out of bounds for array of dimension {ndim}")
             }
@@ -241,11 +191,6 @@ impl fmt::Display for ShapeError {
             ShapeError::RollShiftAxisMismatch { shifts, axes } => {
                 write!(f, "'shift' and 'axis' should be scalars or 1D sequences of the same length ({shifts} vs {axes})")
             }
-            ShapeError::InvalidArange => write!(f, "arange needs finite start/stop and a non-zero finite step"),
-            ShapeError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
-            ShapeError::NegativeIntegerPower => {
-                write!(f, "integers to negative integer powers are not allowed")
-            }
             ShapeError::ChoiceShapeMismatch { shapes } => {
                 write!(f, "shapes {shapes:?} could not be broadcast together")
             }
@@ -254,6 +199,57 @@ impl fmt::Display for ShapeError {
 }
 
 impl std::error::Error for ShapeError {}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OpError {
+    Shape(ShapeError),
+    Reduction(crate::reductions::ReductionError),
+    InvalidEinsum { reason: String },
+    InvalidGufunc { reason: String },
+    WeakScalarOverflow { value: i64, dtype: &'static str },
+    NegativeIntegerPower,
+    InvalidArange,
+    ChoiceIndexOutOfBounds { index: i64, choices: usize },
+}
+
+impl fmt::Display for OpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OpError::Shape(e) => write!(f, "{e}"),
+            OpError::Reduction(e) => write!(f, "{e}"),
+            OpError::InvalidEinsum { reason } => write!(f, "invalid einsum: {reason}"),
+            OpError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
+            OpError::WeakScalarOverflow { value, dtype } => write!(f, "Python integer {value} out of bounds for {dtype}"),
+            OpError::NegativeIntegerPower => write!(f, "integers to negative integer powers are not allowed"),
+            OpError::InvalidArange => write!(f, "arange needs finite start/stop and a non-zero finite step"),
+            OpError::ChoiceIndexOutOfBounds { index, choices } => {
+                write!(f, "invalid entry {index} in choice array with {choices} choices")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OpError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            OpError::Shape(e) => Some(e),
+            OpError::Reduction(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::reductions::ReductionError> for OpError {
+    fn from(e: crate::reductions::ReductionError) -> Self {
+        OpError::Reduction(e)
+    }
+}
+
+impl From<ShapeError> for OpError {
+    fn from(e: ShapeError) -> Self {
+        OpError::Shape(e)
+    }
+}
 
 #[cfg(test)]
 mod tests {

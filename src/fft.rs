@@ -6,6 +6,10 @@ use crate::shape::{c_contiguous_strides, offset_of, IndexIter};
 
 pub type Complex64 = Complex<f64>;
 
+pub trait FftFloat: rustfft::FftNum + num_traits::Float + Default {}
+impl FftFloat for f32 {}
+impl FftFloat for f64 {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FftError {
 
@@ -30,12 +34,12 @@ impl std::fmt::Display for FftError {
 
 impl std::error::Error for FftError {}
 
-pub fn to_complex(a: &NdArray) -> NdArray<Complex64> {
-    let data: Vec<Complex64> = a.as_slice().iter().map(|&x| Complex64::new(x, 0.0)).collect();
+pub fn to_complex<T: FftFloat>(a: &NdArray<T>) -> NdArray<Complex<T>> {
+    let data: Vec<Complex<T>> = a.as_slice().iter().map(|&x| Complex::new(x, T::zero())).collect();
     NdArray::from_vec(data, a.shape()).expect("same element count as the input")
 }
 
-pub fn fft(input: &[Complex64]) -> Result<Vec<Complex64>, FftError> {
+pub fn fft<T: FftFloat>(input: &[Complex<T>]) -> Result<Vec<Complex<T>>, FftError> {
     if input.is_empty() {
         return Err(FftError::EmptyInput);
     }
@@ -45,7 +49,7 @@ pub fn fft(input: &[Complex64]) -> Result<Vec<Complex64>, FftError> {
     Ok(buffer)
 }
 
-pub fn ifft(input: &[Complex64]) -> Result<Vec<Complex64>, FftError> {
+pub fn ifft<T: FftFloat>(input: &[Complex<T>]) -> Result<Vec<Complex<T>>, FftError> {
     if input.is_empty() {
         return Err(FftError::EmptyInput);
     }
@@ -53,16 +57,16 @@ pub fn ifft(input: &[Complex64]) -> Result<Vec<Complex64>, FftError> {
     let mut buffer = input.to_vec();
     let mut planner = FftPlanner::new();
     planner.plan_fft_inverse(n).process(&mut buffer);
-    let scale = 1.0 / n as f64;
-    buffer.iter_mut().for_each(|c| *c *= scale);
+    let scale = T::one() / T::from(n).expect("a length converts to a float");
+    buffer.iter_mut().for_each(|c| *c = *c * scale);
     Ok(buffer)
 }
 
-pub fn rfft(input: &[f64]) -> Result<Vec<Complex64>, FftError> {
+pub fn rfft<T: FftFloat>(input: &[T]) -> Result<Vec<Complex<T>>, FftError> {
     if input.is_empty() {
         return Err(FftError::EmptyInput);
     }
-    let complex_input: Vec<Complex64> = input.iter().map(|&x| Complex::new(x, 0.0)).collect();
+    let complex_input: Vec<Complex<T>> = input.iter().map(|&x| Complex::new(x, T::zero())).collect();
     let full = fft(&complex_input)?;
     Ok(full[..input.len() / 2 + 1].to_vec())
 }
@@ -73,25 +77,26 @@ fn fit_to<T: Copy + Default>(input: &[T], len: usize) -> Vec<T> {
     v
 }
 
-pub fn irfft(input: &[Complex64], n: usize) -> Result<Vec<f64>, FftError> {
+pub fn irfft<T: FftFloat>(input: &[Complex<T>], n: usize) -> Result<Vec<T>, FftError> {
     if n == 0 {
         return Err(FftError::EmptyInput);
     }
     let half = fit_to(input, n / 2 + 1);
-    let full: Vec<Complex64> = (0..n).map(|k| if k <= n / 2 { half[k] } else { half[n - k].conj() }).collect();
+    let full: Vec<Complex<T>> = (0..n).map(|k| if k <= n / 2 { half[k] } else { half[n - k].conj() }).collect();
     Ok(ifft(&full)?.iter().map(|c| c.re).collect())
 }
 
-pub fn hfft(input: &[Complex64], n: Option<usize>) -> Result<Vec<f64>, FftError> {
+pub fn hfft<T: FftFloat>(input: &[Complex<T>], n: Option<usize>) -> Result<Vec<T>, FftError> {
     if input.is_empty() {
         return Err(FftError::EmptyInput);
     }
     let n = n.unwrap_or(2 * (input.len() - 1));
-    let conj: Vec<Complex64> = input.iter().map(|c| c.conj()).collect();
-    Ok(irfft(&conj, n)?.into_iter().map(|x| x * n as f64).collect())
+    let conj: Vec<Complex<T>> = input.iter().map(|c| c.conj()).collect();
+    let scale = T::from(n).expect("a length converts to a float");
+    Ok(irfft(&conj, n)?.into_iter().map(|x| x * scale).collect())
 }
 
-pub fn ihfft(input: &[f64], n: Option<usize>) -> Result<Vec<Complex64>, FftError> {
+pub fn ihfft<T: FftFloat>(input: &[T], n: Option<usize>) -> Result<Vec<Complex<T>>, FftError> {
     if input.is_empty() {
         return Err(FftError::EmptyInput);
     }
@@ -100,24 +105,25 @@ pub fn ihfft(input: &[f64], n: Option<usize>) -> Result<Vec<Complex64>, FftError
         return Err(FftError::EmptyInput);
     }
     let spectrum = rfft(&fit_to(input, n))?;
-    Ok(spectrum.into_iter().map(|c| c.conj() / n as f64).collect())
+    let scale = T::from(n).expect("a length converts to a float");
+    Ok(spectrum.into_iter().map(|c| c.conj() / scale).collect())
 }
 
-pub fn fftn(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
+pub fn fftn<T: FftFloat>(input: &NdArray<Complex<T>>) -> Result<NdArray<Complex<T>>, FftError> {
     transform_every_axis(input, fft)
 }
 
-pub fn ifftn(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
+pub fn ifftn<T: FftFloat>(input: &NdArray<Complex<T>>) -> Result<NdArray<Complex<T>>, FftError> {
     transform_every_axis(input, ifft)
 }
 
-pub fn rfftn(input: &NdArray) -> Result<NdArray<Complex64>, FftError> {
+pub fn rfftn<T: FftFloat>(input: &NdArray<T>) -> Result<NdArray<Complex<T>>, FftError> {
     if input.ndim() == 0 || input.shape().contains(&0) {
         return Err(FftError::EmptyInput);
     }
     let last = input.ndim() - 1;
     let n = input.shape()[last];
-    let mut data: Vec<Complex64> = Vec::with_capacity(input.len() / n * (n / 2 + 1));
+    let mut data: Vec<Complex<T>> = Vec::with_capacity(input.len() / n * (n / 2 + 1));
     for line in input.as_slice().chunks(n) {
         data.extend(rfft(line)?);
     }
@@ -129,7 +135,7 @@ pub fn rfftn(input: &NdArray) -> Result<NdArray<Complex64>, FftError> {
     Ok(NdArray::from_vec(data, &shape).expect("half-spectrum element count"))
 }
 
-pub fn irfftn(input: &NdArray<Complex64>, s: Option<&[usize]>) -> Result<NdArray, FftError> {
+pub fn irfftn<T: FftFloat>(input: &NdArray<Complex<T>>, s: Option<&[usize]>) -> Result<NdArray<T>, FftError> {
     if input.ndim() == 0 || input.shape().contains(&0) {
         return Err(FftError::EmptyInput);
     }
@@ -154,48 +160,48 @@ pub fn irfftn(input: &NdArray<Complex64>, s: Option<&[usize]>) -> Result<NdArray
         transform_axis_in_place(&mut data, input.shape(), axis, &ifft)?;
     }
     let width = input.shape()[last];
-    let mut out: Vec<f64> = Vec::with_capacity(out_shape.iter().product());
+    let mut out: Vec<T> = Vec::with_capacity(out_shape.iter().product());
     for line in data.chunks(width) {
         out.extend(irfft(line, out_shape[last])?);
     }
     Ok(NdArray::from_vec(out, &out_shape).expect("real output element count"))
 }
 
-pub fn rfft2(input: &NdArray) -> Result<NdArray<Complex64>, FftError> {
+pub fn rfft2<T: FftFloat>(input: &NdArray<T>) -> Result<NdArray<Complex<T>>, FftError> {
     if input.ndim() != 2 {
         return Err(FftError::Not2D { ndim: input.ndim() });
     }
     rfftn(input)
 }
 
-pub fn irfft2(input: &NdArray<Complex64>, s: Option<&[usize]>) -> Result<NdArray, FftError> {
+pub fn irfft2<T: FftFloat>(input: &NdArray<Complex<T>>, s: Option<&[usize]>) -> Result<NdArray<T>, FftError> {
     if input.ndim() != 2 {
         return Err(FftError::Not2D { ndim: input.ndim() });
     }
     irfftn(input, s)
 }
 
-pub fn fft2(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
+pub fn fft2<T: FftFloat>(input: &NdArray<Complex<T>>) -> Result<NdArray<Complex<T>>, FftError> {
     require_2d(input)?;
     fftn(input)
 }
 
-pub fn ifft2(input: &NdArray<Complex64>) -> Result<NdArray<Complex64>, FftError> {
+pub fn ifft2<T: FftFloat>(input: &NdArray<Complex<T>>) -> Result<NdArray<Complex<T>>, FftError> {
     require_2d(input)?;
     ifftn(input)
 }
 
-fn require_2d(input: &NdArray<Complex64>) -> Result<(), FftError> {
+fn require_2d<T>(input: &NdArray<T>) -> Result<(), FftError> {
     if input.ndim() != 2 {
         return Err(FftError::Not2D { ndim: input.ndim() });
     }
     Ok(())
 }
 
-fn transform_every_axis(
-    input: &NdArray<Complex64>,
-    per_line: impl Fn(&[Complex64]) -> Result<Vec<Complex64>, FftError>,
-) -> Result<NdArray<Complex64>, FftError> {
+fn transform_every_axis<T: FftFloat>(
+    input: &NdArray<Complex<T>>,
+    per_line: impl Fn(&[Complex<T>]) -> Result<Vec<Complex<T>>, FftError>,
+) -> Result<NdArray<Complex<T>>, FftError> {
     if input.ndim() == 0 || input.shape().contains(&0) {
         return Err(FftError::EmptyInput);
     }
@@ -206,11 +212,11 @@ fn transform_every_axis(
     Ok(NdArray::from_vec(data, input.shape()).expect("transform keeps the element count"))
 }
 
-fn transform_axis_in_place(
-    data: &mut [Complex64],
+fn transform_axis_in_place<T: FftFloat>(
+    data: &mut [Complex<T>],
     shape: &[usize],
     axis: usize,
-    per_line: &impl Fn(&[Complex64]) -> Result<Vec<Complex64>, FftError>,
+    per_line: &impl Fn(&[Complex<T>]) -> Result<Vec<Complex<T>>, FftError>,
 ) -> Result<(), FftError> {
     let strides = c_contiguous_strides(shape);
     let axis_stride = strides[axis] as usize;
@@ -221,7 +227,7 @@ fn transform_axis_in_place(
 
     for start_index in IndexIter::new(&line_start_shape) {
         let start = offset_of(&start_index, &strides) as usize;
-        let line: Vec<Complex64> = (0..axis_len).map(|k| data[start + k * axis_stride]).collect();
+        let line: Vec<Complex<T>> = (0..axis_len).map(|k| data[start + k * axis_stride]).collect();
         let transformed = per_line(&line)?;
         for (k, value) in transformed.into_iter().enumerate() {
             data[start + k * axis_stride] = value;
@@ -385,8 +391,8 @@ mod tests {
         );
         assert_complex_close(&ihfft(&[1.0, 2.0, 3.0, 4.0], Some(2)).unwrap(), &[Complex64::new(1.5, 0.0), Complex64::new(-0.5, 0.0)]);
         assert_reals_close(&hfft(&ihfft(&[1.0, 2.0, 3.0, 4.0, 5.0], None).unwrap(), Some(5)).unwrap(), &[1.0, 2.0, 3.0, 4.0, 5.0]);
-        assert_eq!(hfft(&[], None).unwrap_err(), FftError::EmptyInput);
-        assert_eq!(ihfft(&[], None).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(hfft::<f64>(&[], None).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(ihfft::<f64>(&[], None).unwrap_err(), FftError::EmptyInput);
     }
 
     #[test]
@@ -453,8 +459,8 @@ mod tests {
 
     #[test]
     fn rfftn_family_rejects_bad_input() {
-        assert_eq!(rfftn(&NdArray::zeros(&[0, 3])).unwrap_err(), FftError::EmptyInput);
-        assert_eq!(rfft2(&NdArray::zeros(&[2, 2, 2])).unwrap_err(), FftError::Not2D { ndim: 3 });
+        assert_eq!(rfftn(&NdArray::<f64>::zeros(&[0, 3])).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(rfft2(&NdArray::<f64>::zeros(&[2, 2, 2])).unwrap_err(), FftError::Not2D { ndim: 3 });
         let r = rfftn(&NdArray::from_vec(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap()).unwrap();
         assert!(matches!(irfftn(&r, Some(&[3, 2])), Err(FftError::LengthMismatch { .. })));
         assert!(matches!(irfftn(&r, Some(&[2])), Err(FftError::LengthMismatch { .. })));
@@ -549,8 +555,26 @@ mod tests {
 
     #[test]
     fn empty_input_errs() {
-        assert_eq!(fft(&[]).unwrap_err(), FftError::EmptyInput);
-        assert_eq!(rfft(&[]).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(fft::<f64>(&[]).unwrap_err(), FftError::EmptyInput);
+        assert_eq!(rfft::<f64>(&[]).unwrap_err(), FftError::EmptyInput);
         assert_eq!(fftfreq(0, 1.0).unwrap_err(), FftError::EmptyInput);
+    }
+
+    #[test]
+    fn single_precision_transforms_agree_with_double_and_round_trip() {
+        let x64: Vec<Complex<f64>> = [1.0, 2.0, 3.0, 4.0, 0.5].iter().map(|&r| Complex::new(r, -r / 2.0)).collect();
+        let x32: Vec<Complex<f32>> = x64.iter().map(|c| Complex::new(c.re as f32, c.im as f32)).collect();
+        for (a, e) in fft(&x32).unwrap().iter().zip(fft(&x64).unwrap()) {
+            assert!((f64::from(a.re) - e.re).abs() < 1e-5 && (f64::from(a.im) - e.im).abs() < 1e-5);
+        }
+        for (a, e) in ifft(&fft(&x32).unwrap()).unwrap().iter().zip(&x32) {
+            assert!((a.re - e.re).abs() < 1e-5 && (a.im - e.im).abs() < 1e-5);
+        }
+        let real: Vec<f32> = vec![1.0, -2.0, 0.25, 3.0, 5.0, 1.5];
+        let back = irfft(&rfft(&real).unwrap(), real.len()).unwrap();
+        assert!(back.iter().zip(&real).all(|(a, b)| (a - b).abs() < 1e-5));
+        let grid = NdArray::from_vec(real.clone(), &[2, 3]).unwrap();
+        assert_eq!(rfftn(&grid).unwrap().shape(), &[2, 2]);
+        assert_eq!(irfftn(&rfftn(&grid).unwrap(), Some(&[2, 3])).unwrap().shape(), &[2, 3]);
     }
 }

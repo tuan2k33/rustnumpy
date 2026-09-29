@@ -84,11 +84,9 @@ an `ArrayViewMut` from aliasing the same buffer.
 **Not every module is generic over `T` yet.** `ufunc.rs`/`reductions.rs`
 are (bounded per-function by the relevant `std::ops`/`PartialOrd` trait,
 e.g. `add<T: Copy + Add<Output = T>>`), so they work on any of the
-integer/float/complex types `dtype.rs`'s `DType` trait covers. `linalg.rs`/
-`fft.rs`/`random.rs`/`polynomial.rs` are still hardcoded to plain `NdArray`
-(`f64`)/`NdArray<Complex64>`, matching the fact that `faer`/`rustfft` themselves
-only support `f32`/`f64`/`Complex<f32/f64>`, and real NumPy's own
-LAPACK/FFT bindings upcast every input to `float64` internally too.
+integer/float/complex types `dtype.rs`'s `DType` trait covers. `fft.rs` is generic over `f32`/`f64`, `npy.rs` over every dtype;
+`linalg.rs`/`random.rs`/`polynomial.rs` are still hardcoded to plain `NdArray`
+(`f64`), matching the fact that `faer` and real NumPy's LAPACK bindings upcast to `float64`.
 
 ### Module dependency shape (leaves → core → everything else)
 
@@ -104,7 +102,7 @@ masks and `reduce`/`accumulate`/`outer_with`. Integer arithmetic uses
 `WrapAdd`/`WrapSub`/`WrapMul` so it wraps like NumPy in debug builds too;
 don't reintroduce plain `+`/`*` on generic integer `T`. `ndarray.rs` depends only on
 `error`/`shape`/`view`. Everything above that (`ufunc`, `reductions`,
-`index`, `utils`, `linalg`, `fft`, `random`, `polynomial`,
+`index`, `manipulation`, `linalg`, `fft`, `random`, `polynomial`,
 `npy`) depends on `ndarray` (and usually `view` too, for the ones that
 operate on borrowed slices rather than whole owned arrays).
 
@@ -122,7 +120,7 @@ actual data race, and that's load-bearing, not an oversight to "fix".
 ### Error handling
 
 Every fallible public function returns a `Result` with a module-scoped
-error enum (`ShapeError`, `LinalgError`, `FftError`, `RandomError`,
+error enum (`ShapeError`, `OpError`, `LinalgError`, `FftError`, `RandomError`,
 `ReductionError`, `NpyError`) rather than
 panicking — the PyO3 layer (`python/src/lib.rs`) maps each of these to a
 specific Python exception type (`ValueError`, `OSError`, ...) rather than
@@ -165,25 +163,24 @@ rustnumpy/
 │   ├── ndarray.rs             NdArray<T>            (core container, all subpackages build on this)
 │   ├── view.rs                 ArrayView/ArrayViewMut (borrowed views: numpy's non-copying slices)
 │   ├── shape.rs                 strides/broadcast/IndexIter (internal, no numpy.* equivalent)
-│   ├── error.rs                  ShapeError (internal)
+│   ├── error.rs                  ShapeError (shape problems), OpError (everything else an op can reject), Error umbrella
 │   ├── dtype.rs                numpy.dtype            (Kind/DType, NEP 50 promotion, can_cast)
 │   ├── ufunc.rs                numpy's ufunc machinery (add/sub/mul, broadcasting, out=, rayon)
 │   ├── reductions.rs           ndarray reduction methods (sum/mean/var/std/median/percentile/nan*)
 │   ├── index.rs                fancy indexing         (oindex/vindex, NEP 21)
-│   ├── utils.rs                numpy's lib/ layer     (unique/concatenate/stack/split/array_split/interp/gradient)
 │   ├── sorting.rs              sort/argsort/searchsorted (NaN last, stable argsort)
 │   ├── selection.rs            where/select/choose
 │   ├── mathfunc.rs             named elementwise math (sqrt/exp/log/trig/rounding/power/...)
 │   ├── contraction.rs          matmul/dot/tensordot/outer/einsum (one strided odometer engine)
 │   ├── gufunc.rs               NEP 20 generalized ufuncs + vecdot
-│   ├── manipulation.rs         view ops (permute_dims/moveaxis/flip/squeeze/expand_dims/unstack/broadcast_arrays), repeat/roll, unique_*
+│   ├── manipulation.rs         view ops (permute_dims/moveaxis/flip/squeeze/expand_dims/unstack/broadcast_arrays), repeat/roll, unique*/intersect1d/union1d, concatenate/stack/split/array_split/tile, interp/gradient
 │   ├── dispatch.rs             NEP 50 promotion in ufuncs, weak scalars, *_assign, where=, reduce/accumulate/outer
 │   ├── promote.rs              GENERATED promotion/cast tables (scripts/gen_promote.py)
 │   ├── linalg.rs               numpy.linalg           (solve/inv/det/qr/cholesky/eigh/svd/norms), via faer
-│   ├── fft.rs                  numpy.fft              (fft/ifft/rfft/irfft/fftn/...), via rustfft
+│   ├── fft.rs                  numpy.fft              (1-D line kernels on slices + NdArray n-d functions, f32/f64), via rustfft
 │   ├── random.rs               numpy.random           (NEP 19 Generator), via rand_pcg/rand_distr
 │   ├── polynomial.rs           numpy.polynomial       (Chebyshev/Hermite/Laguerre/Legendre)
-│   ├── npy.rs                  .npy format            (NEP 1 read/write)
+│   ├── npy.rs                  .npy format            (NEP 1 read/write, every dtype via NpyElement, Fortran order, big-endian)
 │   └── allocator.rs             NEP 49 Allocator trait (System, BumpArena, PooledVec)
 ├── examples/                  one runnable demo per implementation step (step1_ndarray.rs ... step19_promotion.rs; the old step9_testing was removed with numpy.testing)
 ├── tests/fixtures/*.npy       .npy files written by real NumPy, read back by npy.rs's tests

@@ -43,7 +43,7 @@ pub fn resolve_reshape(size: usize, shape: &[isize]) -> Result<Vec<usize>, Shape
     let mut out: Vec<usize> = shape.iter().map(|&d| d.max(0) as usize).collect();
     match unknown {
         Some(axis) => {
-            if known == 0 || !size.is_multiple_of(known) {
+            if known == 0 || size % known != 0 {
                 return Err(mismatch());
             }
             out[axis] = size / known;

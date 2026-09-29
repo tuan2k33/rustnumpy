@@ -150,14 +150,24 @@ pub fn qr_complete(a: &CArr) -> Result<(CArr, CArr), LinalgError> {
     Ok((from_mat(q.as_ref()), from_mat(full_r.as_ref())))
 }
 
+fn prescaled(a: &CArr) -> (CArr, f64) {
+    let scale = crate::linalg::extreme_scale(a.as_slice().iter().fold(0.0_f64, |m, z| m.max(z.re.abs()).max(z.im.abs())));
+    if scale == 1.0 {
+        return (a.clone(), 1.0);
+    }
+    let data = a.as_slice().iter().map(|z| Complex64::new(z.re / scale, z.im / scale)).collect();
+    (NdArray::from_vec(data, a.shape()).expect("same element count"), scale)
+}
+
 pub fn svd_full(a: &CArr) -> Result<(CArr, Vec<f64>, CArr), LinalgError> {
     if a.is_empty() {
         return Err(LinalgError::Empty);
     }
-    let m = to_mat(a)?;
+    let (scaled, scale) = prescaled(a);
+    let m = to_mat(&scaled)?;
     let s = m.as_ref().svd().map_err(|_| LinalgError::SvdFailed)?;
     let k = m.nrows().min(m.ncols());
-    let values = (0..k).map(|i| s.S()[i].re).collect();
+    let values = (0..k).map(|i| s.S()[i].re * scale).collect();
     Ok((from_mat(s.U()), values, from_mat(s.V().adjoint().to_owned().as_ref())))
 }
 
@@ -204,10 +214,11 @@ pub fn svd(a: &CArr) -> Result<(CArr, Vec<f64>, CArr), LinalgError> {
     if a.is_empty() {
         return Err(LinalgError::Empty);
     }
-    let m = to_mat(a)?;
+    let (scaled, scale) = prescaled(a);
+    let m = to_mat(&scaled)?;
     let s = m.as_ref().thin_svd().map_err(|_| LinalgError::SvdFailed)?;
     let k = m.nrows().min(m.ncols());
-    let values = (0..k).map(|i| s.S()[i].re).collect();
+    let values = (0..k).map(|i| s.S()[i].re * scale).collect();
     let vh = from_mat(s.V().adjoint().to_owned().as_ref());
     Ok((from_mat(s.U()), values, vh))
 }
@@ -234,4 +245,18 @@ mod tests {
         assert!((p - Complex64::new(1.0, 0.0)).norm() < 1e-12);
         assert_eq!(det(&arr(&[(1.0, 0.0), (2.0, 0.0), (2.0, 0.0), (4.0, 0.0)], &[2, 2])).unwrap(), Complex64::new(0.0, 0.0));
     }
+
+    #[test]
+    fn svd_of_matrices_with_extreme_magnitudes_is_rescaled_first() {
+        let a = NdArray::from_vec(
+            vec![Complex64::new(0.0, 2.05e26), Complex64::new(0.0, 0.0), Complex64::new(0.0, 3.2e37), Complex64::new(1.09e154, 7.8e153)],
+            &[2, 2],
+        )
+        .unwrap();
+        let (_, s, _) = svd(&a).unwrap();
+        assert!((s[0] - 1.34e154).abs() / 1.34e154 < 1e-2, "{s:?}");
+        let tiny = NdArray::from_vec(vec![Complex64::new(3e-200, 4e-200)], &[1, 1]).unwrap();
+        assert!((svd(&tiny).unwrap().1[0] - 5e-200).abs() / 5e-200 < 1e-12);
+    }
 }
+

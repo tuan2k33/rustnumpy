@@ -1,4 +1,4 @@
-use crate::error::ShapeError;
+use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
 use crate::shape::{broadcast_shapes, IndexIter};
 use crate::view::ArrayView;
@@ -64,9 +64,9 @@ pub fn choose<T: Copy>(
     indices: &ArrayView<i64>,
     choices: &[&ArrayView<T>],
     mode: ChooseMode,
-) -> Result<NdArray<T>, ShapeError> {
+) -> Result<NdArray<T>, OpError> {
     if choices.is_empty() {
-        return Err(ShapeError::EmptyArrayList);
+        return Err(ShapeError::EmptyArrayList.into());
     }
     let shapes: Vec<&[usize]> = std::iter::once(indices.shape()).chain(choices.iter().map(|c| c.shape())).collect();
     let shape = common_shape(&shapes)?;
@@ -79,14 +79,14 @@ pub fn choose<T: Copy>(
         let k = match mode {
             ChooseMode::Raise if (0..n).contains(&raw) => raw,
             ChooseMode::Raise => {
-                return Err(ShapeError::ChoiceIndexOutOfBounds { index: raw, choices: chs.len() });
+                return Err(OpError::ChoiceIndexOutOfBounds { index: raw, choices: chs.len() });
             }
             ChooseMode::Wrap => raw.rem_euclid(n),
             ChooseMode::Clip => raw.clamp(0, n - 1),
         };
         data.push(chs[k as usize].get(&i).unwrap());
     }
-    NdArray::from_vec(data, &shape)
+    NdArray::from_vec(data, &shape).map_err(OpError::from)
 }
 
 #[cfg(test)]
@@ -147,7 +147,7 @@ mod tests {
         assert_eq!(choose(&wild.view(), &refs, ChooseMode::Clip).unwrap().as_slice(), &[10, 31, 32, 23]);
         assert_eq!(
             choose(&wild.view(), &refs, ChooseMode::Raise).unwrap_err(),
-            ShapeError::ChoiceIndexOutOfBounds { index: -1, choices: 3 }
+            OpError::ChoiceIndexOutOfBounds { index: -1, choices: 3 }
         );
     }
 

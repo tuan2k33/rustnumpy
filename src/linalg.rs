@@ -204,14 +204,31 @@ pub fn eigvals(a: &NdArray) -> Result<Vec<(f64, f64)>, LinalgError> {
     Ok(eig.into_iter().map(|c| (c.re, c.im)).collect())
 }
 
+pub(crate) fn extreme_scale(max_abs: f64) -> f64 {
+    if max_abs.is_finite() && max_abs > 0.0 && !(1e-100..=1e100).contains(&max_abs) {
+        max_abs
+    } else {
+        1.0
+    }
+}
+
+fn prescaled(a: &NdArray) -> (NdArray, f64) {
+    let scale = extreme_scale(a.as_slice().iter().fold(0.0_f64, |m, x| m.max(x.abs())));
+    if scale == 1.0 {
+        return (a.clone(), 1.0);
+    }
+    (NdArray::from_vec(a.as_slice().iter().map(|x| x / scale).collect(), a.shape()).expect("same element count"), scale)
+}
+
 pub fn svd(a: &NdArray) -> Result<(NdArray, Vec<f64>, NdArray), LinalgError> {
     if a.is_empty() {
         return Err(LinalgError::Empty);
     }
-    let a_mat = to_mat(a)?;
+    let (scaled, scale) = prescaled(a);
+    let a_mat = to_mat(&scaled)?;
     let svd = a_mat.as_ref().thin_svd().map_err(|_| LinalgError::SvdFailed)?;
     let k = a_mat.nrows().min(a_mat.ncols());
-    let values: Vec<f64> = (0..k).map(|i| svd.S()[i]).collect();
+    let values: Vec<f64> = (0..k).map(|i| svd.S()[i] * scale).collect();
     let vt = svd.V().transpose();
     Ok((from_mat(svd.U()), values, from_mat(vt)))
 }
@@ -220,10 +237,11 @@ pub fn svd_full(a: &NdArray) -> Result<(NdArray, Vec<f64>, NdArray), LinalgError
     if a.is_empty() {
         return Err(LinalgError::Empty);
     }
-    let a_mat = to_mat(a)?;
+    let (scaled, scale) = prescaled(a);
+    let a_mat = to_mat(&scaled)?;
     let svd = a_mat.as_ref().svd().map_err(|_| LinalgError::SvdFailed)?;
     let k = a_mat.nrows().min(a_mat.ncols());
-    let values: Vec<f64> = (0..k).map(|i| svd.S()[i]).collect();
+    let values: Vec<f64> = (0..k).map(|i| svd.S()[i] * scale).collect();
     let vt = svd.V().transpose();
     Ok((from_mat(svd.U()), values, from_mat(vt)))
 }

@@ -87,3 +87,11 @@ def test_array2string_and_helpers():
     assert rnp.array_str(rnp.array(x)) == np.array_str(x)
     assert rnp.array2string(rnp.array(x), formatter={"float_kind": lambda v: "%.1f!" % v}) == np.array2string(x, formatter={"float_kind": lambda v: "%.1f!" % v})
     assert rnp.get_printoptions()["precision"] == np.get_printoptions()["precision"]
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float32", "complex64"])
+@pytest.mark.parametrize("value", [0.0, -0.0, 1.0, 1e-4, 1e-6, 0.1, 123456.7, 1e6, 999999.9, 1e15, 1000.0, 999.0, 65504.0, 5e-5, -2.5, float("nan"), float("inf")])
+def test_str_of_zero_d_low_precision_arrays_uses_the_scalar_format(dtype, value):
+    arg = complex(value, 1.5) if dtype == "complex64" else value
+    with np.errstate(all="ignore"):
+        assert str(rnp.array(arg, dtype)) == str(np.array(arg, dtype))

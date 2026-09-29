@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
+use crate::dtype::DType;
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 
@@ -17,7 +18,6 @@ pub enum NpyError {
     UnsupportedVersion { major: u8, minor: u8 },
     HeaderParse(String),
     UnsupportedDtype(String),
-    FortranOrderUnsupported,
     Shape(ShapeError),
 }
 
@@ -30,12 +30,8 @@ impl fmt::Display for NpyError {
                 write!(f, "unsupported .npy version {major}.{minor}")
             }
             NpyError::HeaderParse(msg) => write!(f, "could not parse .npy header: {msg}"),
-            NpyError::UnsupportedDtype(descr) => write!(
-                f,
-                "unsupported dtype {descr:?}: this reader only understands little-endian float64 ('<f8')"
-            ),
-            NpyError::FortranOrderUnsupported => {
-                write!(f, "fortran_order=True is not supported yet (only C order)")
+            NpyError::UnsupportedDtype(descr) => {
+                write!(f, "dtype {descr:?} does not match the requested element type (or is not a plain numeric dtype)")
             }
             NpyError::Shape(e) => write!(f, "{e}"),
         }
@@ -56,19 +52,84 @@ impl From<ShapeError> for NpyError {
     }
 }
 
-pub fn save_npy<P: AsRef<Path>>(path: P, arr: &NdArray) -> Result<(), NpyError> {
+pub trait NpyElement: DType {
+    const DESCR: &'static str;
+    const SIZE: usize;
+    const PART: usize;
+    fn put_le(self, out: &mut Vec<u8>);
+    fn take_le(bytes: &[u8]) -> Self;
+}
+
+macro_rules! npy_numeric {
+    ($($t:ty => $descr:expr),* $(,)?) => {$(
+        impl NpyElement for $t {
+            const DESCR: &'static str = $descr;
+            const SIZE: usize = std::mem::size_of::<$t>();
+            const PART: usize = std::mem::size_of::<$t>();
+            fn put_le(self, out: &mut Vec<u8>) {
+                out.extend_from_slice(&self.to_le_bytes());
+            }
+            fn take_le(bytes: &[u8]) -> Self {
+                <$t>::from_le_bytes(bytes.try_into().expect("caller passes exactly SIZE bytes"))
+            }
+        }
+    )*};
+}
+npy_numeric!(i8 => "|i1", u8 => "|u1", i16 => "<i2", u16 => "<u2", i32 => "<i4", u32 => "<u4", i64 => "<i8", u64 => "<u8",
+    half::f16 => "<f2", f32 => "<f4", f64 => "<f8");
+
+impl NpyElement for bool {
+    const DESCR: &'static str = "|b1";
+    const SIZE: usize = 1;
+    const PART: usize = 1;
+    fn put_le(self, out: &mut Vec<u8>) {
+        out.push(u8::from(self));
+    }
+    fn take_le(bytes: &[u8]) -> Self {
+        bytes[0] != 0
+    }
+}
+
+macro_rules! npy_complex {
+    ($($t:ty => $descr:expr),* $(,)?) => {$(
+        impl NpyElement for num_complex::Complex<$t> {
+            const DESCR: &'static str = $descr;
+            const SIZE: usize = 2 * std::mem::size_of::<$t>();
+            const PART: usize = std::mem::size_of::<$t>();
+            fn put_le(self, out: &mut Vec<u8>) {
+                self.re.put_le(out);
+                self.im.put_le(out);
+            }
+            fn take_le(bytes: &[u8]) -> Self {
+                let half = std::mem::size_of::<$t>();
+                num_complex::Complex::new(<$t>::take_le(&bytes[..half]), <$t>::take_le(&bytes[half..]))
+            }
+        }
+    )*};
+}
+npy_complex!(f32 => "<c8", f64 => "<c16");
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpyHeader {
+    pub descr: String,
+    pub fortran_order: bool,
+    pub shape: Vec<usize>,
+}
+
+pub fn save_npy<T: NpyElement, P: AsRef<Path>>(path: P, arr: &NdArray<T>) -> Result<(), NpyError> {
     let file = File::create(path)?;
     write_npy(BufWriter::new(file), arr)
 }
 
-pub fn load_npy<P: AsRef<Path>>(path: P) -> Result<NdArray, NpyError> {
+pub fn load_npy<T: NpyElement, P: AsRef<Path>>(path: P) -> Result<NdArray<T>, NpyError> {
     let file = File::open(path)?;
     read_npy(BufReader::new(file))
 }
 
-pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
+pub fn write_npy<T: NpyElement, W: Write>(mut w: W, arr: &NdArray<T>) -> Result<(), NpyError> {
     let header_dict = format!(
-        "{{'descr': '<f8', 'fortran_order': False, 'shape': {}, }}",
+        "{{'descr': '{}', 'fortran_order': False, 'shape': {}, }}",
+        T::DESCR,
         format_shape_tuple(arr.shape())
     );
 
@@ -91,13 +152,15 @@ pub fn write_npy<W: Write>(mut w: W, arr: &NdArray) -> Result<(), NpyError> {
     w.write_all(&header_len.to_le_bytes())?;
     w.write_all(&header)?;
 
+    let mut bytes = Vec::with_capacity(arr.len() * T::SIZE);
     for &value in arr.as_slice() {
-        w.write_all(&value.to_le_bytes())?;
+        value.put_le(&mut bytes);
     }
+    w.write_all(&bytes)?;
     Ok(())
 }
 
-pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
+pub fn read_header<R: Read>(r: &mut R) -> Result<NpyHeader, NpyError> {
     let mut magic = [0u8; 6];
     r.read_exact(&mut magic)?;
     if &magic != MAGIC {
@@ -126,27 +189,50 @@ pub fn read_npy<R: Read>(mut r: R) -> Result<NdArray, NpyError> {
     r.read_exact(&mut header_bytes)?;
     let header = String::from_utf8_lossy(&header_bytes);
 
-    let descr = extract_str_field(&header, "descr")?;
-    if descr != "<f8" && descr != "=f8" {
+    Ok(NpyHeader {
+        descr: extract_str_field(&header, "descr")?,
+        fortran_order: extract_bool_field(&header, "fortran_order")?,
+        shape: extract_shape_field(&header)?,
+    })
+}
 
-        return Err(NpyError::UnsupportedDtype(descr));
+pub fn read_npy<T: NpyElement, R: Read>(mut r: R) -> Result<NdArray<T>, NpyError> {
+    let header = read_header(&mut r)?;
+
+    let mut chars = header.descr.chars();
+    let order = chars.next().unwrap_or(' ');
+    let big_endian = match order {
+        '>' => T::SIZE > 1,
+        '<' | '=' | '|' => false,
+        _ => return Err(NpyError::UnsupportedDtype(header.descr)),
+    };
+    if !T::DESCR.ends_with(chars.as_str()) {
+        return Err(NpyError::UnsupportedDtype(header.descr));
     }
 
-    if extract_bool_field(&header, "fortran_order")? {
-        return Err(NpyError::FortranOrderUnsupported);
+    let len: usize = header.shape.iter().product();
+    let mut raw = vec![0u8; len * T::SIZE];
+    r.read_exact(&mut raw)?;
+
+    let data: Vec<T> = raw
+        .chunks_exact(T::SIZE.max(1))
+        .map(|chunk| {
+            if big_endian {
+                let mut swapped = chunk.to_vec();
+                swapped.chunks_exact_mut(T::PART).for_each(<[u8]>::reverse);
+                T::take_le(&swapped)
+            } else {
+                T::take_le(chunk)
+            }
+        })
+        .collect();
+
+    if header.fortran_order && header.shape.len() > 1 {
+        let reversed: Vec<usize> = header.shape.iter().rev().copied().collect();
+        let stored = NdArray::from_vec(data, &reversed)?;
+        return Ok(stored.view().transpose().to_owned());
     }
-
-    let shape = extract_shape_field(&header)?;
-    let len: usize = shape.iter().product();
-
-    let mut data = Vec::with_capacity(len);
-    let mut buf8 = [0u8; 8];
-    for _ in 0..len {
-        r.read_exact(&mut buf8)?;
-        data.push(f64::from_le_bytes(buf8));
-    }
-
-    Ok(NdArray::from_vec(data, &shape)?)
+    Ok(NdArray::from_vec(data, &header.shape)?)
 }
 
 fn format_shape_tuple(shape: &[usize]) -> String {
@@ -251,7 +337,7 @@ mod tests {
 
     #[test]
     fn header_is_64_byte_aligned_like_real_numpy() {
-        let a = NdArray::zeros(&[3, 4]);
+        let a = NdArray::<f64>::zeros(&[3, 4]);
         let mut buf = Vec::new();
         write_npy(&mut buf, &a).unwrap();
         let header_len = u16::from_le_bytes([buf[8], buf[9]]) as usize;
@@ -260,7 +346,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_magic() {
-        let err = read_npy(&b"not-an-npy-file-at-all!"[..]).unwrap_err();
+        let err = read_npy::<f64, _>(&b"not-an-npy-file-at-all!"[..]).unwrap_err();
         assert!(matches!(err, NpyError::BadMagic(_)));
     }
 
@@ -270,7 +356,7 @@ mod tests {
 
     #[test]
     fn reads_real_numpy_vector() {
-        let arr = load_npy(fixture("vector_f64.npy")).unwrap();
+        let arr = load_npy::<f64, _>(fixture("vector_f64.npy")).unwrap();
         assert_eq!(arr.shape(), &[5]);
         assert_eq!(arr.as_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0]);
     }
@@ -278,7 +364,7 @@ mod tests {
     #[test]
     fn reads_real_numpy_matrix() {
 
-        let arr = load_npy(fixture("matrix_f64.npy")).unwrap();
+        let arr = load_npy::<f64, _>(fixture("matrix_f64.npy")).unwrap();
         assert_eq!(arr.shape(), &[3, 4]);
         assert_eq!(arr.get(&[0, 0]), Some(0.0));
         assert_eq!(arr.get(&[2, 3]), Some(11.0));
@@ -286,11 +372,11 @@ mod tests {
 
     #[test]
     fn reads_real_numpy_cube_and_scalar() {
-        let cube = load_npy(fixture("cube_f64.npy")).unwrap();
+        let cube = load_npy::<f64, _>(fixture("cube_f64.npy")).unwrap();
         assert_eq!(cube.shape(), &[2, 3, 4]);
         assert_eq!(cube.get(&[1, 2, 3]), Some(23.0));
 
-        let scalar = load_npy(fixture("scalar_f64.npy")).unwrap();
+        let scalar = load_npy::<f64, _>(fixture("scalar_f64.npy")).unwrap();
         assert_eq!(scalar.shape(), &[] as &[usize]);
         assert_eq!(scalar.get(&[]), Some(42.0));
     }
@@ -304,5 +390,64 @@ mod tests {
 
         let reference = std::fs::read(fixture("matrix_f64.npy")).unwrap();
         assert_eq!(ours, reference);
+    }
+
+    fn load<T: NpyElement>(name: &str) -> NdArray<T> {
+        load_npy(fixture(name)).unwrap()
+    }
+
+    #[test]
+    fn reads_every_dtype_written_by_real_numpy() {
+        assert_eq!(load::<i32>("vector_i32.npy").as_slice(), &[-2, 0, 7, i32::MAX]);
+        let u = load::<u8>("matrix_u8.npy");
+        assert_eq!((u.shape(), u.get(&[2, 3])), (&[3, 4][..], Some(11)));
+        assert_eq!(load::<f32>("vector_f32.npy").as_slice(), &[0.5, -1.25, 3.0e10]);
+        let h = load::<half::f16>("vector_f16.npy");
+        assert_eq!(h.as_slice().iter().map(|x| x.to_f32()).collect::<Vec<_>>(), vec![0.5, -1.25, 65504.0]);
+        assert_eq!(load::<bool>("vector_bool.npy").as_slice(), &[true, false, true]);
+        let c = load::<num_complex::Complex<f64>>("vector_c16.npy");
+        assert_eq!(c.as_slice(), &[num_complex::Complex::new(1.0, 2.0), num_complex::Complex::new(0.0, -0.5), num_complex::Complex::new(3.0, 0.0)]);
+        let c8 = load::<num_complex::Complex<f32>>("vector_c8.npy");
+        assert_eq!(c8.as_slice(), &[num_complex::Complex::new(1.0, 2.0), num_complex::Complex::new(0.0, -0.5)]);
+    }
+
+    #[test]
+    fn reads_fortran_order_and_big_endian_and_empty() {
+        let f = load::<f64>("matrix_f64_fortran.npy");
+        assert_eq!(f.shape(), &[3, 4]);
+        assert_eq!(f.get(&[1, 2]), Some(6.0));
+        assert_eq!(f.as_slice(), load::<f64>("matrix_f64.npy").as_slice());
+        assert_eq!(load::<i32>("vector_i4_bigendian.npy").as_slice(), &[1, -2, 300000]);
+        let e = load::<f64>("empty_f64.npy");
+        assert_eq!((e.shape(), e.len()), (&[0, 3][..], 0));
+    }
+
+    #[test]
+    fn wrong_element_type_is_reported_not_reinterpreted() {
+        let err = load_npy::<f32, _>(fixture("vector_f64.npy")).unwrap_err();
+        assert!(matches!(err, NpyError::UnsupportedDtype(ref d) if d == "<f8"));
+        assert!(load_npy::<i64, _>(fixture("vector_i32.npy")).is_err());
+    }
+
+    #[test]
+    fn every_dtype_round_trips_and_matches_real_numpy_bytes() {
+        fn same<T: NpyElement + PartialEq + std::fmt::Debug>(values: Vec<T>, fixture_name: &str) {
+            let a = NdArray::from_vec(values, &[3]).unwrap();
+            let mut ours = Vec::new();
+            write_npy(&mut ours, &a).unwrap();
+            assert_eq!(read_npy::<T, _>(&ours[..]).unwrap().as_slice(), a.as_slice());
+            if !fixture_name.is_empty() {
+                assert_eq!(ours, std::fs::read(fixture(fixture_name)).unwrap(), "{fixture_name}");
+            }
+        }
+        same(vec![true, false, true], "vector_bool.npy");
+        same(vec![0.5f32, -1.25, 3.0e10], "vector_f32.npy");
+        same(vec![0.5f64, -1.25, 1e300], "");
+        same(vec![i8::MIN, 0, i8::MAX], "");
+        same(vec![u16::MAX, 0, 7], "");
+        same(vec![i64::MIN, 0, i64::MAX], "");
+        same(vec![u64::MAX, 0, 7], "");
+        let c = vec![num_complex::Complex::new(1.0f64, 2.0), num_complex::Complex::new(-0.0, -0.5), num_complex::Complex::new(3.0, 0.0)];
+        same(c, "vector_c16.npy");
     }
 }

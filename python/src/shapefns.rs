@@ -163,9 +163,10 @@ contract2!(outer, rustnumpy::outer);
 
 #[pyfunction]
 pub fn vecdot(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
+    let mut pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
     if pair[0].is_complex() {
-        return Err(unsupported("vecdot conjugates its first argument for complex input; not bound"));
+        let conj = py.import("rustnumpy._core")?.getattr("conjugate")?;
+        pair[0] = Arr::from_object(py, &conj.call1((crate::pyarray::wrap(py, crate::pyarray::PyArray::from_arr(pair[0].clone_arr()))?,))?)?;
     }
     let result = with_list!(pair, l => Arr::from(rustnumpy::vecdot(&l[0].view(), &l[1].view()).map_err(shape_err)?));
     out(py, result)
@@ -240,12 +241,12 @@ pub fn select(py: Python<'_>, condlist: &Bound<'_, PyAny>, choicelist: &Bound<'_
     let choices = common_all(&list_of(py, choicelist)?)?;
     let default_operand = match default {
         Some(d) => Operand::parse(py, d)?,
-        None => Operand::WeakInt(0),
+        None => Operand::WeakInt(0, 0.0),
     };
     let (target, dflt) = match default_operand {
-        Operand::WeakInt(v) => {
+        Operand::WeakInt(v, f) => {
             let name = if choices[0].is_bool() { "int64" } else { choices[0].dtype_name() };
-            (name, astype(&Arr::scalar(v), name)?)
+            (name, crate::ops::materialize(Operand::WeakInt(v, f), name)?)
         }
         Operand::WeakFloat(v) => {
             let name = if choices[0].is_bool() || choices[0].is_int() { "float64" } else { choices[0].dtype_name() };

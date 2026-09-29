@@ -45,8 +45,10 @@ fn arg_like(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, want_max:
         arr = astype(&arr, "uint8")?;
     }
     let ax = axis.map(|x| norm_axis(x, arr.ndim())).transpose()?;
-    let fail = |e: rustnumpy::ShapeError| match e {
-        rustnumpy::ShapeError::ReduceNoIdentity => PyValueError::new_err("attempt to get argmax of an empty sequence"),
+    let fail = |e: rustnumpy::OpError| match e {
+        rustnumpy::OpError::Reduction(rustnumpy::reductions::ReductionError::EmptyInput) => {
+            PyValueError::new_err("attempt to get argmax of an empty sequence")
+        }
         other => shape_err(other),
     };
     let r = match &arr {

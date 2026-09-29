@@ -22,14 +22,13 @@ pub mod selection;
 pub mod shape;
 pub mod sorting;
 pub mod ufunc;
-pub mod utils;
 pub mod view;
 
 pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
 pub use contraction::{dot, einsum, matmul, outer, tensordot, tensordot_n};
 pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
-pub use error::{Error, ShapeError};
-pub use fft::{
+pub use error::{Error, OpError, ShapeError};
+pub use fft::{FftFloat, 
     fft, fft2, fftfreq, fftn, fftshift, hfft, ifft, ifft2, ifftn, ifftshift, ihfft, irfft, irfft2,
     irfftn, rfft, rfft2, rfftfreq, rfftn, to_complex, Complex64, FftError,
 };
@@ -42,8 +41,8 @@ pub use linalg::{
 };
 pub use contraction::{cross, kron, trace};
 pub use manipulation::{
-    broadcast_arrays, expand_dims, repeat, roll, unique_all, unique_counts, unique_inverse,
-    unique_values, unstack, UniqueAll,
+    array_split, array_split_at, broadcast_arrays, concat, concatenate, expand_dims, gradient, interp, intersect1d, repeat, roll,
+    split, stack, tile, union1d, unique, unique_all, unique_counts, unique_inverse, unique_values, unstack, UniqueAll,
 };
 pub use mathfunc::Arith;
 pub use ndarray::NdArray;
@@ -60,8 +59,5 @@ pub use sorting::{argsort, searchsorted, sort, Side};
 pub use ufunc::{
     add, add_broadcast, add_parallel, map, map_parallel, mul, mul_parallel, multiply, sub,
     subtract, zip_with, zip_with_into, zip_with_parallel,
-};
-pub use utils::{
-    array_split, array_split_at, concat, concatenate, gradient, intersect1d, interp, split, stack, tile, union1d, unique,
 };
 pub use view::{ArrayView, ArrayViewMut};

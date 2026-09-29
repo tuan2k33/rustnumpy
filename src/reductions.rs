@@ -70,6 +70,8 @@ pub enum ReductionError {
 
     EmptyInput,
 
+    WhereNeedsInitial,
+
     PercentileOutOfRange { q: f64 },
 
     InvalidBins,
@@ -84,7 +86,10 @@ pub enum ReductionError {
 impl std::fmt::Display for ReductionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReductionError::EmptyInput => write!(f, "zero-size array has no reduction identity"),
+            ReductionError::EmptyInput => write!(f, "zero-size array to reduction operation which has no identity"),
+            ReductionError::WhereNeedsInitial => {
+                write!(f, "a reduction with a where mask and no identity needs an explicit initial value")
+            }
             ReductionError::PercentileOutOfRange { q } => {
                 write!(f, "percentile {q} must be in the range [0, 100]")
             }

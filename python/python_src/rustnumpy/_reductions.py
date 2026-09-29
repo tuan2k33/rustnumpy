@@ -465,6 +465,8 @@ def _cumulative(native, a, axis, dtype, out):
     else:
         (ax,) = _axes(axis, a.ndim) if a.ndim else (0,)
         res = native(a, ax)
+    if dtype is not None and asarray(res).dtype != a.dtype:
+        res = asarray(res).astype(a.dtype)
     return _write_out(res, out, True, "same_kind", "cumulative") if out is not None else res
 
 

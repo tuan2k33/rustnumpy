@@ -1,4 +1,4 @@
-use crate::error::ShapeError;
+use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
 use crate::shape::broadcast_shapes;
 use crate::view::ArrayView;
@@ -9,11 +9,11 @@ pub struct Signature {
     pub outputs: Vec<Vec<String>>,
 }
 
-fn bad(reason: impl Into<String>) -> ShapeError {
-    ShapeError::InvalidGufunc { reason: reason.into() }
+fn bad(reason: impl Into<String>) -> OpError {
+    OpError::InvalidGufunc { reason: reason.into() }
 }
 
-fn parse_side(side: &str) -> Result<Vec<Vec<String>>, ShapeError> {
+fn parse_side(side: &str) -> Result<Vec<Vec<String>>, OpError> {
     let mut groups = Vec::new();
     let mut rest = side;
     while !rest.is_empty() {
@@ -42,7 +42,7 @@ fn parse_side(side: &str) -> Result<Vec<Vec<String>>, ShapeError> {
 }
 
 impl Signature {
-    pub fn parse(text: &str) -> Result<Self, ShapeError> {
+    pub fn parse(text: &str) -> Result<Self, OpError> {
         let clean: String = text.chars().filter(|c| !c.is_whitespace()).collect();
         let (lhs, rhs) = clean.split_once("->").ok_or_else(|| bad("signature needs '->'"))?;
         let (inputs, outputs) = (parse_side(lhs)?, parse_side(rhs)?);
@@ -67,7 +67,7 @@ pub fn gufunc<T: Copy + Default>(
     signature: &str,
     inputs: &[&ArrayView<T>],
     kernel: impl Fn(&[&[T]], &mut [&mut [T]], &[usize]),
-) -> Result<Vec<NdArray<T>>, ShapeError> {
+) -> Result<Vec<NdArray<T>>, OpError> {
     let sig = Signature::parse(signature)?;
     if inputs.len() != sig.inputs.len() {
         return Err(bad(format!("signature expects {} inputs, got {}", sig.inputs.len(), inputs.len())));
@@ -115,7 +115,7 @@ pub fn gufunc<T: Copy + Default>(
             let full: Vec<usize> = loop_shape.iter().copied().chain(core_shape.iter().copied()).collect();
             Ok((op.broadcast_to(&full)?, core_shape.iter().product()))
         })
-        .collect::<Result<_, ShapeError>>()?;
+        .collect::<Result<_, OpError>>()?;
     let out_shapes: Vec<Vec<usize>> = sig
         .outputs
         .iter()
@@ -135,10 +135,10 @@ pub fn gufunc<T: Copy + Default>(
             .collect();
         kernel(&in_refs, &mut out_refs, &sizes);
     }
-    outs.into_iter().zip(&out_shapes).map(|(data, shape)| NdArray::from_vec(data, shape)).collect()
+    outs.into_iter().zip(&out_shapes).map(|(data, shape)| NdArray::from_vec(data, shape).map_err(OpError::from)).collect()
 }
 
-pub fn vecdot<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
+pub fn vecdot<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, OpError>
 where
     T: Copy + Default + crate::dispatch::WrapAdd + crate::dispatch::WrapMul,
 {
@@ -185,11 +185,11 @@ mod tests {
         let ones = |shape: &[usize]| NdArray::from_vec(vec![1.0; shape.iter().product()], shape).unwrap();
         assert!(matches!(
             vecdot(&ones(&[2, 3, 4]).view(), &ones(&[5, 4]).view()),
-            Err(ShapeError::NotBroadcastable { .. })
+            Err(OpError::Shape(ShapeError::NotBroadcastable { .. }))
         ));
-        assert!(matches!(vecdot(&ones(&[2, 4]).view(), &ones(&[2, 5]).view()), Err(ShapeError::InvalidGufunc { .. })));
+        assert!(matches!(vecdot(&ones(&[2, 4]).view(), &ones(&[2, 5]).view()), Err(OpError::InvalidGufunc { .. })));
         let scalar = NdArray::from_vec(vec![3.0], &[]).unwrap();
-        assert!(matches!(vecdot(&scalar.view(), &ones(&[4]).view()), Err(ShapeError::InvalidGufunc { .. })));
+        assert!(matches!(vecdot(&scalar.view(), &ones(&[4]).view()), Err(OpError::InvalidGufunc { .. })));
     }
 
     #[test]
@@ -233,8 +233,8 @@ mod tests {
     fn output_only_core_dims_and_wrong_operand_counts_are_rejected() {
         let a = ar(3, &[3]);
         let err = gufunc::<f64>("(n)->(m)", &[&a.view()], |_, _, _| {}).unwrap_err();
-        assert!(matches!(err, ShapeError::InvalidGufunc { .. }));
+        assert!(matches!(err, OpError::InvalidGufunc { .. }));
         let err = gufunc::<f64>("(n),(n)->()", &[&a.view()], |_, _, _| {}).unwrap_err();
-        assert!(matches!(err, ShapeError::InvalidGufunc { .. }));
+        assert!(matches!(err, OpError::InvalidGufunc { .. }));
     }
 }

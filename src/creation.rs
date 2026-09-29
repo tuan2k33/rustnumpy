@@ -1,4 +1,4 @@
-use crate::error::ShapeError;
+use crate::error::OpError;
 use crate::ndarray::NdArray;
 
 pub fn full<T: Clone>(shape: &[usize], value: T) -> NdArray<T> {
@@ -6,24 +6,24 @@ pub fn full<T: Clone>(shape: &[usize], value: T) -> NdArray<T> {
     NdArray::from_vec(vec![value; n], shape).expect("element count matches the shape")
 }
 
-pub fn arange_len(start: f64, stop: f64, step: f64) -> Result<usize, ShapeError> {
+pub fn arange_len(start: f64, stop: f64, step: f64) -> Result<usize, OpError> {
     if step == 0.0 || !step.is_finite() || !start.is_finite() || !stop.is_finite() {
-        return Err(ShapeError::InvalidArange);
+        return Err(OpError::InvalidArange);
     }
     let n = ((stop - start) / step).ceil();
     Ok(if n > 0.0 { n as usize } else { 0 })
 }
 
-pub fn arange_f64(start: f64, stop: f64, step: f64) -> Result<NdArray<f64>, ShapeError> {
+pub fn arange_f64(start: f64, stop: f64, step: f64) -> Result<NdArray<f64>, OpError> {
     let n = arange_len(start, stop, step)?;
     let delta = (start + step) - start;
     let data: Vec<f64> = (0..n).map(|i| start + i as f64 * delta).collect();
-    NdArray::from_vec(data, &[n])
+    NdArray::from_vec(data, &[n]).map_err(OpError::from)
 }
 
-pub fn arange_i64(start: i64, stop: i64, step: i64) -> Result<NdArray<i64>, ShapeError> {
+pub fn arange_i64(start: i64, stop: i64, step: i64) -> Result<NdArray<i64>, OpError> {
     if step == 0 {
-        return Err(ShapeError::InvalidArange);
+        return Err(OpError::InvalidArange);
     }
     let mut data = Vec::new();
     let mut v = start;
@@ -35,7 +35,7 @@ pub fn arange_i64(start: i64, stop: i64, step: i64) -> Result<NdArray<i64>, Shap
         }
     }
     let n = data.len();
-    NdArray::from_vec(data, &[n])
+    NdArray::from_vec(data, &[n]).map_err(OpError::from)
 }
 
 pub fn linspace(start: f64, stop: f64, num: usize, endpoint: bool) -> NdArray<f64> {

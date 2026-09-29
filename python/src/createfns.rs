@@ -127,13 +127,13 @@ pub fn arange(
     let step = step.unwrap_or(&one);
     let ops = [Operand::parse(py, lo)?, Operand::parse(py, hi)?, Operand::parse(py, step)?];
     let all_int = ops.iter().all(|o| match o {
-        Operand::WeakInt(_) => true,
+        Operand::WeakInt(..) => true,
         Operand::Arr(a) => a.ndim() == 0 && matches!(a, Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)),
         Operand::WeakFloat(_) | Operand::WeakComplex(..) => false,
     });
     let as_f64 = |o: &Operand| -> PyResult<f64> {
         match o {
-            Operand::WeakInt(v) => Ok(*v as f64),
+            Operand::WeakInt(_, f) => Ok(*f),
             Operand::WeakFloat(v) => Ok(*v),
             Operand::WeakComplex(..) => Err(pyo3::exceptions::PyTypeError::new_err("arange does not accept complex bounds")),
             Operand::Arr(a) => match astype(a, "float64")? {
@@ -145,7 +145,7 @@ pub fn arange(
     let result = if all_int {
         let as_i64 = |o: &Operand| -> PyResult<i64> {
             match o {
-                Operand::WeakInt(v) => Ok(*v),
+                Operand::WeakInt(v, _) => i64::try_from(*v).map_err(|_| pyo3::exceptions::PyOverflowError::new_err("Python int too large to convert to C long")),
                 other => Ok(as_f64(other)? as i64),
             }
         };

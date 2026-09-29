@@ -1,22 +1,23 @@
 use crate::casting::astype;
-use crate::dynarray::{unsupported, value_err, Arr, C32, C64};
+use crate::dynarray::{value_err, Arr, C32, C64};
 use crate::dispatch2;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyInt};
 use rustnumpy::dispatch::{zip_with_promoted, Common, Out};
-use rustnumpy::{NdArray, ShapeError};
+use rustnumpy::{NdArray, OpError, ShapeError};
 
-pub fn shape_err(e: ShapeError) -> PyErr {
-    match e {
-        ShapeError::WeakScalarOverflow { .. } => PyOverflowError::new_err(e.to_string()),
+pub fn shape_err<E: Into<OpError>>(e: E) -> PyErr {
+    match e.into() {
+        e @ OpError::WeakScalarOverflow { .. } => PyOverflowError::new_err(e.to_string()),
         other => value_err(other),
     }
 }
 
 pub enum Operand {
     Arr(Arr),
-    WeakInt(i64),
+    /// Python int: exact value (saturated beyond i128) and its float value (inf when unconvertible).
+    WeakInt(i128, f64),
     WeakFloat(f64),
     WeakComplex(f64, f64),
 }
@@ -24,13 +25,14 @@ pub enum Operand {
 impl Operand {
     pub fn parse(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Operand> {
         if obj.is_exact_instance_of::<PyInt>() {
-            return match obj.extract::<i64>() {
-                Ok(v) => Ok(Operand::WeakInt(v)),
-                Err(_) => match obj.extract::<u64>() {
-                    Ok(v) => Ok(Operand::Arr(Arr::scalar(v))),
-                    Err(_) => Err(unsupported("Python int outside the int64/uint64 range")),
-                },
-            };
+            return Ok(match obj.extract::<i128>() {
+                Ok(v) => Operand::WeakInt(v, v as f64),
+                Err(_) => {
+                    let negative = obj.lt(0)?;
+                    let f = obj.extract::<f64>().unwrap_or(if negative { f64::NEG_INFINITY } else { f64::INFINITY });
+                    Operand::WeakInt(if negative { i128::MIN } else { i128::MAX }, f)
+                }
+            });
         }
         if obj.is_exact_instance_of::<PyFloat>() {
             return Ok(Operand::WeakFloat(obj.extract::<f64>()?));
@@ -45,7 +47,7 @@ impl Operand {
     pub fn into_arr(self, _py: Python<'_>) -> PyResult<Arr> {
         match self {
             Operand::Arr(a) => Ok(a),
-            Operand::WeakInt(v) => Ok(Arr::scalar(v)),
+            Operand::WeakInt(v, f) => weak_int_scalar(v, f, None),
             Operand::WeakFloat(v) => Ok(Arr::scalar(v)),
             Operand::WeakComplex(re, im) => Ok(Arr::scalar(C64::new(re, im))),
         }
@@ -55,7 +57,7 @@ impl Operand {
         use crate::typefns::Weak;
         match self {
             Operand::Arr(_) => None,
-            Operand::WeakInt(_) => Some(Weak::Int),
+            Operand::WeakInt(..) => Some(Weak::Int),
             Operand::WeakFloat(_) => Some(Weak::Float),
             Operand::WeakComplex(..) => Some(Weak::Complex),
         }
@@ -82,17 +84,36 @@ pub fn common_name(a: &Operand, b: &Operand) -> &'static str {
     crate::casting::kind_name(kind)
 }
 
-pub fn materialize(op: Operand, target: &'static str) -> PyResult<Arr> {
-    if let Operand::WeakInt(v) = &op {
-        if let Some((lo, hi)) = int_range(target) {
-            if (*v as i128) < lo || (*v as i128) > hi {
-                return Err(PyOverflowError::new_err(format!("Python integer {v} out of bounds for {target}")));
+fn weak_int_scalar(v: i128, f: f64, target: Option<&'static str>) -> PyResult<Arr> {
+    let overflow = |t: &str| PyOverflowError::new_err(format!("Python integer {} out of bounds for {t}", if v == i128::MAX || v == i128::MIN { "value".to_string() } else { v.to_string() }));
+    if let Some(t) = target {
+        if let Some((lo, hi)) = int_range(t) {
+            if v < lo || v > hi {
+                return Err(overflow(t));
             }
+        } else if f.is_infinite() {
+            return Err(PyOverflowError::new_err("int too large to convert to float"));
         }
     }
+    let base = if let Ok(x) = i64::try_from(v) {
+        Arr::scalar(x)
+    } else if let Ok(x) = u64::try_from(v) {
+        Arr::scalar(x)
+    } else if f.is_infinite() {
+        return Err(overflow("int64"));
+    } else {
+        Arr::scalar(f)
+    };
+    match target {
+        Some(t) if base.dtype_name() != t => astype(&base, t),
+        _ => Ok(base),
+    }
+}
+
+pub fn materialize(op: Operand, target: &'static str) -> PyResult<Arr> {
     let arr = match op {
         Operand::Arr(a) => a,
-        Operand::WeakInt(v) => Arr::scalar(v),
+        Operand::WeakInt(v, f) => return weak_int_scalar(v, f, Some(target)),
         Operand::WeakFloat(v) => Arr::scalar(v),
         Operand::WeakComplex(re, im) => Arr::scalar(C64::new(re, im)),
     };

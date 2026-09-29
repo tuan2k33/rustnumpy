@@ -76,8 +76,10 @@ def test_2d_wrappers():
     x, z = rdata((4, 6), 7), cdata((4, 6), 8)
     close(rnp.fft.fft2(z), np.fft.fft2(z))
     close(rnp.fft.ifft2(z), np.fft.ifft2(z))
-    with pytest.raises(NotImplementedError):
-        rnp.fft.fft2(cdata((2, 2, 2), 9))
+    c3 = cdata((2, 3, 4), 9)
+    close(rnp.fft.fft2(c3), np.fft.fft2(c3))
+    close(rnp.fft.ifft2(c3, s=(3, 2)), np.fft.ifft2(c3, s=(3, 2)))
+    close(rnp.fft.rfft2(rdata((3, 4, 5), 10), axes=(0, 2)), np.fft.rfft2(rdata((3, 4, 5), 10), axes=(0, 2)))
 
 
 @pytest.mark.parametrize("n", [1, 2, 5, 8, 9])
@@ -90,10 +92,17 @@ def test_frequencies_and_shifts(n, d):
     assert_same(rnp.fft.ifftshift(x), np.fft.ifftshift(x))
 
 
-def test_errors_and_unsupported_options():
+def test_errors_and_norm_options():
     with pytest.raises(ValueError):
         rnp.fft.fft(np.zeros(0))
-    with pytest.raises(NotImplementedError):
-        rnp.fft.fft(np.ones(4), norm="ortho")
-    with pytest.raises(NotImplementedError):
-        rnp.fft.fftn(np.ones((2, 2)), axes=(0,))
+    with pytest.raises(ValueError):
+        rnp.fft.fft(np.ones(4), norm="bogus")
+    z = cdata((3, 6), 11)
+    for norm in (None, "backward", "ortho", "forward"):
+        for name in ("fft", "ifft", "rfft", "hfft", "ihfft", "irfft"):
+            src = rdata((3, 6), 12) if name in ("rfft", "ihfft") else z
+            close(getattr(rnp.fft, name)(src, norm=norm), getattr(np.fft, name)(src, norm=norm))
+        close(rnp.fft.fftn(z, axes=(0,), norm=norm), np.fft.fftn(z, axes=(0,), norm=norm))
+        close(rnp.fft.irfftn(z, s=(3, 8), norm=norm), np.fft.irfftn(z, s=(3, 8), norm=norm))
+    with pytest.raises(ValueError):
+        rnp.fft.fftn(z, s=(2, 2, 2))

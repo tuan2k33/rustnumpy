@@ -1,5 +1,6 @@
+use crate::reductions::ReductionError;
 use crate::dispatch::{accumulate, WrapAdd, WrapMul};
-use crate::error::ShapeError;
+use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
 use crate::reductions::FloatIsh;
 use crate::shape::broadcast_shapes;
@@ -235,20 +236,20 @@ fn lane_extreme<T: FloatIsh>(lane: &[T], want_max: bool) -> usize {
     best
 }
 
-pub fn arg_extreme<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>, want_max: bool) -> Result<NdArray<usize>, ShapeError> {
+pub fn arg_extreme<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>, want_max: bool) -> Result<NdArray<usize>, OpError> {
     let owned = a.to_owned();
     if owned.is_empty() && axis.is_none() {
-        return Err(ShapeError::ReduceNoIdentity);
+        return Err(ReductionError::EmptyInput.into());
     }
     match axis {
-        None => NdArray::from_vec(vec![lane_extreme(owned.as_slice(), want_max)], &[]),
+        None => NdArray::from_vec(vec![lane_extreme(owned.as_slice(), want_max)], &[]).map_err(OpError::from),
         Some(ax) => {
             if ax >= owned.ndim() {
-                return Err(ShapeError::AxisOutOfBounds { axis: ax, ndim: owned.ndim() });
+                return Err(ShapeError::AxisOutOfBounds { axis: ax, ndim: owned.ndim() }.into());
             }
             let n = owned.shape()[ax];
             if n == 0 {
-                return Err(ShapeError::ReduceNoIdentity);
+                return Err(ReductionError::EmptyInput.into());
             }
             let outer: usize = owned.shape()[..ax].iter().product();
             let inner: usize = owned.shape()[ax + 1..].iter().product();
@@ -263,16 +264,16 @@ pub fn arg_extreme<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>, want_max:
             }
             let mut shape = owned.shape().to_vec();
             shape.remove(ax);
-            NdArray::from_vec(out, &shape)
+            NdArray::from_vec(out, &shape).map_err(OpError::from)
         }
     }
 }
 
-pub fn argmax<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>) -> Result<NdArray<usize>, ShapeError> {
+pub fn argmax<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>) -> Result<NdArray<usize>, OpError> {
     arg_extreme(a, axis, true)
 }
 
-pub fn argmin<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>) -> Result<NdArray<usize>, ShapeError> {
+pub fn argmin<T: FloatIsh>(a: &ArrayView<T>, axis: Option<usize>) -> Result<NdArray<usize>, OpError> {
     arg_extreme(a, axis, false)
 }
 

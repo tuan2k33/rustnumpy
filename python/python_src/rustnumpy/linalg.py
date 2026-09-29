@@ -3,10 +3,18 @@ from ._core import LinAlgError, asarray
 from . import _core as _c
 from ._core import matmul
 from ._numeric import cross, outer, vecdot
-from ._manip import trace
-from ._manip import diagonal, matrix_transpose, swapaxes, transpose as _transpose, moveaxis
+from ._manip import matrix_transpose, swapaxes, transpose as _transpose, moveaxis
 from ._numeric import tensordot
 import collections as _collections
+from . import _manip
+
+
+def diagonal(x, /, *, offset=0):
+    return _manip.diagonal(x, offset, -2, -1)
+
+
+def trace(x, /, *, offset=0, dtype=None):
+    return _manip.trace(x, offset, -2, -1, dtype)
 
 def _count(shape):
     n = 1
@@ -30,11 +38,55 @@ def _stack(fn, a, *rest, core_dims=2, **kw):
     count = _count(lead)
     flat = a.reshape((count,) + tuple(a.shape[-core_dims:]))
     if count == 0:
-        probe = _core.zeros((1,) + tuple(a.shape[-core_dims:]), a.dtype)
-        shape = tuple(asarray(fn(probe[0], *rest, **kw)).shape)
-        return _core.zeros(lead + shape, asarray(fn(probe[0], *rest, **kw)).dtype)
+        res = asarray(fn(_probe(a, core_dims), *rest, **kw))
+        return _core.zeros(lead + tuple(res.shape), res.dtype)
     outs = [asarray(fn(flat[i], *rest, **kw)) for i in range(count)]
     return _c.stack(outs, axis=0).reshape(lead + tuple(outs[0].shape))
+
+
+def _probe(a, core_dims):
+    """A well-conditioned stand-in matrix, used only to learn the output shapes/dtypes for empty stacks."""
+    shape = tuple(a.shape[-core_dims:])
+    if core_dims == 2:
+        return _core.eye(shape[0], shape[1], 0, a.dtype)
+    return _core.zeros(shape, a.dtype)
+
+
+def _rdt(m):
+    return {"complex128": "float64", "complex64": "float32", "float32": "float32"}.get(m.dtype.name, "float64")
+
+
+def _cdt(m):
+    return m.dtype.name if m.dtype.kind in "fc" else "float64"
+
+
+def _cxdt(m):
+    return "complex64" if m.dtype.name in ("float32", "complex64") else "complex128"
+
+
+def _guard(fn, empty):
+    """Matrices with a zero dimension are answered from their shapes; the numeric kernels never see them."""
+    return lambda m: empty(m) if m.size == 0 else fn(m)
+
+
+def _empty_svd(m, full, uv):
+    rows, cols = m.shape
+    k = min(rows, cols)
+    s = _core.zeros((k,), _rdt(m))
+    if not uv:
+        return s
+    if full:
+        return (_core.eye(rows, rows, 0, _cdt(m)), s, _core.eye(cols, cols, 0, _cdt(m)))
+    return (_core.zeros((rows, k), _cdt(m)), s, _core.zeros((k, cols), _cdt(m)))
+
+
+def _empty_qr(m, mode):
+    rows, cols = m.shape
+    k = min(rows, cols)
+    dt = _cdt(m)
+    if mode == "complete":
+        return (_core.eye(rows, rows, 0, dt), _core.zeros((rows, cols), dt))
+    return (_core.zeros((rows, k), dt), _core.zeros((k, cols), dt))
 
 
 def _square(a):
@@ -55,7 +107,7 @@ def inv(a):
 def cholesky(a, /, *, upper=False):
     a = asarray(a)
     _square(a) if a.ndim >= 2 else None
-    res = _stack(_c.c_cholesky if _cx(a) else _c.cholesky, a)
+    res = _stack(_guard(_c.c_cholesky if _cx(a) else _c.cholesky, lambda m: _core.zeros((0, 0), _cdt(m))), a)
     return _c.conjugate(matrix_transpose(res)) if upper else res
 
 
@@ -118,7 +170,8 @@ def _tuple_stack(fn, a, wrap):
     flat = a.reshape((_count(lead),) + tuple(a.shape[-2:]))
     parts = [fn(flat[i]) for i in range(flat.shape[0])]
     if not parts:
-        raise _core.Unsupported("empty stacks of matrices are not supported for this function")
+        sample = [asarray(x) for x in fn(_probe(a, 2))]
+        return wrap(*[_core.zeros(lead + tuple(x.shape), x.dtype) for x in sample])
     cols = []
     for k in range(len(parts[0])):
         cs = [asarray(p[k]) for p in parts]
@@ -132,12 +185,12 @@ def qr(a, mode="reduced"):
     a = asarray(a)
     qr_ = _c.c_qr if _cx(a) else _c.qr
     if mode == "reduced":
-        return _tuple_stack(lambda m: tuple(qr_(m)), a, QRResult)
+        return _tuple_stack(_guard(lambda m: tuple(qr_(m)), lambda m: _empty_qr(m, mode)), a, QRResult)
     if mode == "r":
-        return _tuple_stack(lambda m: (qr_(m)[1],), a, lambda r: r)
+        return _tuple_stack(_guard(lambda m: (qr_(m)[1],), lambda m: _empty_qr(m, mode)[1:]), a, lambda r: r)
     if mode == "complete":
         full = _c.c_qr_complete if _cx(a) else _c.qr_complete
-        return _tuple_stack(lambda m: tuple(full(m)), a, QRResult)
+        return _tuple_stack(_guard(lambda m: tuple(full(m)), lambda m: _empty_qr(m, mode)), a, QRResult)
     raise _core.Unsupported("qr mode %r is not supported" % mode)
 
 
@@ -146,25 +199,27 @@ def eigh(a, UPLO="L"):
         raise ValueError("UPLO argument must be 'L' or 'U'")
     a = asarray(a)
     _square(a) if a.ndim >= 2 else None
-    return _tuple_stack(lambda m: tuple((_c.c_eigh if _cx(a) else _c.eigh)(m, UPLO.upper())), a, EighResult)
+    empty = lambda m: (_core.zeros((0,), _rdt(m)), _core.zeros((0, 0), _cdt(m)))
+    return _tuple_stack(_guard(lambda m: tuple((_c.c_eigh if _cx(a) else _c.eigh)(m, UPLO.upper())), empty), a, EighResult)
 
 
 def eigvalsh(a, UPLO="L"):
     a = asarray(a)
     _square(a) if a.ndim >= 2 else None
-    return _stack(lambda m: (_c.c_eigh(m, UPLO.upper())[0] if _cx(a) else _c.eigvalsh(m, UPLO.upper())), a)
+    return _stack(_guard(lambda m: (_c.c_eigh(m, UPLO.upper())[0] if _cx(a) else _c.eigvalsh(m, UPLO.upper())), lambda m: _core.zeros((0,), _rdt(m))), a)
 
 
 def eig(a):
     a = asarray(a)
     _square(a) if a.ndim >= 2 else None
-    return _tuple_stack(lambda m: tuple((_c.c_eig if _cx(a) else _c.eig)(m)), a, EigResult)
+    empty = lambda m: (_core.zeros((0,), _cxdt(m)), _core.zeros((0, 0), _cxdt(m)))
+    return _tuple_stack(_guard(lambda m: tuple((_c.c_eig if _cx(a) else _c.eig)(m)), empty), a, EigResult)
 
 
 def eigvals(a):
     a = asarray(a)
     _square(a) if a.ndim >= 2 else None
-    return _stack(lambda m: (_c.c_eig(m)[0] if _cx(a) else _c.eigvals(m)), a)
+    return _stack(_guard(lambda m: (_c.c_eig(m)[0] if _cx(a) else _c.eigvals(m)), lambda m: _core.zeros((0,), _cxdt(m))), a)
 
 
 def svd(a, full_matrices=True, compute_uv=True, hermitian=False):
@@ -172,19 +227,21 @@ def svd(a, full_matrices=True, compute_uv=True, hermitian=False):
     if _cx(a):
         one = _c.c_svd_full if full_matrices else _c.c_svd
         if not compute_uv:
-            return _stack(lambda m: _c.c_svd(m)[1], a)
-        return _tuple_stack(lambda m: tuple(one(m)), a, SVDResult)
+            return _stack(_guard(lambda m: _c.c_svd(m)[1], lambda m: _empty_svd(m, False, False)), a)
+        return _tuple_stack(_guard(lambda m: tuple(one(m)), lambda m: _empty_svd(m, full_matrices, True)), a, SVDResult)
     if not compute_uv:
-        return _stack(lambda m: _c.svd(m, full_matrices, False), a)
-    return _tuple_stack(lambda m: tuple(_c.svd(m, full_matrices, True)), a, SVDResult)
+        return _stack(_guard(lambda m: _c.svd(m, full_matrices, False), lambda m: _empty_svd(m, False, False)), a)
+    return _tuple_stack(_guard(lambda m: tuple(_c.svd(m, full_matrices, True)), lambda m: _empty_svd(m, full_matrices, True)), a, SVDResult)
 
 
 def svdvals(x, /):
     x = asarray(x)
-    return _stack((lambda m: _c.c_svd(m)[1]) if _cx(x) else _c.svdvals, x)
+    return _stack(_guard((lambda m: _c.c_svd(m)[1]) if _cx(x) else _c.svdvals, lambda m: _empty_svd(m, False, False)), x)
 
 
 def _cx_pinv(m, rcond):
+    if m.size == 0:
+        return _core.zeros((m.shape[1], m.shape[0]), m.dtype)
     u, s, vh = _c.c_svd(m)
     if rcond is None:
         rcond = max(m.shape) * 2.220446049250313e-16
@@ -217,6 +274,8 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
         return R.sum(_c.greater(s, tol), axis=-1, dtype="int64")
     if _cx(A):
         def rank(m):
+            if m.size == 0:
+                return _c.array(0, "int64").reshape(())
             sv = _c.c_svd(m)[1]
             tol_ = float(sv.max()) * max(m.shape) * 2.220446049250313e-16 if sv.size else 0.0
             return _c.array(int(R.sum(_c.greater(sv, tol_))), "int64").reshape(())

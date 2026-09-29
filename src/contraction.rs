@@ -1,4 +1,4 @@
-use crate::error::ShapeError;
+use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
 use crate::ufunc::zip_with;
 use crate::view::ArrayView;
@@ -264,13 +264,13 @@ where
     NdArray::from_vec(data, &out_shape)
 }
 
-pub fn cross<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
+pub fn cross<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, OpError>
 where
     T: Copy + Default + WrapMul + crate::dispatch::WrapSub,
 {
     for v in [a, b] {
         if v.shape().last() != Some(&3) {
-            return Err(ShapeError::InvalidGufunc {
+            return Err(OpError::InvalidGufunc {
                 reason: format!("cross needs 3-dimensional vectors along the last axis, got shape {:?}", v.shape()),
             });
         }
@@ -290,8 +290,8 @@ enum Token {
     Ellipsis,
 }
 
-fn tokenize(term: &str) -> Result<Vec<Token>, ShapeError> {
-    let bad = |reason: String| ShapeError::InvalidEinsum { reason };
+fn tokenize(term: &str) -> Result<Vec<Token>, OpError> {
+    let bad = |reason: String| OpError::InvalidEinsum { reason };
     let chars: Vec<char> = term.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -314,13 +314,13 @@ fn tokenize(term: &str) -> Result<Vec<Token>, ShapeError> {
     Ok(out)
 }
 
-pub fn einsum<T>(subscripts: &str, operands: &[&ArrayView<T>]) -> Result<NdArray<T>, ShapeError>
+pub fn einsum<T>(subscripts: &str, operands: &[&ArrayView<T>]) -> Result<NdArray<T>, OpError>
 where
     T: Copy + Default + WrapAdd + WrapMul,
 {
-    let bad = |reason: &str| ShapeError::InvalidEinsum { reason: reason.to_string() };
+    let bad = |reason: &str| OpError::InvalidEinsum { reason: reason.to_string() };
     if operands.is_empty() {
-        return Err(ShapeError::EmptyArrayList);
+        return Err(ShapeError::EmptyArrayList.into());
     }
     let text: String = subscripts.chars().filter(|c| !c.is_whitespace()).collect();
     let (lhs, rhs) = match text.split_once("->") {
@@ -416,7 +416,7 @@ where
             (0..e).chain(singles.into_iter().map(|c| e + letters.iter().position(|&x| x == c).unwrap())).collect()
         }
     };
-    contract(operands, &op_labels, &out_labels, &sizes)
+    contract(operands, &op_labels, &out_labels, &sizes).map_err(OpError::from)
 }
 
 #[cfg(test)]
@@ -564,7 +564,7 @@ mod tests {
             ("ij...->...i...", vec![&av]),
         ] {
             let borrowed: Vec<&ArrayView<i64>> = ops.to_vec();
-            assert!(matches!(einsum(s, &borrowed), Err(ShapeError::InvalidEinsum { .. })), "{s}");
+            assert!(matches!(einsum(s, &borrowed), Err(OpError::InvalidEinsum { .. })), "{s}");
         }
         assert!(einsum("...j->j", &[&ar(12, &[2, 2, 3]).view()]).is_err());
         assert!(einsum("ii", &[&NdArray::from_vec(vec![1i64, 2, 3], &[3, 1]).unwrap().view()]).is_err());

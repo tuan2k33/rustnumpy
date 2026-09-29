@@ -320,7 +320,7 @@ fn u_rint<T: Float>(x: T) -> T {
     let r = x.round();
     let two = T::one() + T::one();
     if (x - x.trunc()).abs() == T::one() / two && (r / two).fract() != T::zero() {
-        r - x.signum()
+        (r - x.signum()).copysign(x)
     } else {
         r
     }
@@ -1384,9 +1384,9 @@ fn int_bounds(name: &str) -> Option<(i128, i128)> {
     })
 }
 
-fn out_of_range_constant(strong: &Arr, weak: i64, weak_on_left: bool, op: u8) -> Option<NdArray<bool>> {
+fn out_of_range_constant(strong: &Arr, weak: i128, weak_on_left: bool, op: u8) -> Option<NdArray<bool>> {
     let (lo, hi) = int_bounds(strong.dtype_name())?;
-    let v = weak as i128;
+    let v = weak;
     if (lo..=hi).contains(&v) {
         return None;
     }
@@ -1407,8 +1407,8 @@ macro_rules! compare_fn {
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
             let (oa, ob) = (Operand::parse(py, a)?, Operand::parse(py, b)?);
             let constant = match (&oa, &ob) {
-                (Operand::Arr(s), Operand::WeakInt(w)) => out_of_range_constant(s, *w, false, $op),
-                (Operand::WeakInt(w), Operand::Arr(s)) => out_of_range_constant(s, *w, true, $op),
+                (Operand::Arr(s), Operand::WeakInt(w, _)) => out_of_range_constant(s, *w, false, $op),
+                (Operand::WeakInt(w, _), Operand::Arr(s)) => out_of_range_constant(s, *w, true, $op),
                 _ => None,
             };
             if let Some(c) = constant {
