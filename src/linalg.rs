@@ -86,6 +86,9 @@ fn vec_to_col_mat(v: &[f64]) -> Mat<f64> {
 }
 
 pub fn solve(a: &NdArray, b: &NdArray) -> Result<NdArray, LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let a_mat = to_square_mat(a)?;
     let n = a_mat.nrows();
     let lu = a_mat.as_ref().partial_piv_lu();
@@ -108,9 +111,39 @@ pub fn solve(a: &NdArray, b: &NdArray) -> Result<NdArray, LinalgError> {
     }
 }
 
+fn lu_diagonal(m: &Mat<f64>) -> Option<(f64, Vec<f64>)> {
+    let n = m.nrows();
+    let mut lu: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| m[(i, j)]).collect()).collect();
+    let mut sign = 1.0;
+    let mut diag = Vec::with_capacity(n);
+    for col in 0..n {
+        let pivot = (col..n).max_by(|&i, &j| lu[i][col].abs().total_cmp(&lu[j][col].abs())).unwrap();
+        if lu[pivot][col] == 0.0 || lu[pivot][col].is_nan() {
+            return None;
+        }
+        if pivot != col {
+            lu.swap(pivot, col);
+            sign = -sign;
+        }
+        let d = lu[col][col];
+        diag.push(d);
+        let pivot_row = lu[col].clone();
+        for row in lu[col + 1..].iter_mut() {
+            let f = row[col] / d;
+            for (dst, &v) in row[col..].iter_mut().zip(&pivot_row[col..]) {
+                *dst -= f * v;
+            }
+        }
+    }
+    Some((sign, diag))
+}
+
 pub fn inv(a: &NdArray) -> Result<NdArray, LinalgError> {
     let a_mat = to_square_mat(a)?;
-    if det(a)?.abs() < 1e-300 {
+    if a_mat.nrows() == 0 {
+        return Ok(NdArray::zeros(&[0, 0]));
+    }
+    if lu_diagonal(&a_mat).is_none() {
         return Err(LinalgError::Singular);
     }
     let lu = a_mat.as_ref().partial_piv_lu();
@@ -119,10 +152,19 @@ pub fn inv(a: &NdArray) -> Result<NdArray, LinalgError> {
 
 pub fn det(a: &NdArray) -> Result<f64, LinalgError> {
     let a_mat = to_square_mat(a)?;
-    Ok(a_mat.as_ref().determinant())
+    if a_mat.nrows() == 0 {
+        return Ok(1.0);
+    }
+    Ok(match lu_diagonal(&a_mat) {
+        None => 0.0,
+        Some((sign, diag)) => diag.iter().fold(sign, |acc, d| acc * d),
+    })
 }
 
 pub fn qr(a: &NdArray) -> Result<(NdArray, NdArray), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let a_mat = to_mat(a)?;
     let qr = a_mat.as_ref().qr();
     let q = qr.compute_thin_Q();
@@ -131,12 +173,18 @@ pub fn qr(a: &NdArray) -> Result<(NdArray, NdArray), LinalgError> {
 }
 
 pub fn cholesky(a: &NdArray) -> Result<NdArray, LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let a_mat = to_square_mat(a)?;
     let llt = a_mat.as_ref().llt(Side::Lower).map_err(|_| LinalgError::NotPositiveDefinite)?;
     Ok(from_mat(llt.L()))
 }
 
 pub fn eigh(a: &NdArray) -> Result<(Vec<f64>, NdArray), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let a_mat = to_square_mat(a)?;
     let eig = a_mat.as_ref().self_adjoint_eigen(Side::Lower).map_err(|_| LinalgError::EigenFailed)?;
     let values: Vec<f64> = (0..a_mat.nrows()).map(|i| eig.S()[i]).collect();
@@ -148,12 +196,18 @@ pub fn eigvalsh(a: &NdArray) -> Result<Vec<f64>, LinalgError> {
 }
 
 pub fn eigvals(a: &NdArray) -> Result<Vec<(f64, f64)>, LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let a_mat = to_square_mat(a)?;
     let eig = a_mat.as_ref().eigenvalues().map_err(|_| LinalgError::EigenFailed)?;
     Ok(eig.into_iter().map(|c| (c.re, c.im)).collect())
 }
 
 pub fn svd(a: &NdArray) -> Result<(NdArray, Vec<f64>, NdArray), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let a_mat = to_mat(a)?;
     let svd = a_mat.as_ref().thin_svd().map_err(|_| LinalgError::SvdFailed)?;
     let k = a_mat.nrows().min(a_mat.ncols());
@@ -175,13 +229,13 @@ pub enum VecNormOrd {
 pub fn vector_norm(a: &[f64], ord: VecNormOrd) -> f64 {
     match ord {
         VecNormOrd::One => a.iter().map(|x| x.abs()).sum(),
-        VecNormOrd::Two => a.iter().map(|x| x * x).sum::<f64>().sqrt(),
+        VecNormOrd::Two => a.iter().fold(0.0, |acc, x| acc + x * x).sqrt(),
         VecNormOrd::Inf => a.iter().fold(0.0_f64, |acc, x| acc.max(x.abs())),
     }
 }
 
 pub fn frobenius_norm(a: &NdArray) -> f64 {
-    a.as_slice().iter().map(|x| x * x).sum::<f64>().sqrt()
+    a.as_slice().iter().fold(0.0, |acc, x| acc + x * x).sqrt()
 }
 
 pub fn matrix_norm(a: &NdArray) -> f64 {
@@ -217,33 +271,17 @@ pub fn matrix_transpose<'a, T>(a: &crate::view::ArrayView<'a, T>) -> Result<crat
 
 pub fn slogdet(a: &NdArray) -> Result<(f64, f64), LinalgError> {
     let m = to_square_mat(a)?;
-    let n = m.nrows();
-    let mut lu: Vec<Vec<f64>> = (0..n).map(|i| (0..n).map(|j| m[(i, j)]).collect()).collect();
-    let mut sign = 1.0;
-    let mut logabs = 0.0;
-    for col in 0..n {
-        let pivot = (col..n).max_by(|&i, &j| lu[i][col].abs().total_cmp(&lu[j][col].abs())).unwrap();
-        if lu[pivot][col] == 0.0 {
-            return Ok((0.0, f64::NEG_INFINITY));
-        }
-        if pivot != col {
-            lu.swap(pivot, col);
-            sign = -sign;
-        }
-        let d = lu[col][col];
-        if d < 0.0 {
-            sign = -sign;
-        }
-        logabs += d.abs().ln();
-        for row in col + 1..n {
-            let f = lu[row][col] / d;
-            let pivot_row = lu[col].clone();
-            for (dst, &v) in lu[row][col..].iter_mut().zip(&pivot_row[col..]) {
-                *dst -= f * v;
-            }
-        }
+    if m.nrows() == 0 {
+        return Ok((1.0, 0.0));
     }
-    Ok((sign, logabs))
+    Ok(match lu_diagonal(&m) {
+        None => (0.0, f64::NEG_INFINITY),
+        Some((sign, diag)) => {
+            let negatives = diag.iter().filter(|d| **d < 0.0).count();
+            let sign = if negatives % 2 == 1 { -sign } else { sign };
+            (sign, diag.iter().map(|d| d.abs().ln()).sum())
+        }
+    })
 }
 
 pub fn svdvals(a: &NdArray) -> Result<Vec<f64>, LinalgError> {
@@ -379,7 +417,8 @@ pub fn cond(a: &NdArray, ord: MatNormOrd) -> Result<f64, LinalgError> {
         MatNormOrd::Two | MatNormOrd::NegTwo => {
             let s = svdvals(a)?;
             let (hi, lo) = (s[0], *s.last().unwrap());
-            Ok(if ord == MatNormOrd::Two { hi / lo } else { lo / hi })
+            let r = if ord == MatNormOrd::Two { hi / lo } else { lo / hi };
+            Ok(if r.is_nan() && !a.as_slice().iter().any(|x| x.is_nan()) { f64::INFINITY } else { r })
         }
         _ => {
             to_square_mat(a)?;
@@ -393,6 +432,9 @@ pub fn cond(a: &NdArray, ord: MatNormOrd) -> Result<f64, LinalgError> {
 }
 
 pub fn eig(a: &NdArray) -> Result<(Vec<Complex64>, NdArray<Complex64>), LinalgError> {
+    if a.is_empty() {
+        return Err(LinalgError::Empty);
+    }
     let m = to_square_mat(a)?;
     let n = m.nrows();
     let e = m.as_ref().eigen().map_err(|_| LinalgError::EigenFailed)?;
@@ -568,6 +610,42 @@ mod tests {
 
     fn rank_one() -> NdArray {
         arr(vec![1.0, 2.0, 2.0, 4.0, 3.0, 6.0], &[3, 2])
+    }
+
+    #[test]
+    fn norms_of_empty_input_are_positive_zero_like_numpy() {
+        let e: NdArray = NdArray::zeros(&[0]);
+        assert!(vector_norm(e.as_slice(), VecNormOrd::Two).is_sign_positive());
+        assert!(frobenius_norm(&NdArray::zeros(&[0, 3])).is_sign_positive());
+    }
+
+    #[test]
+    fn det_and_inv_handle_exactly_singular_and_tiny_scaled_matrices_like_numpy() {
+        let zeros: NdArray = NdArray::zeros(&[2, 2]);
+        assert_eq!(det(&zeros).unwrap(), 0.0);
+        assert_eq!(inv(&zeros), Err(LinalgError::Singular));
+        assert_eq!(det(&arr(vec![1.0, 2.0, 2.0, 4.0], &[2, 2])).unwrap(), 0.0);
+        assert_eq!(inv(&arr(vec![1.0, 2.0, 2.0, 4.0], &[2, 2])), Err(LinalgError::Singular));
+        let tiny = arr(vec![1e-200, 0.0, 0.0, 1e-200], &[2, 2]);
+        let t = inv(&tiny).unwrap();
+        assert_eq!(t.as_slice(), &[1e200, 0.0, 0.0, 1e200]);
+        assert_eq!(cond(&zeros, MatNormOrd::One).unwrap(), f64::INFINITY);
+        assert_eq!(cond(&zeros, MatNormOrd::Fro).unwrap(), f64::INFINITY);
+        assert_eq!(cond(&zeros, MatNormOrd::Two).unwrap(), f64::INFINITY);
+        assert_eq!(cond(&zeros, MatNormOrd::NegTwo).unwrap(), f64::INFINITY);
+    }
+
+    #[test]
+    fn empty_matrices_never_panic_and_follow_numpy_where_it_defines_a_result() {
+        let e: NdArray = NdArray::zeros(&[0, 0]);
+        assert_eq!(det(&e).unwrap(), 1.0);
+        assert_eq!(slogdet(&e).unwrap(), (1.0, 0.0));
+        assert_eq!(inv(&e).unwrap().shape(), &[0, 0]);
+        for r in [eigh(&e).map(|_| ()), eig(&e).map(|_| ()), svd(&e).map(|_| ()), qr(&e).map(|_| ()), cholesky(&e).map(|_| ()), solve(&e, &e).map(|_| ())] {
+            assert_eq!(r, Err(LinalgError::Empty));
+        }
+        assert_eq!(eigvals(&e), Err(LinalgError::Empty));
+        assert_eq!(eigvalsh(&e), Err(LinalgError::Empty));
     }
 
     #[test]

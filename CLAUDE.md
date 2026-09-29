@@ -55,7 +55,7 @@ path-dependency on the root crate) specifically so the core crate's
 cd python
 cargo build                                    # builds as a plain rlib too, no Python needed
 python -m maturin develop --release            # build + install into the active venv
-python verify_against_numpy.py                 # live, in-process cross-check against real NumPy
+python -m pytest tests -q                       # in-process differential tests against real NumPy
 ```
 
 There is no top-level test runner beyond `cargo test --lib` — every
@@ -135,7 +135,7 @@ formula/edge case was checked against a real NumPy install at
 implementation time (see `NumPy.md` for exactly which NumPy version and
 which venv), and expected values are baked into the tests as literals.
 There is no live NumPy dependency in `cargo test --lib`; the only place
-that talks to a real Python/NumPy process is `python/verify_against_numpy.py`
+that talks to a real Python/NumPy process is the pytest suite in `python/tests/`
 and `scripts/gen_fixtures.py`. There is no `numpy.testing` port (it was
 dropped, see `NumPy.md`): each module's tests use small local helpers
 (`close`, `close_all`, ...) with a per-element tolerance.
@@ -174,5 +174,5 @@ rustnumpy/
 ├── scripts/gen_fixtures.py    regenerates tests/fixtures/ (needs a real NumPy install)
 └── python/                    separate PyO3 binding crate (own Cargo.toml, path-deps on root)
     ├── src/lib.rs               PyNdArray + add/sub/mul/save_npy/load_npy exposed to Python
-    └── verify_against_numpy.py  live in-process check against a real NumPy install
+    └── tests/                   pytest differential suite against a real NumPy install (~1900 cases)
 ```

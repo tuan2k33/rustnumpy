@@ -41,7 +41,7 @@ macro_rules! impl_arith_signed {
                 if rhs < 0 {
                     return None;
                 }
-                Some(self.wrapping_pow(rhs.min(u32::MAX as $t) as u32))
+                Some(self.wrapping_pow(u32::try_from(rhs).unwrap_or(u32::MAX)))
             }
         }
     )*};
@@ -58,7 +58,7 @@ macro_rules! impl_arith_unsigned {
             fn floor_div_(self, rhs: Self) -> Self { if rhs == 0 { 0 } else { self / rhs } }
             fn mod_(self, rhs: Self) -> Self { if rhs == 0 { 0 } else { self % rhs } }
             fn pow_(self, rhs: Self) -> Option<Self> {
-                Some(self.wrapping_pow(rhs.min(u32::MAX as $t) as u32))
+                Some(self.wrapping_pow(u32::try_from(rhs).unwrap_or(u32::MAX)))
             }
         }
     )*};
@@ -185,7 +185,7 @@ pub fn hypot<T: Float>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>,
 }
 
 pub fn copysign<T: Float>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
-    zip_with(a, b, |x, y| x.abs() * if y.is_sign_negative() { -T::one() } else { T::one() })
+    zip_with(a, b, |x, y| x.copysign(y))
 }
 
 pub fn fmod<T: Float>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
@@ -299,6 +299,15 @@ mod tests {
     }
 
     #[test]
+    fn copysign_keeps_the_sign_of_nan_and_zero() {
+        let nan = arr(vec![f64::NAN, f64::NAN, 0.0, 0.0]);
+        let sgn = arr(vec![-1.0, 1.0, -1.0, 1.0]);
+        let r = copysign(&nan.view(), &sgn.view()).unwrap();
+        let bits: Vec<bool> = r.as_slice().iter().map(|x| x.is_sign_negative()).collect();
+        assert_eq!(bits, vec![true, false, true, false]);
+    }
+
+    #[test]
     fn maximum_propagates_nan_but_fmax_ignores_it() {
         let a = arr(vec![1.0, f64::NAN, 3.0]);
         let b = arr(vec![f64::NAN, 2.0, 1.0]);
@@ -343,6 +352,15 @@ mod tests {
             &power(&arr(vec![2.0, 0.0, -8.0]).view(), &arr(vec![3.0, 0.0, 1.0 / 3.0]).view()).unwrap(),
             &[8.0, 1.0, f64::NAN],
         );
+    }
+
+    #[test]
+    fn integer_power_handles_zero_exponent_and_narrow_types_like_numpy() {
+        assert_eq!(power(&arr(vec![0i8, 7, -128, 2]).view(), &arr(vec![0i8, 0, 0, 7]).view()).unwrap().as_slice(), &[1, 1, 1, -128]);
+        assert_eq!(power(&arr(vec![3i8]).view(), &arr(vec![5i8]).view()).unwrap().as_slice(), &[-13]);
+        assert_eq!(power(&arr(vec![0i16, 5]).view(), &arr(vec![0i16, 3]).view()).unwrap().as_slice(), &[1, 125]);
+        assert_eq!(power(&arr(vec![0i32, 2]).view(), &arr(vec![0i32, 31]).view()).unwrap().as_slice(), &[1, i32::MIN]);
+        assert_eq!(power(&arr(vec![0u8, 2]).view(), &arr(vec![0u8, 9]).view()).unwrap().as_slice(), &[1, 0]);
     }
 
     #[test]

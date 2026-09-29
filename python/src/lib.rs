@@ -1,3 +1,14 @@
+#![allow(clippy::chunks_exact_to_as_chunks, clippy::redundant_guards)]
+
+mod arrayfns;
+mod casting;
+mod dynarray;
+mod linalgfns;
+mod ops;
+mod rngfns;
+mod shapefns;
+
+pub use dynarray::{unsupported, Unsupported};
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use rustnumpy::{NdArray, ShapeError};
@@ -56,27 +67,6 @@ impl PyNdArray {
 }
 
 #[pyfunction]
-fn add(a: &PyNdArray, b: &PyNdArray) -> PyResult<PyNdArray> {
-    rustnumpy::add(&a.inner.view(), &b.inner.view())
-        .map(|inner| PyNdArray { inner })
-        .map_err(shape_err_to_py)
-}
-
-#[pyfunction]
-fn sub(a: &PyNdArray, b: &PyNdArray) -> PyResult<PyNdArray> {
-    rustnumpy::sub(&a.inner.view(), &b.inner.view())
-        .map(|inner| PyNdArray { inner })
-        .map_err(shape_err_to_py)
-}
-
-#[pyfunction]
-fn mul(a: &PyNdArray, b: &PyNdArray) -> PyResult<PyNdArray> {
-    rustnumpy::mul(&a.inner.view(), &b.inner.view())
-        .map(|inner| PyNdArray { inner })
-        .map_err(shape_err_to_py)
-}
-
-#[pyfunction]
 fn save_npy(path: &str, arr: &PyNdArray) -> PyResult<()> {
     rustnumpy::save_npy(path, &arr.inner).map_err(npy_err_to_py)
 }
@@ -89,9 +79,12 @@ fn load_npy(path: &str) -> PyResult<PyNdArray> {
 #[pymodule]
 fn rustnumpy_python(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNdArray>()?;
-    m.add_function(wrap_pyfunction!(add, m)?)?;
-    m.add_function(wrap_pyfunction!(sub, m)?)?;
-    m.add_function(wrap_pyfunction!(mul, m)?)?;
+    m.add("Unsupported", m.py().get_type::<Unsupported>())?;
+    ops::register(m)?;
+    arrayfns::register(m)?;
+    shapefns::register(m)?;
+    linalgfns::register(m)?;
+    rngfns::register(m)?;
     m.add_function(wrap_pyfunction!(save_npy, m)?)?;
     m.add_function(wrap_pyfunction!(load_npy, m)?)?;
     Ok(())

@@ -59,6 +59,14 @@ pub enum ReductionError {
     EmptyInput,
 
     PercentileOutOfRange { q: f64 },
+
+    InvalidBins,
+
+    TooManyBins { bins: usize },
+
+    InvalidRange { low: f64, high: f64 },
+
+    NonFiniteRange { low: f64, high: f64 },
 }
 
 impl std::fmt::Display for ReductionError {
@@ -67,6 +75,14 @@ impl std::fmt::Display for ReductionError {
             ReductionError::EmptyInput => write!(f, "zero-size array has no reduction identity"),
             ReductionError::PercentileOutOfRange { q } => {
                 write!(f, "percentile {q} must be in the range [0, 100]")
+            }
+            ReductionError::InvalidBins => write!(f, "`bins` must be positive, when an integer"),
+            ReductionError::TooManyBins { bins } => {
+                write!(f, "Too many bins for data range. Cannot create {bins} finite-sized bins.")
+            }
+            ReductionError::InvalidRange { .. } => write!(f, "max must be larger than min in range parameter."),
+            ReductionError::NonFiniteRange { low, high } => {
+                write!(f, "autodetected range of [{low}, {high}] is not finite")
             }
         }
     }
@@ -146,19 +162,21 @@ pub fn max<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     }))
 }
 
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    let diff = b - a;
+    if t >= 0.5 { b - diff * (1.0 - t) } else { a + diff * t }
+}
+
 fn percentile_sorted(sorted: &[f64], q: f64) -> f64 {
     let n = sorted.len();
     if n == 1 {
         return sorted[0];
     }
-    let index = (n - 1) as f64 * q / 100.0;
-    let lower = index.floor() as usize;
-    let upper = index.ceil() as usize;
-    if lower == upper {
-        return sorted[lower];
-    }
-    let frac = index - lower as f64;
-    sorted[lower] + frac * (sorted[upper] - sorted[lower])
+    let index = (n - 1) as f64 * (q / 100.0);
+    let lower = index.floor();
+    let below = (lower as usize).min(n - 1);
+    let above = (below + 1).min(n - 1);
+    lerp(sorted[below], sorted[above], index - lower)
 }
 
 pub fn percentile<T: AsF64>(view: &ArrayView<T>, q: f64) -> Result<f64, ReductionError> {
@@ -169,12 +187,32 @@ pub fn percentile<T: AsF64>(view: &ArrayView<T>, q: f64) -> Result<f64, Reductio
     if v.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
+    if v.iter().any(|x| x.is_nan()) {
+        return Ok(f64::NAN);
+    }
     v.sort_unstable_by(|a, b| a.total_cmp(b));
     Ok(percentile_sorted(&v, q))
 }
 
+fn median_of_sorted(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    }
+}
+
 pub fn median<T: AsF64>(view: &ArrayView<T>) -> Result<f64, ReductionError> {
-    percentile(view, 50.0)
+    let mut v: Vec<f64> = values(view).into_iter().map(|x| x.as_f64()).collect();
+    if v.is_empty() {
+        return Err(ReductionError::EmptyInput);
+    }
+    if v.iter().any(|x| x.is_nan()) {
+        return Ok(f64::NAN);
+    }
+    v.sort_unstable_by(|a, b| a.total_cmp(b));
+    Ok(median_of_sorted(&v))
 }
 
 fn non_nan_values<T: FloatIsh>(view: &ArrayView<T>) -> Vec<T> {
@@ -251,38 +289,61 @@ pub fn nanmedian<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> Result<f64, Reduct
         return Ok(f64::NAN);
     }
     v.sort_unstable_by(|a, b| a.total_cmp(b));
-    Ok(percentile_sorted(&v, 50.0))
+    Ok(median_of_sorted(&v))
+}
+
+fn linspace_edges(low: f64, high: f64, bins: usize) -> Vec<f64> {
+    let step = (high - low) / bins as f64;
+    let mut edges: Vec<f64> = (0..=bins).map(|i| i as f64 * step + low).collect();
+    edges[bins] = high;
+    edges
 }
 
 pub fn histogram(data: &[f64], bins: usize, range: Option<(f64, f64)>) -> Result<(Vec<usize>, Vec<f64>), ReductionError> {
-    let (low, high) = match range {
-        Some(r) => r,
-        None => {
-            if data.is_empty() {
-                return Err(ReductionError::EmptyInput);
-            }
-            let mut lo = f64::INFINITY;
-            let mut hi = f64::NEG_INFINITY;
-            for &x in data {
-                lo = lo.min(x);
-                hi = hi.max(x);
+    if bins == 0 {
+        return Err(ReductionError::InvalidBins);
+    }
+    let (mut low, mut high) = match range {
+        Some((lo, hi)) => {
+            if lo > hi {
+                return Err(ReductionError::InvalidRange { low: lo, high: hi });
             }
             (lo, hi)
         }
+        None if data.is_empty() => (0.0, 1.0),
+        None => {
+            let lo = data.iter().copied().fold(f64::INFINITY, |a, x| if x < a || x.is_nan() { x } else { a });
+            let hi = data.iter().copied().fold(f64::NEG_INFINITY, |a, x| if x > a || x.is_nan() { x } else { a });
+            (lo, hi)
+        }
     };
-    let edges: Vec<f64> = (0..=bins).map(|i| low + (high - low) * i as f64 / bins as f64).collect();
+    if !(low.is_finite() && high.is_finite()) {
+        return Err(ReductionError::NonFiniteRange { low, high });
+    }
+    if low == high {
+        low -= 0.5;
+        high += 0.5;
+    }
+    let edges = linspace_edges(low, high, bins);
+    if edges.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(ReductionError::TooManyBins { bins });
+    }
+    let norm = bins as f64 / (high - low);
     let mut counts = vec![0usize; bins];
     for &x in data {
-        if x < low || x > high {
+        if !(x >= low && x <= high) {
             continue;
         }
-        let bin = if x == high {
-            bins - 1
-        } else {
-
-            (((x - low) / (high - low)) * bins as f64).floor() as usize
-        };
-        counts[bin.min(bins - 1)] += 1;
+        let mut idx = (((x - low) * norm) as usize).min(bins);
+        if idx == bins {
+            idx -= 1;
+        }
+        if x < edges[idx] {
+            idx -= 1;
+        } else if x >= edges[idx + 1] && idx != bins - 1 {
+            idx += 1;
+        }
+        counts[idx] += 1;
     }
     Ok((counts, edges))
 }
@@ -322,7 +383,7 @@ pub fn corrcoef(matrix: &ArrayView) -> Result<crate::NdArray, ReductionError> {
     let mut out = vec![0.0; rows * rows];
     for i in 0..rows {
         for j in 0..rows {
-            out[i * rows + j] = covariance.get(&[i, j]).unwrap() / (std_devs[i] * std_devs[j]);
+            out[i * rows + j] = (covariance.get(&[i, j]).unwrap() / (std_devs[i] * std_devs[j])).clamp(-1.0, 1.0);
         }
     }
     Ok(crate::NdArray::from_vec(out, &[rows, rows]).expect("out.len() == rows*rows by construction"))
@@ -372,6 +433,57 @@ mod tests {
         let a = arr(&[]);
         assert_eq!(min(&a.view()), Err(ReductionError::EmptyInput));
         assert_eq!(max(&a.view()), Err(ReductionError::EmptyInput));
+    }
+
+    #[test]
+    fn histogram_matches_numpy_on_bin_edges_and_edge_cases() {
+        let x: Vec<f64> = (0..50).map(|i| -10.0 + 20.0 * i as f64 / 49.0).collect();
+        let (counts, edges) = histogram(&x, 58, Some((-10.0, 10.0))).unwrap();
+        let want: Vec<usize> = vec![
+            1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1,
+            1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1,
+        ];
+        assert_eq!(counts, want);
+        assert_eq!(edges[1], -9.655172413793103);
+        assert_eq!(edges[2], -9.310344827586206);
+        assert_eq!(edges[57], 9.655172413793103);
+        assert_eq!(edges[58], 10.0);
+        let (c, e) = histogram(&[3.0, 3.0, 3.0], 4, None).unwrap();
+        assert_eq!((c, e), (vec![0, 0, 3, 0], vec![2.5, 2.75, 3.0, 3.25, 3.5]));
+        assert_eq!(histogram(&[], 2, None).unwrap(), (vec![0, 0], vec![0.0, 0.5, 1.0]));
+        assert_eq!(histogram(&[1.0, 2.0, f64::NAN, 5.0], 2, Some((0.0, 4.0))).unwrap().0, vec![1, 1]);
+        assert_eq!(histogram(&[1.0, 2.0], 0, None), Err(ReductionError::InvalidBins));
+        assert!(matches!(histogram(&[1.0, 2.0], 2, Some((3.0, 1.0))), Err(ReductionError::InvalidRange { .. })));
+        assert!(matches!(histogram(&[1.0, f64::INFINITY], 2, None), Err(ReductionError::NonFiniteRange { .. })));
+    }
+
+    #[test]
+    fn corrcoef_never_exceeds_one_in_magnitude() {
+        let x: Vec<f64> = (0..60).map(|i| ((i * 37 % 101) as f64) * 0.1 + 0.3).collect();
+        let m = NdArray::from_vec(x.iter().chain(x.iter()).copied().collect(), &[2, 60]).unwrap();
+        let c = corrcoef(&m.view()).unwrap();
+        assert!(c.as_slice().iter().all(|v| v.abs() <= 1.0));
+        assert_eq!(c.get(&[0, 1]).unwrap(), 1.0);
+    }
+
+    #[test]
+    fn median_uses_the_mean_of_the_middle_pair_so_infinities_survive() {
+        let a = NdArray::from_vec(vec![f64::INFINITY, f64::INFINITY], &[2]).unwrap();
+        assert_eq!(median(&a.view()).unwrap(), f64::INFINITY);
+        let b = NdArray::from_vec(vec![f64::NAN, f64::NAN, f64::INFINITY, f64::INFINITY], &[4]).unwrap();
+        assert_eq!(nanmedian(&b.view()).unwrap(), f64::INFINITY);
+        assert!(percentile(&a.view(), 50.0).unwrap().is_nan());
+    }
+
+    #[test]
+    fn median_and_percentile_propagate_nan_like_numpy() {
+        let a = NdArray::from_vec(vec![0.0445, f64::NAN, 0.0463], &[3]).unwrap();
+        assert!(median(&a.view()).unwrap().is_nan());
+        assert!(percentile(&a.view(), 0.0).unwrap().is_nan());
+        assert!(percentile(&a.view(), 100.0).unwrap().is_nan());
+        let b = NdArray::from_vec(vec![f64::INFINITY, 1.0, f64::NAN], &[3]).unwrap();
+        assert!(median(&b.view()).unwrap().is_nan());
+        assert_eq!(nanmedian(&a.view()).unwrap(), (0.0445 + 0.0463) / 2.0);
     }
 
     #[test]

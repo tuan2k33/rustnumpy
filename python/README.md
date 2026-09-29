@@ -25,38 +25,44 @@ export VIRTUAL_ENV=/home/tuannq/venvs/numpy-upstream
 ## Verify
 
 ```sh
-/home/tuannq/venvs/numpy-upstream/bin/python verify_against_numpy.py
+cd python
+/home/tuannq/venvs/numpy-upstream/bin/python -m pytest tests -q
 ```
 
-Runs a set of correctness checks (construction, broadcasting add/sub/mul,
-error handling, `.npy` round-trips) in the *same process* as real NumPy,
-so results are compared directly rather than by eyeballing two separate
-outputs.
+Every bound function is compared against real NumPy on the same input,
+in the same process (`tests/`): all 169 dtype pairs for the promoted
+ufuncs, weak Python scalars, edge values (`nan`, `inf`, `-0.0`, integer
+extremes), every axis, error cases, and *bit-exact* equality for the
+random module (`SeedSequence`, the PCG64 stream, `random`, `integers`,
+`shuffle`, `permutation`, `choice`). See "Testing the Python Binding" in
+`../NumPy.md` for the strategy and why NumPy's own suite needs the shim.
 
-**No performance benchmark yet, on purpose.** The core (`../src/`) is
-still `f64`-only with two binary ufuncs and no reductions — benchmarking
-that against NumPy now would only measure "how fast is one
-closure-driven loop", not "is this a viable NumPy replacement". That
-comparison belongs later in `NumPy.md`'s plan, once there's enough
-surface area for it to mean something.
+**No performance benchmark yet, on purpose** (see `../NumPy.md`: no
+NumPy comparison until functionality is complete).
 
 ## What's exposed
 
+The extension is *NumPy in, NumPy out*: every function takes anything
+`numpy.asarray` accepts (or a plain Python `int`/`float`, which is a
+*weak* scalar as in NEP 50) and returns a real `numpy.ndarray` (a NumPy
+scalar for 0-d results). Arrays cross the boundary by value (bytes), so
+this layer exists to *test* the Rust core against NumPy, not to be fast.
+
 ```python
-import rustnumpy_python as rnp
+import numpy as np, rustnumpy_python as rnp
 
-a = rnp.NdArray.from_list([1.0, 2.0, 3.0, 4.0], [2, 2])
-b = rnp.NdArray.zeros([2, 2])
-a.shape       # [2, 2]
-a.to_list()   # [1.0, 2.0, 3.0, 4.0]  (flat, row-major)
-
-rnp.add(a, b)  # -> NdArray, broadcasting like NumPy
-rnp.sub(a, b)
-rnp.mul(a, b)
-
-rnp.save_npy("/tmp/out.npy", a)  # readable by np.load()
-rnp.load_npy("/tmp/out.npy")     # reads files written by np.save() too
+rnp.add(np.int8([1, 2]), 3)             # int8, like NumPy
+rnp.matmul(a, b); rnp.einsum("ij,jk", a, b)
+rnp.inv(a); rnp.eig(a); rnp.svd(a, full_matrices=False)
+rnp.fft(x); rnp.rfftn(x)
+g = rnp.default_rng(42); g.random(3)    # bit-identical to np.random.default_rng(42)
 ```
 
-Shape errors surface as Python `ValueError`, I/O errors as `OSError` —
-not a Rust panic across the FFI boundary.
+Unsupported dtypes (`float16`, `longdouble`, `object`, strings...) and
+unsupported options raise `rustnumpy_python.Unsupported`, a subclass of
+`NotImplementedError`, so callers (and the NumPy-suite shim) can fall back
+to NumPy. Linalg errors raise `rustnumpy_python.LinAlgError` (a
+`ValueError`).
+
+Also kept from step 6: a small `NdArray` class (`f64`, `from_list`,
+`to_list`, ...) and `save_npy`/`load_npy`.

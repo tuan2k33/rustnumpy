@@ -1124,6 +1124,8 @@ dependencies = [
 name = "rustnumpy-python"
 version = "0.1.0"
 dependencies = [
+ "num-complex",
+ "num-traits",
  "pyo3",
  "rustnumpy",
 ]
