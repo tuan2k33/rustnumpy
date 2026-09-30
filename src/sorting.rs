@@ -24,24 +24,76 @@ fn lanes<T: Copy>(view: &ArrayView<T>, axis: usize) -> Result<(NdArray<T>, usize
     Ok((owned, outer, n, inner))
 }
 
+const RADIX_MIN_LEN: usize = 512;
+
+const DIGIT_BITS: usize = 11;
+const DIGITS: usize = 1 << DIGIT_BITS;
+
+fn radix_sort<T: FloatIsh>(lane: &mut [T], buf: &mut Vec<T>) {
+    let n = lane.len();
+    let passes = (8 * T::KEY_BYTES).div_ceil(DIGIT_BITS);
+    buf.clear();
+    buf.extend_from_slice(lane);
+    let mut hist = vec![0u32; passes * DIGITS];
+    for &x in lane.iter() {
+        let k = x.sort_key();
+        for pass in 0..passes {
+            hist[pass * DIGITS + ((k >> (DIGIT_BITS * pass)) as usize & (DIGITS - 1))] += 1;
+        }
+    }
+    let lane_ptr = lane.as_ptr();
+    let (mut from, mut to): (&mut [T], &mut [T]) = (lane, &mut buf[..]);
+    for (pass, h) in hist.chunks_exact(DIGITS).enumerate() {
+        if h.contains(&(n as u32)) {
+            continue;
+        }
+        let mut next = vec![0u32; DIGITS];
+        let mut acc = 0u32;
+        for (slot, &count) in next.iter_mut().zip(h) {
+            *slot = acc;
+            acc += count;
+        }
+        let shift = DIGIT_BITS * pass;
+        for &x in from.iter() {
+            let d = (x.sort_key() >> shift) as usize & (DIGITS - 1);
+            to[next[d] as usize] = x;
+            next[d] += 1;
+        }
+        std::mem::swap(&mut from, &mut to);
+    }
+    if from.as_ptr() != lane_ptr {
+        to.copy_from_slice(from);
+    }
+}
+
 fn sort_lane<T: FloatIsh>(lane: &mut [T], scratch: &mut Vec<T>) {
+    if (1..=4).contains(&T::KEY_BYTES) && lane.len() >= RADIX_MIN_LEN {
+        return radix_sort(lane, scratch);
+    }
     scratch.clear();
-    scratch.extend(lane.iter().copied().filter(|x| x.is_signed_zero_ish() || x.is_nan_ish()));
-    lane.sort_unstable_by(total_cmp);
+    let mut kept = 0;
+    for i in 0..lane.len() {
+        let x = lane[i];
+        if x.is_signed_zero_ish() || x.is_nan_ish() {
+            scratch.push(x);
+        }
+        if !x.is_nan_ish() {
+            lane[kept] = x;
+            kept += 1;
+        }
+    }
+    lane[..kept].sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     if scratch.is_empty() {
         return;
     }
-    let zeros = lane.iter().position(|x| x.is_signed_zero_ish()).unwrap_or(lane.len());
-    let nans = lane.len() - lane.iter().rev().take_while(|x| x.is_nan_ish()).count();
-    let (mut z, mut q) = (zeros, nans);
-    for &v in scratch.iter() {
-        if v.is_nan_ish() {
-            lane[q] = v;
-            q += 1;
-        } else {
-            lane[z] = v;
-            z += 1;
+    if let Some(&zero) = scratch.iter().find(|x| x.is_signed_zero_ish()) {
+        let start = lane[..kept].partition_point(|x| x.partial_cmp(&zero) == Some(Ordering::Less));
+        for (at, &v) in (start..).zip(scratch.iter().filter(|x| x.is_signed_zero_ish())) {
+            lane[at] = v;
         }
+    }
+    for (at, &v) in (kept..).zip(scratch.iter().filter(|x| x.is_nan_ish())) {
+        lane[at] = v;
     }
 }
 
@@ -107,6 +159,58 @@ pub fn searchsorted<T: FloatIsh>(sorted: &[T], values: &[T], side: Side) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comparison_sorted<T: FloatIsh>(v: &[T]) -> Vec<T> {
+        let mut w = v.to_vec();
+        w.sort_by(total_cmp);
+        w
+    }
+
+    #[test]
+    fn radix_sort_matches_the_stable_comparison_sort_for_every_dtype() {
+        let n = 3000;
+        let mut state = 0x9E3779B97F4A7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let raw: Vec<u64> = (0..n).map(|_| next()).collect();
+        let f64s: Vec<f64> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, &r)| match i % 11 {
+                0 => f64::NAN,
+                1 => -f64::NAN,
+                2 => 0.0,
+                3 => -0.0,
+                4 => f64::INFINITY,
+                5 => f64::NEG_INFINITY,
+                _ => (r as i64 as f64) / 1e9,
+            })
+            .collect();
+        let bits = |v: Vec<f64>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(comparison_sorted(&f64s)), bits(sort_vec(&f64s)));
+        let f32s: Vec<f32> = f64s.iter().map(|&x| x as f32).collect();
+        let bits32 = |v: Vec<f32>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits32(comparison_sorted(&f32s)), bits32(sort_vec(&f32s)));
+        let f16s: Vec<half::f16> = f64s.iter().map(|&x| half::f16::from_f64(x)).collect();
+        let bits16 = |v: Vec<half::f16>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits16(comparison_sorted(&f16s)), bits16(sort_vec(&f16s)));
+        let i64s: Vec<i64> = raw.iter().map(|&r| r as i64 >> (r % 60)).collect();
+        assert_eq!(comparison_sorted(&i64s), sort_vec(&i64s));
+        let i8s: Vec<i8> = raw.iter().map(|&r| r as i8).collect();
+        assert_eq!(comparison_sorted(&i8s), sort_vec(&i8s));
+        let u32s: Vec<u32> = raw.iter().map(|&r| r as u32).collect();
+        assert_eq!(comparison_sorted(&u32s), sort_vec(&u32s));
+        let constant = vec![7i32; 1000];
+        assert_eq!(sort_vec(&constant), constant);
+    }
+
+    fn sort_vec<T: FloatIsh>(v: &[T]) -> Vec<T> {
+        sort(&NdArray::from_vec(v.to_vec(), &[v.len()]).unwrap().view(), 0).unwrap().into_vec()
+    }
 
     #[test]
     fn sort_keeps_input_order_of_signed_zeros_and_nans_like_a_stable_sort() {

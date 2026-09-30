@@ -238,8 +238,24 @@ impl PyArray {
                     axis += 1;
                 }
                 Item::Index(a) => {
-                    let Arr::I64(v) = crate::casting::astype(a, "int64")? else { unreachable!("cast to int64") };
-                    let wrapped: Vec<usize> = v.as_slice().iter().map(|&i| wrap_index(i as isize, shape[axis], axis)).collect::<PyResult<_>>()?;
+                    let cast;
+                    let v: &NdArray<i64> = match a {
+                        Arr::I64(v) => v,
+                        other => {
+                            let Arr::I64(v) = crate::casting::astype(other, "int64")? else { unreachable!("cast to int64") };
+                            cast = v;
+                            &cast
+                        }
+                    };
+                    let dim = shape[axis] as i64;
+                    let mut wrapped: Vec<usize> = Vec::with_capacity(v.len());
+                    for &i in v.as_slice() {
+                        let j = if i < 0 { i + dim } else { i };
+                        if j < 0 || j >= dim {
+                            return Err(wrap_index(i as isize, shape[axis], axis).expect_err("index is out of bounds"));
+                        }
+                        wrapped.push(j as usize);
+                    }
                     index_shapes.push(v.shape().to_vec());
                     spec_kinds.push(Some(wrapped));
                     singles.push(None);
@@ -277,12 +293,16 @@ impl PyArray {
                 Item::Slice { .. } | Item::Full => AxisIndex::Full,
                 Item::Int(_) => AxisIndex::Single(singles[k].expect("int index resolved above")),
                 Item::Index(_) | Item::Mask(_) => {
-                    let values = spec_kinds[k].as_ref().expect("array index resolved above");
                     let ishape = kind_iter.next().expect("one shape per array index");
-                    let arr = NdArray::from_vec(values.clone(), ishape).map_err(shape_err)?;
-                    let flat = arr.view().broadcast_to(&broadcast).map_err(shape_err)?.to_owned();
-                    debug_assert_eq!(flat.len(), total);
-                    AxisIndex::Fancy(flat.into_vec())
+                    if ishape == &broadcast {
+                        AxisIndex::Fancy(spec_kinds[k].take().expect("array index resolved above"))
+                    } else {
+                        let values = spec_kinds[k].as_ref().expect("array index resolved above");
+                        let arr = NdArray::from_vec(values.clone(), ishape).map_err(shape_err)?;
+                        let flat = arr.view().broadcast_to(&broadcast).map_err(shape_err)?.to_owned();
+                        debug_assert_eq!(flat.len(), total);
+                        AxisIndex::Fancy(flat.into_vec())
+                    }
                 }
                 Item::NewAxis | Item::Ellipsis | Item::RawSlice(_) => unreachable!("expanded earlier"),
             });
@@ -329,6 +349,11 @@ fn axis_offsets(shape: &[usize], strides: &[isize]) -> Vec<isize> {
 }
 
 fn gather_axis<T: Copy>(data: &[T], shape: &[usize], strides: &[isize], offset: isize, axis: usize, idx: &[usize]) -> NdArray<T> {
+    if shape.len() == 1 {
+        let out: Vec<T> = idx.iter().map(|&j| data[(offset + j as isize * strides[0]) as usize]).collect();
+        let len = out.len();
+        return NdArray::from_vec(out, &[len]).expect("flat gather");
+    }
     let outer = axis_offsets(&shape[..axis], &strides[..axis]);
     let inner = axis_offsets(&shape[axis + 1..], &strides[axis + 1..]);
     let mut out = Vec::with_capacity(outer.len() * idx.len() * inner.len());

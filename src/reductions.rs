@@ -9,14 +9,26 @@ pub trait FloatIsh: Copy + PartialOrd {
     fn is_signed_zero_ish(self) -> bool {
         false
     }
+
+    const KEY_BYTES: usize = 0;
+
+    fn sort_key(self) -> u64 {
+        0
+    }
 }
 
 macro_rules! impl_floatish_for_ints {
-    ($($t:ty),*) => {
-        $(impl FloatIsh for $t {})*
+    ($($t:ty => $u:ty),*) => {
+        $(impl FloatIsh for $t {
+            const KEY_BYTES: usize = std::mem::size_of::<$t>();
+
+            fn sort_key(self) -> u64 {
+                ((self as $u) ^ (<$t>::MIN as $u)) as u64
+            }
+        })*
     };
 }
-impl_floatish_for_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
+impl_floatish_for_ints!(i8 => u8, i16 => u16, i32 => u32, i64 => u64, u8 => u8, u16 => u16, u32 => u32, u64 => u64);
 
 impl FloatIsh for half::f16 {
     fn is_nan_ish(self) -> bool {
@@ -25,6 +37,17 @@ impl FloatIsh for half::f16 {
 
     fn is_signed_zero_ish(self) -> bool {
         self == half::f16::ZERO
+    }
+
+    const KEY_BYTES: usize = 2;
+
+    fn sort_key(self) -> u64 {
+        let sign: u16 = 1 << 15;
+        if self.is_nan() {
+            return u16::MAX as u64;
+        }
+        let b = if self == Default::default() { 0 } else { self.to_bits() };
+        (if b & sign != 0 { !b } else { b | sign }) as u64
     }
 }
 
@@ -36,6 +59,17 @@ impl FloatIsh for f32 {
     fn is_signed_zero_ish(self) -> bool {
         self == 0.0
     }
+
+    const KEY_BYTES: usize = 4;
+
+    fn sort_key(self) -> u64 {
+        let sign: u32 = 1 << 31;
+        if self.is_nan() {
+            return u32::MAX as u64;
+        }
+        let b = if self == Default::default() { 0 } else { self.to_bits() };
+        (if b & sign != 0 { !b } else { b | sign }) as u64
+    }
 }
 
 impl FloatIsh for f64 {
@@ -45,6 +79,17 @@ impl FloatIsh for f64 {
 
     fn is_signed_zero_ish(self) -> bool {
         self == 0.0
+    }
+
+    const KEY_BYTES: usize = 8;
+
+    fn sort_key(self) -> u64 {
+        let sign: u64 = 1 << 63;
+        if self.is_nan() {
+            return u64::MAX;
+        }
+        let b = if self == Default::default() { 0 } else { self.to_bits() };
+        if b & sign != 0 { !b } else { b | sign }
     }
 }
 

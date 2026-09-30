@@ -16,6 +16,14 @@ def data(m, shape=(3, 4), dtype="float64", seed=0, kind="normal"):
     return m.array(base.astype(dtype))
 
 
+def _scalar_grid(m, A, xs, ys, names, dtype):
+    import operator
+
+    ops = [getattr(operator, n) for n in names]
+    xs = [A(xs, dtype=dtype)[i] for i in range(len(xs))]
+    return tuple(f(a, b) for f in ops for a in xs for b in ys) + tuple(f(b, a) for f in ops for a in xs for b in ys)
+
+
 CASES = {
     # reductions
     "sum_axis": lambda m, A: m.sum(data(m), axis=1),
@@ -271,6 +279,11 @@ CASES = {
     "axis_stats_on_strided_views": lambda m, A: (lambda x: (m.mean(x[:, ::-1], axis=0), m.var(x[::2], axis=1), m.std(x.T, axis=0), m.sum(x[:, 1:]), m.mean(x), m.median(x[:, ::2], axis=0)))(A(m.arange(35.0).reshape(5, 7) ** 1.5)),
     "outer_keeps_signed_zero_products": lambda m, A: m.outer(A([-0.0, 2.0], dtype="float32"), A([1.0, -0.0], dtype="float32")),
     "sum_prod_over_empty_axis_tuple_promote": lambda m, A: tuple(f(A([[1, 0]], dtype=dt), axis=()) for f in (m.sum, m.prod) for dt in ("uint8", "int16", "bool", "float32")),
+    "scalar_float_fast_path_values": lambda m, A: _scalar_grid(m, A, [0.0, -0.0, 1.5, float("inf"), float("nan"), 1e308], [0.0, -0.0, 2, -3, float("inf"), float("nan"), True, 1e-320], ["add", "sub", "mul", "truediv", "pow", "lt", "ge", "eq", "ne"], "float64"),
+    "scalar_int_fast_path_values": lambda m, A: _scalar_grid(m, A, [0, 1, -7, 2**62, -(2**63), 2**63 - 1], [0, 1, -3, 2**62, 2**63 - 1], ["add", "sub", "mul", "truediv", "floordiv", "mod", "lt", "le", "eq"], "int64"),
+    "scalar_float_with_huge_python_int": lambda m, A: A([1.5])[0] + 10**400,
+    "scalar_int_with_huge_python_int": lambda m, A: A([3], dtype="int64")[0] + 2**70,
+    "sort_large_lanes_all_dtypes": lambda m, A: tuple(m.sort(A(((m.arange(3000) * 7919) % 2003 - 1000).astype(dt) / (3 if "float" in dt else 1)), axis=0) for dt in ("float64", "float32", "float16", "int64", "int32", "int16", "uint16", "int8", "uint8")) + (m.sort(A([float("nan"), 0.0, -0.0, 1.0, -1.0] * 700)),),
     "scalar_ieee_division": lambda m, A: (m.sum(A([0.0])) / 0.0, 1.0 / m.sum(A([0.0])), m.sum(A([5.0])) % m.sum(A([0.0]))),
     "solve_numpy2_vector_rule": lambda m, A: (m.linalg.solve(m.eye(2) * 2 + m.ones((1, 2, 2)) * 0.1, m.ones((1, 2))), m.linalg.solve(m.eye(2) * 2, m.ones((2, 0))), m.linalg.solve(m.zeros((0, 2, 2)), m.ones((2, 0)))),
     "pinv_array_rtol": lambda m, A: (m.linalg.pinv(m.eye(2) * 3 + m.ones((2, 2, 2)), rtol=A([0.1, 0.2])), m.linalg.pinv(m.zeros((0, 1, 1), dtype="float32"), rtol=m.zeros((0,), dtype="float32"))),

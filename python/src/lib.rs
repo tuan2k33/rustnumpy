@@ -44,9 +44,30 @@ fn load(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     ops::out_array(py, Arr::from(a))
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_malloc() {
+    extern "C" {
+        fn mallopt(param: std::os::raw::c_int, value: std::os::raw::c_int) -> std::os::raw::c_int;
+    }
+    const M_TRIM_THRESHOLD: std::os::raw::c_int = -1;
+    const M_MMAP_THRESHOLD: std::os::raw::c_int = -3;
+    if std::env::var_os("RUSTNUMPY_NO_MALLOC_TUNING").is_some() {
+        return;
+    }
+    // SAFETY: mallopt only adjusts glibc's allocator parameters and is safe to call at any time.
+    unsafe {
+        mallopt(M_MMAP_THRESHOLD, 32 << 20);
+        mallopt(M_TRIM_THRESHOLD, 128 << 20);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_malloc() {}
+
 #[pymodule(gil_used = true)]
 #[pyo3(name = "_core")]
 fn rustnumpy_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    tune_malloc();
     m.add_class::<pyarray::PyArray>()?;
     m.add("Unsupported", m.py().get_type::<Unsupported>())?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

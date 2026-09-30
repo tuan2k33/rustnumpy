@@ -268,7 +268,62 @@ fn lane_view<T>(lane: &[T]) -> PyResult<ArrayView<'_, T>> {
     ArrayView::from_raw_parts(lane, vec![lane.len()], vec![1], 0).map_err(shape_err)
 }
 
-fn lanes_f64<T: Copy>(x: &NdArray<T>, axis: Option<isize>, f: impl Fn(&ArrayView<T>) -> PyResult<f64>) -> PyResult<NdArray<f64>> {
+#[derive(Clone, Copy)]
+enum RowKind {
+    Lanes,
+    Mean,
+    Var(usize),
+    Std(usize),
+}
+
+type RowsFn<'a, T> = &'a dyn Fn(&[T], usize, usize, usize) -> Vec<f64>;
+
+fn rows_stat<T: AsF64>(src: &[T], outer: usize, n: usize, inner: usize, kind: RowKind) -> Vec<f64> {
+    let (ddof, root) = match kind {
+        RowKind::Var(d) => (d, false),
+        RowKind::Std(d) => (d, true),
+        _ => (0, false),
+    };
+    let mut out = Vec::with_capacity(outer * inner);
+    if n == 0 || (!matches!(kind, RowKind::Mean) && n <= ddof) {
+        out.resize(outer * inner, f64::NAN);
+        return out;
+    }
+    for o in 0..outer {
+        let base = o * n * inner;
+        let first = &src[base..base + inner];
+        let mut means: Vec<f64> = first.iter().map(|v| v.as_f64()).collect();
+        for k in 1..n {
+            for (a, v) in means.iter_mut().zip(&src[base + k * inner..][..inner]) {
+                *a += v.as_f64();
+            }
+        }
+        means.iter_mut().for_each(|m| *m /= n as f64);
+        if matches!(kind, RowKind::Mean) {
+            out.extend(means);
+            continue;
+        }
+        let mut ss: Vec<f64> = first.iter().zip(&means).map(|(v, m)| (v.as_f64() - m) * (v.as_f64() - m)).collect();
+        for k in 1..n {
+            for ((a, v), m) in ss.iter_mut().zip(&src[base + k * inner..][..inner]).zip(&means) {
+                let d = v.as_f64() - m;
+                *a += d * d;
+            }
+        }
+        out.extend(ss.into_iter().map(|s| {
+            let v = s / (n - ddof) as f64;
+            if root { v.sqrt() } else { v }
+        }));
+    }
+    out
+}
+
+fn lanes_stat<T: Copy + AsF64>(x: &NdArray<T>, axis: Option<isize>, f: impl Fn(&ArrayView<T>) -> PyResult<f64>, kind: RowKind) -> PyResult<NdArray<f64>> {
+    let rows = |s: &[T], o: usize, n: usize, i: usize| rows_stat(s, o, n, i, kind);
+    lanes_f64(x, axis, f, if matches!(kind, RowKind::Lanes) { None } else { Some(&rows) })
+}
+
+fn lanes_f64<T: Copy>(x: &NdArray<T>, axis: Option<isize>, f: impl Fn(&ArrayView<T>) -> PyResult<f64>, rows: Option<RowsFn<'_, T>>) -> PyResult<NdArray<f64>> {
     let Some(axis) = axis else {
         return Ok(scalar_nd(f(&lane_view(x.as_slice())?)?, &[]));
     };
@@ -290,7 +345,9 @@ fn lanes_f64<T: Copy>(x: &NdArray<T>, axis: Option<isize>, f: impl Fn(&ArrayView
     let outer: usize = shape[..ax].iter().product();
     let inner: usize = shape[ax + 1..].iter().product();
     let mut result = Vec::with_capacity(outer * inner);
-    if inner == 1 {
+    if let (Some(rows), true) = (rows, inner > 1) {
+        result = rows(src, outer, n, inner);
+    } else if inner == 1 {
         for o in 0..outer {
             result.push(f(&lane_view(&src[o * n..(o + 1) * n])?)?);
         }
@@ -325,13 +382,13 @@ fn lanes_f64<T: Copy>(x: &NdArray<T>, axis: Option<isize>, f: impl Fn(&ArrayView
 }
 
 macro_rules! stat_fn {
-    ($name:ident, $core:path $(, $extra:ident : $ty:ty = $default:expr)*) => {
+    ($name:ident, $core:path, rows: $rows:expr $(, $extra:ident : $ty:ty = $default:expr)*) => {
         #[pyfunction]
         #[pyo3(signature = (a, axis=None $(, $extra=$default)*))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, $($extra: $ty),*) -> PyResult<Py<PyAny>> {
             let arr_in = stat_input(py, a)?;
             let arr: &Arr = &arr_in;
-            let r = with_real!(&arr, x => lanes_f64(x, axis, |v| Ok($core(v $(, $extra)*)))?);
+            let r = with_real!(arr, x => lanes_stat(x, axis, |v| Ok($core(v $(, $extra)*)), $rows)?);
             float_out(py, &arr, r)
         }
     };
@@ -356,23 +413,23 @@ fn nanstd_c<T: FloatIsh + AsF64>(v: &ArrayView<T>, ddof: usize) -> f64 {
     rustnumpy::nanstd(v, ddof)
 }
 
-stat_fn!(mean, mean_c);
-stat_fn!(var, var_c, ddof: usize = 0);
-stat_fn!(std_, std_c, ddof: usize = 0);
-stat_fn!(nanmean, nanmean_c);
-stat_fn!(nanvar, nanvar_c, ddof: usize = 0);
-stat_fn!(nanstd, nanstd_c, ddof: usize = 0);
+stat_fn!(mean, mean_c, rows: RowKind::Mean);
+stat_fn!(var, var_c, rows: RowKind::Var(ddof), ddof: usize = 0);
+stat_fn!(std_, std_c, rows: RowKind::Std(ddof), ddof: usize = 0);
+stat_fn!(nanmean, nanmean_c, rows: RowKind::Lanes);
+stat_fn!(nanvar, nanvar_c, rows: RowKind::Lanes, ddof: usize = 0);
+stat_fn!(nanstd, nanstd_c, rows: RowKind::Lanes, ddof: usize = 0);
 
 #[pyfunction]
 #[pyo3(signature = (a, axis=None))]
 pub fn median(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
     let arr_in = stat_input(py, a)?;
     let arr: &Arr = &arr_in;
-    let r = with_real!(&arr, x => lanes_f64(x, axis, |v| match rustnumpy::median(v) {
+    let r = with_real!(arr, x => lanes_f64(x, axis, |v| match rustnumpy::median(v) {
         Ok(v) => Ok(v),
         Err(rustnumpy::ReductionError::EmptyInput) => Ok(f64::NAN),
         Err(e) => Err(value_err(e)),
-    })?);
+    }, None)?);
     float_out(py, arr, r)
 }
 
@@ -381,11 +438,11 @@ pub fn median(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyRe
 pub fn nanmedian(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
     let arr_in = stat_input(py, a)?;
     let arr: &Arr = &arr_in;
-    let r = with_real!(&arr, x => lanes_f64(x, axis, |v| match rustnumpy::nanmedian(v) {
+    let r = with_real!(arr, x => lanes_f64(x, axis, |v| match rustnumpy::nanmedian(v) {
         Ok(v) => Ok(v),
         Err(rustnumpy::ReductionError::EmptyInput) => Ok(f64::NAN),
         Err(e) => Err(value_err(e)),
-    })?);
+    }, None)?);
     float_out(py, arr, r)
 }
 
@@ -394,11 +451,11 @@ pub fn nanmedian(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> P
 pub fn percentile(py: Python<'_>, a: &Bound<'_, PyAny>, q: f64, axis: Option<isize>) -> PyResult<Py<PyAny>> {
     let arr_in = stat_input(py, a)?;
     let arr: &Arr = &arr_in;
-    let r = with_real!(&arr, x => lanes_f64(x, axis, |v| match rustnumpy::percentile(v, q) {
+    let r = with_real!(arr, x => lanes_f64(x, axis, |v| match rustnumpy::percentile(v, q) {
         Ok(v) => Ok(v),
         Err(rustnumpy::ReductionError::EmptyInput) => Err(pyo3::exceptions::PyIndexError::new_err("index -1 is out of bounds for axis 0 with size 0")),
         Err(e) => Err(value_err(e)),
-    })?);
+    }, None)?);
     float_out(py, arr, r)
 }
 

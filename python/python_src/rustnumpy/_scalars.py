@@ -101,10 +101,84 @@ def _direct(name):
     return op
 
 
+_I64_RANGE = (-(2**63), 2**63 - 1)
+_ARITH_KEYS = ("add", "sub", "mul", "truediv", "pow")
+_CMP_KEYS = ("eq", "ne", "lt", "le", "gt", "ge")
+
+
+def _fast_float(key, reflected, slow):
+    if key in _CMP_KEYS:
+        method = getattr(float, f"__{key}__")
+
+        def cmp(self, other):
+            if type(other) in _FAST_FLOAT_CMP:
+                return _Bool(method(self, other))
+            return slow(self, other)
+
+        return cmp
+    if key not in _ARITH_KEYS:
+        return None
+    method = getattr(float, f"__{'r' if reflected else ''}{key}__")
+
+    def arith(self, other):
+        if type(other) in _FAST_FLOAT_ARITH:
+            try:
+                r = method(self, other)
+            except (OverflowError, ZeroDivisionError):
+                return slow(self, other)
+            if type(r) is float:
+                return _F64(r)
+        return slow(self, other)
+
+    return arith
+
+
+def _fast_int(key, reflected, slow):
+    lo, hi = _I64_RANGE
+    if key in _CMP_KEYS:
+        method = getattr(int, f"__{key}__")
+
+        def cmp(self, other):
+            t = type(other)
+            if t is int:
+                return _Bool(method(self._v, other))
+            if t is _I64:
+                return _Bool(method(self._v, other._v))
+            return slow(self, other)
+
+        return cmp
+    if key not in ("add", "sub", "mul", "truediv", "floordiv", "mod"):
+        return None
+    method = getattr(int, f"__{'r' if reflected else ''}{key}__")
+
+    def arith(self, other):
+        t = type(other)
+        if t is _I64:
+            other = other._v
+        elif t is not int or not lo <= other <= hi:
+            return slow(self, other)
+        try:
+            r = method(self._v, other)
+        except ZeroDivisionError:
+            return slow(self, other)
+        if key == "truediv":
+            a, b = (other, self._v) if reflected else (self._v, other)
+            return _F64(float(a) / float(b))
+        return _I64(r) if lo <= r <= hi else slow(self, other)
+
+    return arith
+
+
 def _install(cls):
     for name in _BINARY + _UNARY + _COMPARE:
-        key = name[3:-2] if name.startswith("__r") and name[3:-2] in _CORE else name[2:-2]
-        setattr(cls, name, _direct(name) if key in _CORE else _delegate(name))
+        reflected = name.startswith("__r") and name[3:-2] in _CORE
+        key = name[3:-2] if reflected else name[2:-2]
+        if key not in _CORE:
+            setattr(cls, name, _delegate(name))
+            continue
+        op = _direct(name)
+        fast = {"float64": _fast_float, "int64": _fast_int}.get(cls._rnp_dtype)
+        setattr(cls, name, (fast(key, reflected, op) if fast else None) or op)
     cls.__hash__ = lambda self: hash(self._plain())
 
 
@@ -164,6 +238,8 @@ class _Bool(_Plain):
 
 
 _FAST = {int, float, complex, bool, _F64, _C128, _I64, _Bool}
+_FAST_FLOAT_ARITH = {float, _F64, int, bool}
+_FAST_FLOAT_CMP = {float, _F64}
 
 for _cls, _base, _name in ((_F64, float, "float64"), (_C128, complex, "complex128"), (_I64, int, "int64"), (_Bool, bool, "bool")):
     _cls._base = _base

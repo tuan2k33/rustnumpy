@@ -422,7 +422,7 @@ impl<T: Copy> crate::ndarray::NdArray<T> {
     where
         T: Cast<U>,
     {
-        let data: Vec<U> = self.view().iter().map(Cast::cast).collect();
+        let data: Vec<U> = self.as_slice().iter().map(|&x| x.cast()).collect();
         crate::ndarray::NdArray::from_vec(data, self.shape()).expect("same element count")
     }
 }

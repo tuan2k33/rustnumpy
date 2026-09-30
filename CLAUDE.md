@@ -47,7 +47,7 @@ ARRAY_API_TESTS_MODULE=rustnumpy ARRAY_API_TESTS_VERSION=2025.12 \
   python -m pytest array_api_tests -n 3 --max-examples=20 --hypothesis-disable-deadline -W ignore --timeout=120
 ```
 
-Performance vs NumPy: `PYTHONPATH=python/python_src python scripts/bench_vs_numpy.py` (numbers and the remaining gaps in `NumPy.md`, "Step 26e"). Keep optimisations result-neutral: float `sum`/`mean`/`var` are NumPy's pairwise summation bit-for-bit, and `sort` reproduces stable tie order.
+Performance vs NumPy: `PYTHONPATH=python/python_src python scripts/bench_vs_numpy.py` (numbers and the remaining gaps in `NumPy.md`, "Step 26e"). Keep optimisations result-neutral: float `sum`/`mean`/`var` reproduce NumPy's summation order bit-for-bit (pairwise over a lane, row by row over a non-last axis), and `sort` reproduces stable tie order (radix sort for <= 32-bit dtypes, NaNs set aside otherwise). Importing `_core` sets glibc malloc thresholds (skip with `RUSTNUMPY_NO_MALLOC_TUNING=1`).
 
 Reference numbers (step 26d): rustnumpy 1347 passed / 29 failed, stock NumPy 2.5.3 1331 / 46; counts vary by a few between runs (Hypothesis draws). Also: `python/numpy_suite/run_suite.py` runs NumPy's own test files through a shim (see `NumPy.md`, "Step 25"); shadow mode after step 26d: 455,254 comparisons match, 4 known mismatches. `.npy` fixtures in `tests/fixtures/` come from `scripts/gen_fixtures.py` (needs NumPy).
 

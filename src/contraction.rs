@@ -120,7 +120,18 @@ macro_rules! matmul_by_loops {
 }
 matmul_by_loops!(bool, i8, i16, i32, i64, u8, u16, u32, u64, half::f16);
 
-const PARALLEL_MATMUL_WORK: usize = 1 << 26;
+fn matmul_par(work: usize) -> faer::Par {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let want = match work {
+        w if w < 1 << 23 => 1,
+        w if w < 1 << 26 => 4,
+        _ => 8,
+    };
+    match want.min(cores) {
+        0 | 1 => faer::Par::Seq,
+        n => faer::Par::rayon(n),
+    }
+}
 
 macro_rules! matmul_by_faer {
     ($($t:ty),*) => {$(
@@ -129,12 +140,12 @@ macro_rules! matmul_by_faer {
                 if m == 0 || n == 0 || k == 0 {
                     return vec![Self::default(); m * n];
                 }
-                let lhs = faer::MatRef::from_row_major_slice(a, m, k);
-                let rhs = faer::MatRef::from_row_major_slice(b, k, n);
-                let par = if m * n * k < PARALLEL_MATMUL_WORK { faer::Par::Seq } else { faer::Par::rayon(0) };
-                let mut c = faer::Mat::<$t>::zeros(m, n);
-                faer::linalg::matmul::matmul(c.as_mut(), faer::Accum::Replace, lhs, rhs, <$t as num_traits::One>::one(), par);
-                (0..m).flat_map(|i| (0..n).map(move |j| (i, j))).map(|(i, j)| c[(i, j)]).collect()
+                let a_t = faer::MatRef::from_column_major_slice(a, k, m);
+                let b_t = faer::MatRef::from_column_major_slice(b, n, k);
+                let mut out = vec![Self::default(); m * n];
+                let c_t = faer::MatMut::from_column_major_slice_mut(&mut out, n, m);
+                faer::linalg::matmul::matmul(c_t, faer::Accum::Replace, b_t, a_t, <$t as num_traits::One>::one(), matmul_par(m * n * k));
+                out
             }
         }
     )*};
