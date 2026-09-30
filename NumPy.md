@@ -643,6 +643,34 @@ Step 26 ended with a list of "deliberately not done" items and a few unverified 
 
 **Shadow run after 26d, and what it exposed.** The full shadow run of NumPy's 23 test files (method in "Step 25 - Results") showed 1,929 value mismatches and 5,651 errors that the step 26b run had not had a chance to hit; a build of the commit before 26d showed the same numbers, so they came from 26b/26c code paths, all complex linear algebra or fft: `cond` on complex stacks collapsed the stack for `p=None/±2` and raised for `p=1/-1/inf/'fro'` (it now works per matrix, and a singular matrix gives `inf` as in NumPy); complex `lstsq` returned the rank as a Python `int` and empty residuals as `float64` (now an `int32` 0-d array and the real dtype of the input); n-D fft rejected `s=-1`, which since NumPy 2.0 means "keep this axis's length". Two were bugs in the shim, not in the package: `eigh` was checked against `tril(a) + tril(a, -1).T` without the conjugate (not the Hermitian matrix for complex input, and ignoring `UPLO`), and `eigvals` was compared by position although NumPy documents the order as unspecified (now sorted, like `eig`). After the fixes: **455,254 comparisons match, 4 mismatches and 1 error, all previously classified** (`argsort` keyword filter, `lstsq` rank at the SVD cutoff, `sign` of complex `inf`, `array_split` on 4 x 10^9 rows stopped by the allocation guard); `array-api-tests` 1347 passed / 29 failed (NumPy 2.5.3: 1331 / 46).
 
+## Step 26e — Performance pass
+
+The first Rust-vs-NumPy benchmark (after conformance was reached, at the owner's request) showed rustnumpy 3x to 550x slower than NumPy 2.5.3, and step 26d's scalar delegation 70x slower than before. The kernels were not the main cause; the binding was. Measured on the same machine (WSL, best of 5, 1e6 float64 unless noted), `scripts/bench_vs_numpy.py`:
+
+| case | NumPy | before | after |
+|---|---|---|---|
+| `a + b` | 0.85 ms | 17.0 ms | 0.8-1.1 ms |
+| `sqrt(a)` | 1.39 ms | 4.3 ms | 1.4 ms |
+| `sum(a)` | 0.24 ms | 36 ms | 0.23 ms |
+| `mean(m, axis=0)`, 1000x1000 | 0.24 ms | 31 ms | 1.4 ms |
+| `sort(a)` | 11.9 ms | 72 ms | 47-54 ms |
+| `m @ m`, 200x200 | 0.11 ms | 61 ms | 0.45-0.53 ms |
+| `a[idx]`, 1e4 indices | 21 us | 2.2 ms | 0.12 ms |
+| `a[mask]` | 5.3 ms | 44 ms | 6 ms |
+| `x + x`, 10 elements | 0.47 us | 42 us | 0.65 us |
+| scalar `s * 2.0` | 79 ns | 23 us (0.3 us before 26d) | 1.0 us |
+
+What changed:
+
+1. **`alloc_guard` read `/proc/meminfo` on every call** (about 32 us on WSL), for every array argument. It now checks only allocations of 64 MiB or more; that alone took the fixed cost of a call from ~42 us to under 1 us and removed most of 26d's scalar slowdown.
+2. **Every operand was copied.** `Arr::from_object` turns a `PyArray` into an owned `Arr` via `to_owned()`. Hot paths now use `Arr::input`, which returns `ArrIn`: a handle that derefs to `&Arr` and, when the array is its whole C-contiguous storage (the common case), just holds the `Arc<Storage>`. It is read-only; the only writer (`write_positions`) casts its source to a new array first, so no reader overlaps a write. `cast_ref` casts only when the dtype actually differs (`astype` always copied, e.g. `sum` to its accumulator dtype). `from_object` still returns an owned copy for the many cold paths.
+3. **Contiguous fast paths in the core.** `ArrayView::as_slice_c()` gives the slice of a C-contiguous view; `to_owned`, `zip_with` (including array-with-one-element broadcasts), `map`, their parallel versions, `sum`, `mean`/`var`/`std` and the statistics lanes use it instead of per-element index arithmetic. Float `sum` is now **NumPy's pairwise summation** (blocks of 8 accumulators up to 128 elements, halving above, `+0.0` initial value), and `mean`/`var` use the same scheme in `f64`: results for float64 are now bit-identical to NumPy's (checked on sizes 1 to 100001), where the sequential fold differed in the last bits. Axis statistics gather non-contiguous lanes 64 at a time from row-contiguous reads, and single-axis reductions no longer transpose+copy at the Python layer.
+4. **Kernels.** 2-D `matmul` goes through a `MatmulKernel` trait: faer for float/complex (sequential below about 400^3 multiply-adds, where faer's rayon start-up cost more than the work on this machine), an i-k-j loop over rows for integers/bool/float16 (wrapping like NumPy). `sort` uses an unstable sort and then restores the input order of the only elements that compare equal but differ (signed zeros and NaNs), so its output is identical to the previous stable sort; `argsort` breaks ties by index. Single-axis fancy/boolean indexing gathers straight from the storage through its strides instead of copying the whole base array. Scalars call the `_core` function for their operator directly when the other operand is a Python number or scalar, and the scalar factory is looked up once.
+
+Correctness was held fixed: pytest (11,349), the shadow run of NumPy's own tests (455,250 comparisons, the same 4 known mismatches) and array-api-tests (1347 / 29) are unchanged. The pass also fixed three old bugs its checks exposed: `outer` lost the sign of `-0.0` products (it went through the einsum contraction, which starts from `+0.0`), `sum`/`prod` over `axis=()` returned the input unpromoted (and uncopied), and a size-0 multi-dimensional boolean mask whose shape differs only in zero-length dimensions raised instead of returning an empty result.
+
+**Still slower, and why.** Mixed-dtype arithmetic is about 2.5x NumPy: step 26d made casting explicit, so `int32 + float64` casts one operand into a new array first (NumPy casts in small buffers inside the loop). In a process that also allocates through NumPy, the same case measures 10-14x, because glibc returns the freed 8 MB buffers to the OS and the next call page-faults them back (`MALLOC_TRIM_THRESHOLD_`/`MALLOC_MMAP_THRESHOLD_` set high bring it back to 2.5x); a caching allocator such as mimalloc in the extension would fix it and is not done yet. `sort` is 4x (NumPy uses SIMD sorting networks), 200x200 `matmul` 4-5x (OpenBLAS), axis-0 `mean` 7x (NumPy adds rows instead of gathering lanes), fancy indexing 6x (index conversion and bounds checks in Python-facing code), and scalar operators 10-20x (a Python-level method call plus the ufunc machinery per operation).
+
 ## NumPy Parts Worth Dropping When Rewriting in Rust
 
 **Target version: NumPy >= 2.5 semantics only.** This project matches the behavior of current NumPy (2.5.x), not the full 15-20 year history behind it. Anything NumPy itself has deprecated, or keeps only as a backward-compatibility shim for code written against an older version, is out of scope here — don't implement it, don't test against it, don't budget time for it. When in doubt about whether something is "current" or "legacy", check what real NumPy >= 2.5 actually recommends/warns about (`DeprecationWarning`, docs saying "prefer X instead") and only port the recommended side.

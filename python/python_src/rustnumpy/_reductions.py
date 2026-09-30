@@ -39,6 +39,12 @@ def _merge(a, axes):
     return t.reshape(lead + (n,)), lead
 
 
+def _along(a, axes):
+    if len(axes) == 1:
+        return a, axes[0]
+    return _merge(a, axes)[0], -1
+
+
 def _kept_shape(shape, axes):
     return tuple(1 if i in axes else s for i, s in enumerate(shape))
 
@@ -61,6 +67,8 @@ def _native_reduce(native, a, axis):
     axes = _axes(axis, a.ndim)
     if axis is None or (a.ndim == 0):
         return native(a) if a.ndim else native(a), axes
+    if not axes:
+        return native(a[..., None], a.ndim), axes
     res = a
     for ax in sorted(axes, reverse=True):
         res = native(res, ax)
@@ -203,8 +211,7 @@ def mean(a, axis=None, dtype=None, out=None, keepdims=False, *, where=True):
     if axis is None or a.ndim == 0:
         res = _core.mean(a)
     else:
-        merged, _ = _merge(a, axes)
-        res = _core.mean(merged, -1)
+        res = _core.mean(*_along(a, axes))
     return _deliver(res, out, keepdims, shape, axes, name="mean")
 
 
@@ -256,8 +263,7 @@ def _var_std(a, axis, dtype, out, ddof, keepdims, where, take_sqrt, name):
     if axis is None or a.ndim == 0:
         res = native(a, None, ddof)
     else:
-        merged, _ = _merge(a, axes)
-        res = native(merged, -1, ddof)
+        res = native(*_along(a, axes), ddof)
     return _deliver(res, out, keepdims, shape, axes, name=name)
 
 
@@ -303,8 +309,7 @@ def median(a, axis=None, out=None, overwrite_input=False, keepdims=False):
     if axis is None or a.ndim == 0:
         res = _core.median(a)
     else:
-        merged, _ = _merge(a, axes)
-        res = _core.median(merged, -1)
+        res = _core.median(*_along(a, axes))
     return _deliver(res, out, keepdims, shape, axes, name="median")
 
 
@@ -430,8 +435,7 @@ def nanmedian(a, axis=None, out=None, overwrite_input=False, keepdims=_NoValue):
     if axis is None or a.ndim == 0:
         res = _core.nanmedian(a)
     else:
-        merged, _ = _merge(a, axes)
-        res = _core.nanmedian(merged, -1)
+        res = _core.nanmedian(*_along(a, axes))
     return _deliver(res, out, keepdims, shape, axes, name="nanmedian")
 
 

@@ -7,7 +7,46 @@ use num_complex::Complex;
 
 pub trait WrapAdd: Copy {
     fn wrap_add(self, rhs: Self) -> Self;
+
+    fn sum_slice(init: Self, s: &[Self]) -> Self {
+        s.iter().fold(init, |acc, &x| acc.wrap_add(x))
+    }
 }
+
+macro_rules! pairwise_sum {
+    ($($t:ty),*) => {$(
+        impl WrapAdd for $t {
+            fn wrap_add(self, rhs: Self) -> Self {
+                self + rhs
+            }
+
+            fn sum_slice(init: Self, s: &[Self]) -> Self {
+                fn pairwise(a: &[$t]) -> $t {
+                    let n = a.len();
+                    if n < 8 {
+                        a.iter().fold(0.0, |acc, &x| acc + x)
+                    } else if n <= 128 {
+                        let mut r = [a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]];
+                        let body = n - n % 8;
+                        for chunk in a[8..body].chunks_exact(8) {
+                            for (acc, &x) in r.iter_mut().zip(chunk) {
+                                *acc += x;
+                            }
+                        }
+                        let res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+                        a[body..].iter().fold(res, |acc, &x| acc + x)
+                    } else {
+                        let half = n / 2;
+                        let half = half - half % 8;
+                        pairwise(&a[..half]) + pairwise(&a[half..])
+                    }
+                }
+                init + pairwise(s)
+            }
+        }
+    )*};
+}
+pairwise_sum!(f32, f64);
 
 pub trait WrapSub: Copy {
     fn wrap_sub(self, rhs: Self) -> Self;
@@ -28,12 +67,16 @@ wrap_ints!(i8, i16, i32, i64, u8, u16, u32, u64);
 
 macro_rules! wrap_plain {
     ($($t:ty),*) => {$(
-        impl WrapAdd for $t { fn wrap_add(self, rhs: Self) -> Self { self + rhs } }
         impl WrapSub for $t { fn wrap_sub(self, rhs: Self) -> Self { self - rhs } }
         impl WrapMul for $t { fn wrap_mul(self, rhs: Self) -> Self { self * rhs } }
     )*};
 }
 wrap_plain!(half::f16, f32, f64, Complex<f32>, Complex<f64>);
+
+macro_rules! wrap_add_plain {
+    ($($t:ty),*) => {$( impl WrapAdd for $t { fn wrap_add(self, rhs: Self) -> Self { self + rhs } } )*};
+}
+wrap_add_plain!(half::f16, Complex<f32>, Complex<f64>);
 
 impl WrapAdd for bool {
     fn wrap_add(self, rhs: Self) -> Self {

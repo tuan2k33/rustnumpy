@@ -5,6 +5,10 @@ pub trait FloatIsh: Copy + PartialOrd {
     fn is_nan_ish(self) -> bool {
         false
     }
+
+    fn is_signed_zero_ish(self) -> bool {
+        false
+    }
 }
 
 macro_rules! impl_floatish_for_ints {
@@ -18,17 +22,29 @@ impl FloatIsh for half::f16 {
     fn is_nan_ish(self) -> bool {
         self.is_nan()
     }
+
+    fn is_signed_zero_ish(self) -> bool {
+        self == half::f16::ZERO
+    }
 }
 
 impl FloatIsh for f32 {
     fn is_nan_ish(self) -> bool {
         self.is_nan()
     }
+
+    fn is_signed_zero_ish(self) -> bool {
+        self == 0.0
+    }
 }
 
 impl FloatIsh for f64 {
     fn is_nan_ish(self) -> bool {
         self.is_nan()
+    }
+
+    fn is_signed_zero_ish(self) -> bool {
+        self == 0.0
     }
 }
 
@@ -107,14 +123,42 @@ impl std::fmt::Display for ReductionError {
 
 impl std::error::Error for ReductionError {}
 
-fn values<T: Copy>(view: &ArrayView<T>) -> Vec<T> {
-    crate::shape::IndexIter::new(view.shape())
-        .map(|idx| view.get(&idx).expect("IndexIter only yields valid indices"))
-        .collect()
+fn values<'a, T: Copy>(view: &ArrayView<'a, T>) -> std::borrow::Cow<'a, [T]> {
+    match view.as_slice_c() {
+        Some(s) => std::borrow::Cow::Borrowed(s),
+        None => std::borrow::Cow::Owned(view.to_owned().into_vec()),
+    }
 }
 
 pub fn sum<T: Copy + Default + WrapAdd>(view: &ArrayView<T>) -> T {
-    values(view).into_iter().fold(T::default(), |acc, x| acc.wrap_add(x))
+    match view.as_slice_c() {
+        Some(s) => T::sum_slice(T::default(), s),
+        None => T::sum_slice(T::default(), &view.to_owned().into_vec()),
+    }
+}
+
+fn pairwise_f64<T: Copy>(a: &[T], f: &impl Fn(T) -> f64) -> f64 {
+    let n = a.len();
+    if n < 8 {
+        a.iter().fold(0.0, |acc, &x| acc + f(x))
+    } else if n <= 128 {
+        let mut r = [0.0; 8];
+        for (acc, &x) in r.iter_mut().zip(a) {
+            *acc = f(x);
+        }
+        let body = n - n % 8;
+        for chunk in a[8..body].chunks_exact(8) {
+            for (acc, &x) in r.iter_mut().zip(chunk) {
+                *acc += f(x);
+            }
+        }
+        let res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        a[body..].iter().fold(res, |acc, &x| acc + f(x))
+    } else {
+        let half = n / 2;
+        let half = half - half % 8;
+        pairwise_f64(&a[..half], f) + pairwise_f64(&a[half..], f)
+    }
 }
 
 pub fn mean<T: AsF64>(view: &ArrayView<T>) -> f64 {
@@ -122,7 +166,7 @@ pub fn mean<T: AsF64>(view: &ArrayView<T>) -> f64 {
     if v.is_empty() {
         f64::NAN
     } else {
-        v.iter().map(|x| x.as_f64()).sum::<f64>() / v.len() as f64
+        (0.0 + pairwise_f64(&v, &|x: T| x.as_f64())) / v.len() as f64
     }
 }
 
@@ -132,8 +176,11 @@ pub fn var<T: AsF64>(view: &ArrayView<T>, ddof: usize) -> f64 {
     if n == 0 || n <= ddof {
         return f64::NAN;
     }
-    let m = v.iter().map(|x| x.as_f64()).sum::<f64>() / n as f64;
-    let ss: f64 = v.iter().map(|x| (x.as_f64() - m).powi(2)).sum();
+    let m = (0.0 + pairwise_f64(&v, &|x: T| x.as_f64())) / n as f64;
+    let ss = 0.0 + pairwise_f64(&v, &|x: T| {
+        let d = x.as_f64() - m;
+        d * d
+    });
     ss / (n - ddof) as f64
 }
 
@@ -151,7 +198,7 @@ pub fn std_default<T: AsF64>(view: &ArrayView<T>) -> f64 {
 
 pub fn min<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     let v = values(view);
-    let mut iter = v.into_iter();
+    let mut iter = v.iter().copied();
     let first = iter.next().ok_or(ReductionError::EmptyInput)?;
     Ok(iter.fold(first, |acc, x| {
         if acc.is_nan_ish() {
@@ -166,7 +213,7 @@ pub fn min<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
 
 pub fn max<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
     let v = values(view);
-    let mut iter = v.into_iter();
+    let mut iter = v.iter().copied();
     let first = iter.next().ok_or(ReductionError::EmptyInput)?;
     Ok(iter.fold(first, |acc, x| {
         if acc.is_nan_ish() {
@@ -200,7 +247,7 @@ pub fn percentile<T: AsF64>(view: &ArrayView<T>, q: f64) -> Result<f64, Reductio
     if !(0.0..=100.0).contains(&q) {
         return Err(ReductionError::PercentileOutOfRange { q });
     }
-    let mut v: Vec<f64> = values(view).into_iter().map(|x| x.as_f64()).collect();
+    let mut v: Vec<f64> = values(view).iter().copied().map(|x| x.as_f64()).collect();
     if v.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
@@ -221,7 +268,7 @@ fn median_of_sorted(sorted: &[f64]) -> f64 {
 }
 
 pub fn median<T: AsF64>(view: &ArrayView<T>) -> Result<f64, ReductionError> {
-    let mut v: Vec<f64> = values(view).into_iter().map(|x| x.as_f64()).collect();
+    let mut v: Vec<f64> = values(view).iter().copied().map(|x| x.as_f64()).collect();
     if v.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
@@ -233,11 +280,11 @@ pub fn median<T: AsF64>(view: &ArrayView<T>) -> Result<f64, ReductionError> {
 }
 
 fn non_nan_values<T: FloatIsh>(view: &ArrayView<T>) -> Vec<T> {
-    values(view).into_iter().filter(|x| !x.is_nan_ish()).collect()
+    values(view).iter().copied().filter(|x| !x.is_nan_ish()).collect()
 }
 
 pub fn nansum<T: FloatIsh + Default + WrapAdd>(view: &ArrayView<T>) -> T {
-    non_nan_values(view).into_iter().fold(T::default(), |acc, x| acc.wrap_add(x))
+    non_nan_values(view).iter().copied().fold(T::default(), |acc, x| acc.wrap_add(x))
 }
 
 pub fn nanmean<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> f64 {
@@ -277,7 +324,7 @@ pub fn nanmin<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
         return Err(ReductionError::EmptyInput);
     }
     let v = non_nan_values(view);
-    let mut iter = v.into_iter();
+    let mut iter = v.iter().copied();
     let Some(first) = iter.next() else {
 
         return Ok(values(view)[0]);
@@ -290,7 +337,7 @@ pub fn nanmax<T: FloatIsh>(view: &ArrayView<T>) -> Result<T, ReductionError> {
         return Err(ReductionError::EmptyInput);
     }
     let v = non_nan_values(view);
-    let mut iter = v.into_iter();
+    let mut iter = v.iter().copied();
     let Some(first) = iter.next() else {
         return Ok(values(view)[0]);
     };
@@ -301,7 +348,7 @@ pub fn nanmedian<T: FloatIsh + AsF64>(view: &ArrayView<T>) -> Result<f64, Reduct
     if view.is_empty() {
         return Err(ReductionError::EmptyInput);
     }
-    let mut v: Vec<f64> = non_nan_values(view).into_iter().map(|x| x.as_f64()).collect();
+    let mut v: Vec<f64> = non_nan_values(view).iter().copied().map(|x| x.as_f64()).collect();
     if v.is_empty() {
         return Ok(f64::NAN);
     }
@@ -409,6 +456,18 @@ pub fn corrcoef(matrix: &ArrayView) -> Result<crate::NdArray, ReductionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn float_sum_is_numpys_pairwise_summation_bit_for_bit() {
+        let tenths = NdArray::from_vec(vec![0.1f64; 1000], &[1000]).unwrap();
+        assert_eq!(sum(&tenths.view()), 100.00000000000001);
+        let mixed = NdArray::from_vec((0..300).map(|i| (i as f64 * 0.37) % 1.3).collect(), &[300]).unwrap();
+        assert_eq!(sum(&mixed.view()), 197.59999999999923);
+        let single = NdArray::from_vec(vec![0.1f32; 1000], &[1000]).unwrap();
+        assert_eq!(sum(&single.view()).to_bits(), 1120403458);
+        let zeros = NdArray::from_vec(vec![-0.0f64; 8], &[8]).unwrap();
+        assert_eq!(sum(&zeros.view()).to_bits(), 0.0f64.to_bits());
+    }
     use crate::NdArray;
 
     fn arr(values: &[f64]) -> NdArray {

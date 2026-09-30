@@ -98,12 +98,77 @@ fn merge_size(current: usize, dim: usize) -> Option<usize> {
     }
 }
 
+pub trait MatmulKernel: Copy + Default + WrapAdd + WrapMul {
+    fn matmul_2d(a: &[Self], b: &[Self], m: usize, k: usize, n: usize) -> Vec<Self> {
+        let mut c = vec![Self::default(); m * n];
+        if n == 0 {
+            return c;
+        }
+        for (a_row, c_row) in a.chunks_exact(k.max(1)).zip(c.chunks_exact_mut(n)).take(m) {
+            for (&aip, b_row) in a_row.iter().zip(b.chunks_exact(n)) {
+                for (cj, &bj) in c_row.iter_mut().zip(b_row) {
+                    *cj = cj.wrap_add(aip.wrap_mul(bj));
+                }
+            }
+        }
+        c
+    }
+}
+
+macro_rules! matmul_by_loops {
+    ($($t:ty),*) => {$( impl MatmulKernel for $t {} )*};
+}
+matmul_by_loops!(bool, i8, i16, i32, i64, u8, u16, u32, u64, half::f16);
+
+const PARALLEL_MATMUL_WORK: usize = 1 << 26;
+
+macro_rules! matmul_by_faer {
+    ($($t:ty),*) => {$(
+        impl MatmulKernel for $t {
+            fn matmul_2d(a: &[Self], b: &[Self], m: usize, k: usize, n: usize) -> Vec<Self> {
+                if m == 0 || n == 0 || k == 0 {
+                    return vec![Self::default(); m * n];
+                }
+                let lhs = faer::MatRef::from_row_major_slice(a, m, k);
+                let rhs = faer::MatRef::from_row_major_slice(b, k, n);
+                let par = if m * n * k < PARALLEL_MATMUL_WORK { faer::Par::Seq } else { faer::Par::rayon(0) };
+                let mut c = faer::Mat::<$t>::zeros(m, n);
+                faer::linalg::matmul::matmul(c.as_mut(), faer::Accum::Replace, lhs, rhs, <$t as num_traits::One>::one(), par);
+                (0..m).flat_map(|i| (0..n).map(move |j| (i, j))).map(|(i, j)| c[(i, j)]).collect()
+            }
+        }
+    )*};
+}
+matmul_by_faer!(f32, f64, num_complex::Complex<f32>, num_complex::Complex<f64>);
+
 pub fn matmul<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError>
 where
-    T: Copy + Default + WrapAdd + WrapMul,
+    T: MatmulKernel,
 {
     if a.ndim() == 0 || b.ndim() == 0 {
         return Err(ShapeError::ZeroDimOperand);
+    }
+    if a.ndim() == 2 && b.ndim() == 2 {
+        let (m, k, n) = (a.shape()[0], a.shape()[1], b.shape()[1]);
+        if b.shape()[0] != k {
+            return Err(ShapeError::ContractionMismatch { lhs: a.shape().to_vec(), rhs: b.shape().to_vec() });
+        }
+        let (oa, ob);
+        let sa = match a.as_slice_c() {
+            Some(s) => s,
+            None => {
+                oa = a.to_owned();
+                oa.as_slice()
+            }
+        };
+        let sb = match b.as_slice_c() {
+            Some(s) => s,
+            None => {
+                ob = b.to_owned();
+                ob.as_slice()
+            }
+        };
+        return NdArray::from_vec(T::matmul_2d(sa, sb, m, k, n), &[m, n]);
     }
     let mismatch = || ShapeError::ContractionMismatch { lhs: a.shape().to_vec(), rhs: b.shape().to_vec() };
     let (a_batch, b_batch) = (a.ndim().saturating_sub(2), b.ndim().saturating_sub(2));
@@ -226,10 +291,10 @@ pub fn outer<T>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeE
 where
     T: Copy + Default + WrapAdd + WrapMul,
 {
-    let fa = a.to_owned();
-    let fb = b.to_owned();
-    let (va, vb) = (fa.ravel(), fb.ravel());
-    contract(&[&va, &vb], &[vec![0], vec![1]], &[0, 1], &[va.len(), vb.len()])
+    let (fa, fb) = (a.to_owned(), b.to_owned());
+    let (xs, ys) = (fa.as_slice(), fb.as_slice());
+    let data: Vec<T> = xs.iter().flat_map(|&x| ys.iter().map(move |&y| x.wrap_mul(y))).collect();
+    NdArray::from_vec(data, &[xs.len(), ys.len()])
 }
 
 pub fn trace<T>(view: &ArrayView<T>, offset: isize) -> Result<T, ShapeError>
@@ -422,6 +487,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matmul_2d_fast_path_matches_the_general_contraction() {
+        let a = NdArray::from_vec((0..12).map(|i| i as f64 * 0.5 - 2.0).collect(), &[3, 4]).unwrap();
+        let b = NdArray::from_vec((0..8).map(|i| 1.0 - i as f64 * 0.25).collect(), &[4, 2]).unwrap();
+        let general = contract(&[&a.view(), &b.view()], &[vec![0, 1], vec![1, 2]], &[0, 2], &[3, 4, 2]).unwrap();
+        let fast = matmul(&a.view(), &b.view()).unwrap();
+        assert_eq!(fast.shape(), &[3, 2]);
+        for (x, y) in fast.as_slice().iter().zip(general.as_slice()) {
+            assert!((x - y).abs() < 1e-12);
+        }
+        let at = a.view().matrix_transpose().unwrap();
+        let t = matmul(&at, &a.view()).unwrap();
+        assert_eq!(t.shape(), &[4, 4]);
+        assert_eq!(t.get(&[0, 0]), Some(4.0 + 0.0 + 4.0));
+        let i8s = NdArray::from_vec(vec![100i8, 100, 1, 1], &[2, 2]).unwrap();
+        assert_eq!(matmul(&i8s.view(), &i8s.view()).unwrap().as_slice(), &[116, 116, 101, 101]);
+        let c = NdArray::from_vec(vec![num_complex::Complex::new(0.0f32, 1.0); 4], &[2, 2]).unwrap();
+        assert_eq!(matmul(&c.view(), &c.view()).unwrap().as_slice()[0], num_complex::Complex::new(-2.0, 0.0));
+        let empty = NdArray::<f64>::zeros(&[2, 0]);
+        assert_eq!(matmul(&empty.view(), &NdArray::<f64>::zeros(&[0, 3]).view()).unwrap().as_slice(), &[0.0; 6]);
+    }
 
     fn ar(n: usize, shape: &[usize]) -> NdArray<i64> {
         NdArray::from_vec((0..n as i64).collect(), shape).unwrap()

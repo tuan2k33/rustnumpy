@@ -38,8 +38,8 @@ random module (`SeedSequence`, the PCG64 stream, `random`, `integers`,
 `shuffle`, `permutation`, `choice`). See "Testing the Python Binding" in
 `../NumPy.md` for the strategy and why NumPy's own suite needs the shim.
 
-**No performance benchmark yet, on purpose** (see `../NumPy.md`: no
-NumPy comparison until functionality is complete).
+Performance against NumPy: `python ../scripts/bench_vs_numpy.py` (results
+and the remaining gaps in `../NumPy.md`, "Step 26e").
 
 ## What's exposed
 

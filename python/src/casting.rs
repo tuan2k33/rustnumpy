@@ -28,6 +28,13 @@ pub fn astype(src: &Arr, target: &str) -> PyResult<Arr> {
     })
 }
 
+pub fn cast_ref<'a>(src: &'a Arr, target: &str, slot: &'a mut Option<Arr>) -> PyResult<&'a Arr> {
+    if src.dtype_name() == target {
+        return Ok(src);
+    }
+    Ok(slot.insert(astype(src, target)?))
+}
+
 pub fn kind_name(k: rustnumpy::Kind) -> &'static str {
     use rustnumpy::Kind::*;
     match k {

@@ -85,6 +85,11 @@ impl PyArray {
             && Arc::strong_count(&self.storage) == 1
     }
 
+    pub fn is_whole_storage(&self) -> bool {
+        let full_shape = self.storage.arr().shape();
+        self.offset == 0 && self.shape == full_shape && self.strides == c_contiguous_strides(&full_shape)
+    }
+
     pub fn whole_storage_view(&self) -> PyArray {
         let shape = self.storage.arr().shape();
         let strides = c_contiguous_strides(&shape);

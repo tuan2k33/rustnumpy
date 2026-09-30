@@ -24,16 +24,44 @@ fn lanes<T: Copy>(view: &ArrayView<T>, axis: usize) -> Result<(NdArray<T>, usize
     Ok((owned, outer, n, inner))
 }
 
+fn sort_lane<T: FloatIsh>(lane: &mut [T], scratch: &mut Vec<T>) {
+    scratch.clear();
+    scratch.extend(lane.iter().copied().filter(|x| x.is_signed_zero_ish() || x.is_nan_ish()));
+    lane.sort_unstable_by(total_cmp);
+    if scratch.is_empty() {
+        return;
+    }
+    let zeros = lane.iter().position(|x| x.is_signed_zero_ish()).unwrap_or(lane.len());
+    let nans = lane.len() - lane.iter().rev().take_while(|x| x.is_nan_ish()).count();
+    let (mut z, mut q) = (zeros, nans);
+    for &v in scratch.iter() {
+        if v.is_nan_ish() {
+            lane[q] = v;
+            q += 1;
+        } else {
+            lane[z] = v;
+            z += 1;
+        }
+    }
+}
+
 pub fn sort<T: FloatIsh>(view: &ArrayView<T>, axis: usize) -> Result<NdArray<T>, ShapeError> {
     let (owned, outer, n, inner) = lanes(view, axis)?;
+    let mut out = owned.as_slice().to_vec();
+    let mut scratch = Vec::new();
+    if inner == 1 {
+        for lane in out.chunks_exact_mut(n.max(1)) {
+            sort_lane(lane, &mut scratch);
+        }
+        return NdArray::from_vec(out, owned.shape());
+    }
     let src = owned.as_slice();
-    let mut out = src.to_vec();
     let mut lane: Vec<T> = Vec::with_capacity(n);
     for o in 0..outer {
         for i in 0..inner {
             lane.clear();
             lane.extend((0..n).map(|k| src[(o * n + k) * inner + i]));
-            lane.sort_by(total_cmp);
+            sort_lane(&mut lane, &mut scratch);
             for (k, &v) in lane.iter().enumerate() {
                 out[(o * n + k) * inner + i] = v;
             }
@@ -51,7 +79,7 @@ pub fn argsort<T: FloatIsh>(view: &ArrayView<T>, axis: usize) -> Result<NdArray<
         for i in 0..inner {
             order.clear();
             order.extend(0..n);
-            order.sort_by(|&x, &y| total_cmp(&src[(o * n + x) * inner + i], &src[(o * n + y) * inner + i]));
+            order.sort_unstable_by(|&x, &y| total_cmp(&src[(o * n + x) * inner + i], &src[(o * n + y) * inner + i]).then(x.cmp(&y)));
             for (k, &idx) in order.iter().enumerate() {
                 out[(o * n + k) * inner + i] = idx;
             }
@@ -79,6 +107,21 @@ pub fn searchsorted<T: FloatIsh>(sorted: &[T], values: &[T], side: Side) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sort_keeps_input_order_of_signed_zeros_and_nans_like_a_stable_sort() {
+        let neg_nan = -f64::NAN;
+        let a = NdArray::from_vec(vec![1.0, -0.0, f64::NAN, 0.0, -1.0, neg_nan, -0.0], &[7]).unwrap();
+        let bits: Vec<u64> = sort(&a.view(), 0).unwrap().as_slice().iter().map(|x| x.to_bits()).collect();
+        let want: Vec<u64> = [-1.0, -0.0, 0.0, -0.0, 1.0, f64::NAN, neg_nan].iter().map(|x: &f64| x.to_bits()).collect();
+        assert_eq!(bits, want);
+        let m = NdArray::from_vec(vec![3.0, 0.0, -0.0, 1.0, 2.0, f64::NAN], &[3, 2]).unwrap();
+        let cols: Vec<u64> = sort(&m.view(), 0).unwrap().as_slice().iter().map(|x| x.to_bits()).collect();
+        let want: Vec<u64> = [-0.0, 0.0, 2.0, 1.0, 3.0, f64::NAN].iter().map(|x: &f64| x.to_bits()).collect();
+        assert_eq!(cols, want);
+        let ties = NdArray::from_vec(vec![2, 1, 2, 1, 0], &[5]).unwrap();
+        assert_eq!(argsort(&ties.view(), 0).unwrap().as_slice(), &[4, 1, 3, 0, 2]);
+    }
 
     fn arr<T>(data: Vec<T>, shape: &[usize]) -> NdArray<T> {
         NdArray::from_vec(data, shape).unwrap()

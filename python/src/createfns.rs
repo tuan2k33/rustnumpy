@@ -26,9 +26,11 @@ fn available_bytes() -> usize {
         .map_or(usize::MAX / 2, |kb| kb.saturating_mul(1024))
 }
 
+const GUARD_FREE_BYTES: usize = 64 << 20;
+
 pub fn alloc_guard(elems: usize, bytes_per: usize) -> PyResult<()> {
     let bytes = elems.checked_mul(bytes_per).filter(|&b| b <= isize::MAX as usize);
-    let ok = bytes.is_some_and(|b| b <= available_bytes() / 2);
+    let ok = bytes.is_some_and(|b| b <= GUARD_FREE_BYTES || b <= available_bytes() / 2);
     if ok {
         Ok(())
     } else {
@@ -128,7 +130,7 @@ pub fn arange(
     let ops = [Operand::parse(py, lo)?, Operand::parse(py, hi)?, Operand::parse(py, step)?];
     let all_int = ops.iter().all(|o| match o {
         Operand::WeakInt(..) => true,
-        Operand::Arr(a) => a.ndim() == 0 && matches!(a, Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)),
+        Operand::Arr(a) => a.ndim() == 0 && matches!(&**a, Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)),
         Operand::WeakFloat(_) | Operand::WeakComplex(..) => false,
     });
     let as_f64 = |o: &Operand| -> PyResult<f64> {

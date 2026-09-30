@@ -1,5 +1,5 @@
 use crate::casting::astype;
-use crate::dynarray::{value_err, Arr, C32, C64};
+use crate::dynarray::{value_err, Arr, ArrIn, C32, C64};
 use crate::dispatch_same;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
@@ -11,7 +11,7 @@ pub fn shape_err<E: Into<OpError>>(e: E) -> PyErr {
 }
 
 pub enum Operand {
-    Arr(Arr),
+    Arr(ArrIn),
     /// Python int: exact value (saturated beyond i128) and its float value (inf when unconvertible).
     WeakInt(i128, f64),
     WeakFloat(f64),
@@ -37,12 +37,19 @@ impl Operand {
             let c = obj.downcast::<pyo3::types::PyComplex>()?;
             return Ok(Operand::WeakComplex(c.real(), c.imag()));
         }
-        Ok(Operand::Arr(Arr::from_object(py, obj)?))
+        Ok(Operand::Arr(Arr::input(py, obj)?))
+    }
+
+    pub fn into_input(self, py: Python<'_>) -> PyResult<ArrIn> {
+        match self {
+            Operand::Arr(a) => Ok(a),
+            other => other.into_arr(py).map(ArrIn::Owned),
+        }
     }
 
     pub fn into_arr(self, _py: Python<'_>) -> PyResult<Arr> {
         match self {
-            Operand::Arr(a) => Ok(a),
+            Operand::Arr(a) => Ok(a.into_owned()),
             Operand::WeakInt(v, f) => weak_int_scalar(v, f, None),
             Operand::WeakFloat(v) => Ok(Arr::scalar(v)),
             Operand::WeakComplex(re, im) => Ok(Arr::scalar(C64::new(re, im))),
@@ -100,14 +107,14 @@ fn weak_int_scalar(v: i128, f: f64, target: Option<&'static str>) -> PyResult<Ar
     }
 }
 
-pub fn materialize(op: Operand, target: &'static str) -> PyResult<Arr> {
+pub fn materialize(op: Operand, target: &'static str) -> PyResult<ArrIn> {
     let arr = match op {
         Operand::Arr(a) => a,
-        Operand::WeakInt(v, f) => return weak_int_scalar(v, f, Some(target)),
-        Operand::WeakFloat(v) => Arr::scalar(v),
-        Operand::WeakComplex(re, im) => Arr::scalar(C64::new(re, im)),
+        Operand::WeakInt(v, f) => return weak_int_scalar(v, f, Some(target)).map(ArrIn::Owned),
+        Operand::WeakFloat(v) => ArrIn::Owned(Arr::scalar(v)),
+        Operand::WeakComplex(re, im) => ArrIn::Owned(Arr::scalar(C64::new(re, im))),
     };
-    if arr.dtype_name() == target { Ok(arr) } else { astype(&arr, target) }
+    if arr.dtype_name() == target { Ok(arr) } else { astype(&arr, target).map(ArrIn::Owned) }
 }
 
 pub fn out(py: Python<'_>, a: Arr) -> PyResult<Py<PyAny>> {
@@ -142,7 +149,8 @@ macro_rules! arith_fn {
     ($name:ident, $prom:expr, $bool_check:expr) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
+            let (xi, yi) = resolve_binary(py, a, b)?;
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             if $bool_check && x.is_bool() && y.is_bool() {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
                     "numpy boolean subtract, the `-` operator, is not supported, use the bitwise_xor, the `^` operator, or the logical_xor function instead.",
@@ -178,7 +186,7 @@ fn int_range(dtype: &str) -> Option<(i128, i128)> {
     })
 }
 
-pub fn resolve_binary(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(Arr, Arr)> {
+pub fn resolve_binary(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<(ArrIn, ArrIn)> {
     let (oa, ob) = (Operand::parse(py, a)?, Operand::parse(py, b)?);
     let name = common_name(&oa, &ob);
     Ok((materialize(oa, name)?, materialize(ob, name)?))
@@ -189,7 +197,7 @@ pub fn resolve_loop(
     a: &Bound<'_, PyAny>,
     b: &Bound<'_, PyAny>,
     pick: impl Fn(&'static str, [Option<&'static str>; 2]) -> PyResult<&'static str>,
-) -> PyResult<(Arr, Arr)> {
+) -> PyResult<(ArrIn, ArrIn)> {
     let (oa, ob) = (Operand::parse(py, a)?, Operand::parse(py, b)?);
     let name = common_name(&oa, &ob);
     let target = pick(name, [oa.strong_dtype(), ob.strong_dtype()])?;

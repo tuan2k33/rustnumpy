@@ -21,7 +21,8 @@ macro_rules! any_all {
         #[pyfunction]
         #[pyo3(signature = (a, axis=None, keepdims=false))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-            let arr = arr_of(py, a)?;
+            let arr_in = arr_of(py, a)?;
+            let arr: &Arr = &arr_in;
             let m = truth_arr(&arr)?;
             let axis = if arr.ndim() == 0 && matches!(axis, Some(0) | Some(-1)) { None } else { axis };
             let r = fold_axis(&m, axis, keepdims, Some($identity), $op)?;
@@ -34,15 +35,19 @@ any_all!(all, true, |x: bool, y: bool| x && y);
 
 #[pyfunction]
 pub fn count_nonzero(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     let n = with_arr!(&arr, x => logic::count_nonzero(&x.view()));
     out(py, Arr::scalar(n as i64))
 }
 
 fn arg_like(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, want_max: bool) -> PyResult<Py<PyAny>> {
-    let mut arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let widened;
+    let mut arr: &Arr = &arr_in;
     if arr.is_bool() {
-        arr = astype(&arr, "uint8")?;
+        widened = astype(arr, "uint8")?;
+        arr = &widened;
     }
     let ax = axis.map(|x| norm_axis(x, arr.ndim())).transpose()?;
     let fail = |e: rustnumpy::OpError| match e {
@@ -97,8 +102,10 @@ macro_rules! cumulative {
         #[pyfunction]
         #[pyo3(signature = (a, axis=None))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-            let arr = arr_of(py, a)?;
-            let acc = astype(&arr, accumulator_name(&arr))?;
+            let arr_in = arr_of(py, a)?;
+            let arr: &Arr = &arr_in;
+            let mut acc_slot = None;
+    let acc = crate::casting::cast_ref(arr, accumulator_name(arr), &mut acc_slot)?;
             let ax = axis.map(|x| norm_axis(x, acc.ndim().max(1))).transpose()?;
             let ax = if acc.ndim() == 0 { None } else { ax };
             let r = match &acc {
@@ -125,14 +132,14 @@ cumulative!(cumprod, logic::cumprod);
 #[pyfunction]
 #[pyo3(signature = (a, a_min=None, a_max=None))]
 pub fn clip(py: Python<'_>, a: &Bound<'_, PyAny>, a_min: Option<&Bound<'_, PyAny>>, a_max: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
-    let base = arr_of(py, a)?;
+    let base = arr_of(py, a)?.into_owned();
     let mut parts = vec![base];
     let mut order = Vec::new();
     for (slot, bound) in [(0usize, a_min), (1usize, a_max)] {
         if let Some(b) = bound {
             let (x, y) = resolve_binary(py, a, b)?;
-            parts[0] = x;
-            parts.push(y);
+            parts[0] = x.into_owned();
+            parts.push(y.into_owned());
             order.push(slot);
         }
     }

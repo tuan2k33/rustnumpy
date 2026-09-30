@@ -189,6 +189,17 @@ impl PyArray {
         if let [Item::Mask(m), rest @ ..] = items.as_slice() {
             if m.ndim() > 1 && rest.iter().all(|i| matches!(i, Item::Full)) {
                 let Arr::Bool(mask) = m else { unreachable!("mask arrays are bool") };
+                if mask.is_empty() {
+                    for (axis, (&want, &got)) in self.shape.iter().zip(mask.shape()).enumerate() {
+                        if got != want && got != 0 {
+                            return Err(mask_err(rustnumpy::ShapeError::BooleanAxisMismatch { axis, expected: want, got }));
+                        }
+                    }
+                    let mut shape = vec![0];
+                    shape.extend(&self.shape[mask.ndim()..]);
+                    let empty = with_arr!(self.storage.arr(), a => Arr::from(NdArray::from_vec(a.as_slice()[..0].to_vec(), &shape).map_err(shape_err)?));
+                    return Ok(Applied::Owned(empty));
+                }
                 let base = self.to_arr();
                 let picked = with_arr!(&base, a => Arr::from(a.boolean_index_nd(mask).map_err(mask_err)?));
                 return Ok(Applied::Owned(picked));
@@ -276,6 +287,17 @@ impl PyArray {
                 Item::NewAxis | Item::Ellipsis | Item::RawSlice(_) => unreachable!("expanded earlier"),
             });
         }
+        if let [axis] = spec.iter().enumerate().filter(|(_, s)| !matches!(s, AxisIndex::Full)).map(|(i, _)| i).collect::<Vec<_>>()[..] {
+            if let AxisIndex::Fancy(idx) = &spec[axis] {
+                let mut dims: Vec<isize> = shape[..axis].iter().map(|&d| d as isize).collect();
+                dims.extend(broadcast.iter().map(|&d| d as isize));
+                dims.extend(shape[axis + 1..].iter().map(|&d| d as isize));
+                let picked = with_arr!(self.storage.arr(), a => Arr::from(
+                    gather_axis(a.as_slice(), &shape, &strides, offset, axis, idx).into_shape(&dims).map_err(shape_err)?
+                ));
+                return Ok(Applied::Owned(picked));
+            }
+        }
         let base_view = PyArray { storage: Arc::clone(&self.storage), shape, strides, offset: offset as usize };
         let base = base_view.to_arr();
         let picked = with_arr!(&base, a => Arr::from(a.vindex(&spec).map_err(shape_err)?));
@@ -296,6 +318,28 @@ impl PyArray {
         let dims: Vec<isize> = target.iter().map(|&d| d as isize).collect();
         Ok(Applied::Owned(with_arr!(&picked, a => Arr::from(a.clone().into_shape(&dims).map_err(shape_err)?))))
     }
+}
+
+fn axis_offsets(shape: &[usize], strides: &[isize]) -> Vec<isize> {
+    let mut offs = vec![0isize];
+    for (&n, &st) in shape.iter().zip(strides) {
+        offs = offs.iter().flat_map(|&o| (0..n as isize).map(move |i| o + i * st)).collect();
+    }
+    offs
+}
+
+fn gather_axis<T: Copy>(data: &[T], shape: &[usize], strides: &[isize], offset: isize, axis: usize, idx: &[usize]) -> NdArray<T> {
+    let outer = axis_offsets(&shape[..axis], &strides[..axis]);
+    let inner = axis_offsets(&shape[axis + 1..], &strides[axis + 1..]);
+    let mut out = Vec::with_capacity(outer.len() * idx.len() * inner.len());
+    for &o in &outer {
+        for &j in idx {
+            let base = offset + o + j as isize * strides[axis];
+            out.extend(inner.iter().map(|&i| data[(base + i) as usize]));
+        }
+    }
+    let len = out.len();
+    NdArray::from_vec(out, &[len]).expect("flat gather")
 }
 
 fn int_bounds(dtype: &str) -> Option<(i128, i128)> {

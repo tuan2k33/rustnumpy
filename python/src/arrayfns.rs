@@ -1,5 +1,5 @@
 use crate::casting::{astype, common_arrs};
-use crate::dynarray::{unsupported, value_err, Arr};
+use crate::dynarray::{unsupported, value_err, Arr, ArrIn};
 use crate::ops::{out, out_array, shape_err, Operand};
 use num_traits::One;
 use pyo3::exceptions::PyTypeError;
@@ -51,8 +51,8 @@ pub fn ints(obj: &Bound<'_, PyAny>) -> PyResult<Vec<isize>> {
     obj.try_iter()?.map(|x| strict_int(&x?)).collect()
 }
 
-pub fn arr_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
-    Operand::parse(py, obj)?.into_arr(py)
+pub fn arr_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<ArrIn> {
+    Operand::parse(py, obj)?.into_input(py)
 }
 
 fn zero_d_axis(arr: &Arr, axis: Option<isize>) -> Option<isize> {
@@ -113,15 +113,17 @@ pub fn fold_axis<T: Copy>(
 #[pyfunction]
 #[pyo3(signature = (a, axis=None, keepdims=false))]
 pub fn sum(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let axis = zero_d_axis(&arr, axis);
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
+    let axis = zero_d_axis(arr, axis);
     if matches!(arr, Arr::F16(_)) {
-        let wide = astype(&arr, "float32")?;
+        let wide = astype(arr, "float32")?;
         let r = sum_prod_f16(&wide, axis, keepdims, true)?;
         return out(py, astype(&r, "float16")?);
     }
-    let acc = astype(&arr, accumulator_name(&arr))?;
-    let result: Arr = match &acc {
+    let mut acc_slot = None;
+    let acc = crate::casting::cast_ref(arr, accumulator_name(arr), &mut acc_slot)?;
+    let result: Arr = match acc {
         Arr::I64(x) => Arr::from(sum_of(x, axis, keepdims)?),
         Arr::U64(x) => Arr::from(sum_of(x, axis, keepdims)?),
         Arr::F32(x) => Arr::from(sum_of(x, axis, keepdims)?),
@@ -149,15 +151,17 @@ fn sum_of<T: Copy + Default + WrapAdd>(a: &NdArray<T>, axis: Option<isize>, keep
 #[pyfunction]
 #[pyo3(signature = (a, axis=None, keepdims=false))]
 pub fn prod(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let axis = zero_d_axis(&arr, axis);
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
+    let axis = zero_d_axis(arr, axis);
     if matches!(arr, Arr::F16(_)) {
-        let wide = astype(&arr, "float32")?;
+        let wide = astype(arr, "float32")?;
         let r = sum_prod_f16(&wide, axis, keepdims, false)?;
         return out(py, astype(&r, "float16")?);
     }
-    let acc = astype(&arr, accumulator_name(&arr))?;
-    let result: Arr = match &acc {
+    let mut acc_slot = None;
+    let acc = crate::casting::cast_ref(arr, accumulator_name(arr), &mut acc_slot)?;
+    let result: Arr = match acc {
         Arr::I64(x) => Arr::from(prod_of(x, axis, keepdims)?),
         Arr::U64(x) => Arr::from(prod_of(x, axis, keepdims)?),
         Arr::F32(x) => Arr::from(prod_of(x, axis, keepdims)?),
@@ -220,7 +224,8 @@ macro_rules! extreme_fn {
         #[pyfunction]
         #[pyo3(signature = (a, axis=None, keepdims=false))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-            let arr = arr_of(py, a)?;
+            let arr_in = arr_of(py, a)?;
+            let arr: &Arr = &arr_in;
             let axis = zero_d_axis(&arr, axis);
             let result = match &arr {
                 Arr::Bool(x) => Arr::from(bool_extreme(x, axis, keepdims, $max)?),
@@ -250,37 +255,71 @@ fn float_out(py: Python<'_>, arr: &Arr, values: NdArray<f64>) -> PyResult<Py<PyA
     out(py, astype(&wide, target)?)
 }
 
-fn stat_input(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Arr> {
-    let arr = arr_of(py, a)?;
+fn stat_input(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<ArrIn> {
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     if arr.is_complex() {
         return Err(unsupported("complex statistics are composed at the Python layer"));
     }
-    if arr.is_bool() { astype(&arr, "uint8") } else { Ok(arr) }
+    if arr.is_bool() { astype(arr, "uint8").map(ArrIn::Owned) } else { Ok(arr_in) }
+}
+
+fn lane_view<T>(lane: &[T]) -> PyResult<ArrayView<'_, T>> {
+    ArrayView::from_raw_parts(lane, vec![lane.len()], vec![1], 0).map_err(shape_err)
 }
 
 fn lanes_f64<T: Copy>(x: &NdArray<T>, axis: Option<isize>, f: impl Fn(&ArrayView<T>) -> PyResult<f64>) -> PyResult<NdArray<f64>> {
     let Some(axis) = axis else {
-        let flat_view = flat(x);
-        return Ok(scalar_nd(f(&flat_view.view())?, &[]));
+        return Ok(scalar_nd(f(&lane_view(x.as_slice())?)?, &[]));
     };
     let ax = norm_axis(axis, x.ndim().max(1))?;
     if x.ndim() == 0 {
         return Ok(scalar_nd(f(&x.view())?, &[]));
     }
-    let owned = x.view().to_owned();
-    let n = owned.shape()[ax];
-    let outer: usize = owned.shape()[..ax].iter().product();
-    let inner: usize = owned.shape()[ax + 1..].iter().product();
-    let src = owned.as_slice();
+    let view = x.view();
+    let owned;
+    let src = match view.as_slice_c() {
+        Some(s) => s,
+        None => {
+            owned = view.to_owned();
+            owned.as_slice()
+        }
+    };
+    let shape = x.shape();
+    let n = shape[ax];
+    let outer: usize = shape[..ax].iter().product();
+    let inner: usize = shape[ax + 1..].iter().product();
     let mut result = Vec::with_capacity(outer * inner);
-    for o in 0..outer {
-        for i in 0..inner {
-            let lane: Vec<T> = (0..n).map(|k| src[(o * n + k) * inner + i]).collect();
-            let lane = NdArray::from_vec(lane, &[n]).map_err(shape_err)?;
-            result.push(f(&lane.view())?);
+    if inner == 1 {
+        for o in 0..outer {
+            result.push(f(&lane_view(&src[o * n..(o + 1) * n])?)?);
+        }
+    } else if n == 0 {
+        let empty: [T; 0] = [];
+        for _ in 0..outer * inner {
+            result.push(f(&lane_view(&empty)?)?);
+        }
+    } else {
+        const BLOCK: usize = 64;
+        let mut buf: Vec<T> = Vec::with_capacity(BLOCK * n);
+        for o in 0..outer {
+            for i0 in (0..inner).step_by(BLOCK) {
+                let width = BLOCK.min(inner - i0);
+                buf.clear();
+                buf.resize(width * n, src[0]);
+                for k in 0..n {
+                    let row = &src[(o * n + k) * inner + i0..][..width];
+                    for (b, &v) in row.iter().enumerate() {
+                        buf[b * n + k] = v;
+                    }
+                }
+                for lane in buf.chunks_exact(n).take(width) {
+                    result.push(f(&lane_view(lane)?)?);
+                }
+            }
         }
     }
-    let mut shape = owned.shape().to_vec();
+    let mut shape = shape.to_vec();
     shape.remove(ax);
     NdArray::from_vec(result, &shape).map_err(shape_err)
 }
@@ -290,7 +329,8 @@ macro_rules! stat_fn {
         #[pyfunction]
         #[pyo3(signature = (a, axis=None $(, $extra=$default)*))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, $($extra: $ty),*) -> PyResult<Py<PyAny>> {
-            let arr = stat_input(py, a)?;
+            let arr_in = stat_input(py, a)?;
+            let arr: &Arr = &arr_in;
             let r = with_real!(&arr, x => lanes_f64(x, axis, |v| Ok($core(v $(, $extra)*)))?);
             float_out(py, &arr, r)
         }
@@ -326,50 +366,61 @@ stat_fn!(nanstd, nanstd_c, ddof: usize = 0);
 #[pyfunction]
 #[pyo3(signature = (a, axis=None))]
 pub fn median(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-    let arr = stat_input(py, a)?;
+    let arr_in = stat_input(py, a)?;
+    let arr: &Arr = &arr_in;
     let r = with_real!(&arr, x => lanes_f64(x, axis, |v| match rustnumpy::median(v) {
         Ok(v) => Ok(v),
         Err(rustnumpy::ReductionError::EmptyInput) => Ok(f64::NAN),
         Err(e) => Err(value_err(e)),
     })?);
-    float_out(py, &arr, r)
+    float_out(py, arr, r)
 }
 
 #[pyfunction]
 #[pyo3(signature = (a, axis=None))]
 pub fn nanmedian(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-    let arr = stat_input(py, a)?;
+    let arr_in = stat_input(py, a)?;
+    let arr: &Arr = &arr_in;
     let r = with_real!(&arr, x => lanes_f64(x, axis, |v| match rustnumpy::nanmedian(v) {
         Ok(v) => Ok(v),
         Err(rustnumpy::ReductionError::EmptyInput) => Ok(f64::NAN),
         Err(e) => Err(value_err(e)),
     })?);
-    float_out(py, &arr, r)
+    float_out(py, arr, r)
 }
 
 #[pyfunction]
 #[pyo3(signature = (a, q, axis=None))]
 pub fn percentile(py: Python<'_>, a: &Bound<'_, PyAny>, q: f64, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-    let arr = stat_input(py, a)?;
+    let arr_in = stat_input(py, a)?;
+    let arr: &Arr = &arr_in;
     let r = with_real!(&arr, x => lanes_f64(x, axis, |v| match rustnumpy::percentile(v, q) {
         Ok(v) => Ok(v),
         Err(rustnumpy::ReductionError::EmptyInput) => Err(pyo3::exceptions::PyIndexError::new_err("index -1 is out of bounds for axis 0 with size 0")),
         Err(e) => Err(value_err(e)),
     })?);
-    float_out(py, &arr, r)
+    float_out(py, arr, r)
 }
 
 #[pyfunction]
 #[pyo3(signature = (a, axis=None, keepdims=false))]
 pub fn nansum(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>, keepdims: bool) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     if arr.is_complex() {
         return Err(unsupported("complex nansum is composed at the Python layer"));
     }
     let wide_f16 = matches!(arr, Arr::F16(_));
-    let arr = if wide_f16 { astype(&arr, "float32")? } else { arr };
-    let acc = astype(&arr, accumulator_name(&arr))?;
-    let result: Arr = match &acc {
+    let widened;
+    let arr: &Arr = if wide_f16 {
+        widened = astype(arr, "float32")?;
+        &widened
+    } else {
+        arr
+    };
+    let mut acc_slot = None;
+    let acc = crate::casting::cast_ref(arr, accumulator_name(arr), &mut acc_slot)?;
+    let result: Arr = match acc {
         Arr::I64(x) => Arr::from(nan_sum_of(x, axis, keepdims)?),
         Arr::U64(x) => Arr::from(nan_sum_of(x, axis, keepdims)?),
         Arr::F32(x) => Arr::from(nan_sum_of(x, axis, keepdims)?),
@@ -389,7 +440,8 @@ macro_rules! nan_extreme {
         #[pyfunction]
         #[pyo3(signature = (a, axis=None))]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-            let arr = arr_of(py, a)?;
+            let arr_in = arr_of(py, a)?;
+            let arr: &Arr = &arr_in;
             if arr.ndim() == 0 || axis.is_none() {
                 let result = with_real!(&arr, x => Arr::from(scalar_nd($core(&x.view()).map_err(value_err)?, &[])));
                 return out(py, result);
@@ -429,7 +481,8 @@ nan_extreme!(nanmin, rustnumpy::nanmin, false);
 nan_extreme!(nanmax, rustnumpy::nanmax, true);
 
 fn cov_like(py: Python<'_>, m: &Bound<'_, PyAny>, ddof: usize, correlation: bool, as_scalar: bool) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, m)?;
+    let arr_in = arr_of(py, m)?;
+    let arr: &Arr = &arr_in;
     if arr.is_complex() {
         return Err(unsupported("complex covariance is not bound"));
     }
@@ -467,7 +520,7 @@ pub fn corrcoef(py: Python<'_>, m: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 }
 
 pub fn as_f64_matrix(py: Python<'_>, m: &Bound<'_, PyAny>) -> PyResult<NdArray<f64>> {
-    let arr = astype(&arr_of(py, m)?, "float64")?;
+    let arr = astype(&*arr_of(py, m)?, "float64")?;
     let Arr::F64(x) = arr else { unreachable!("cast to float64") };
     match x.ndim() {
         2 => Ok(x),
@@ -482,7 +535,7 @@ pub fn as_f64_matrix(py: Python<'_>, m: &Bound<'_, PyAny>) -> PyResult<NdArray<f
 #[pyfunction]
 #[pyo3(signature = (a, bins=10, range=None))]
 pub fn histogram(py: Python<'_>, a: &Bound<'_, PyAny>, bins: usize, range: Option<(f64, f64)>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-    let arr = astype(&arr_of(py, a)?, "float64")?;
+    let arr = astype(&*arr_of(py, a)?, "float64")?;
     let Arr::F64(x) = arr else { unreachable!("cast to float64") };
     let (counts, edges) = rustnumpy::histogram(x.as_slice(), bins, range).map_err(value_err)?;
     let counts: Vec<i64> = counts.into_iter().map(|c| c as i64).collect();
@@ -495,7 +548,8 @@ pub fn histogram(py: Python<'_>, a: &Bound<'_, PyAny>, bins: usize, range: Optio
 }
 
 fn sort_like(py: Python<'_>, a: &Bound<'_, PyAny>, axis: isize, indices: bool) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     if arr.ndim() == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err("Cannot sort a 0-d array"));
     }
@@ -548,7 +602,7 @@ pub fn searchsorted(py: Python<'_>, a: &Bound<'_, PyAny>, v: &Bound<'_, PyAny>, 
         "right" => rustnumpy::Side::Right,
         other => return Err(pyo3::exceptions::PyValueError::new_err(format!("side must be 'left' or 'right', got {other}"))),
     };
-    let (sorted, values) = common_arrs(&arr_of(py, a)?, &arr_of(py, v)?)?;
+    let (sorted, values) = common_arrs(&*arr_of(py, a)?, &*arr_of(py, v)?)?;
     if sorted.ndim() != 1 {
         return Err(pyo3::exceptions::PyValueError::new_err("object too deep for desired array"));
     }

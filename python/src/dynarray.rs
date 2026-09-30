@@ -16,6 +16,31 @@ pub fn value_err(e: impl std::fmt::Display) -> PyErr {
 pub type C32 = Complex<f32>;
 pub type C64 = Complex<f64>;
 
+pub enum ArrIn {
+    Owned(Arr),
+    Shared(std::sync::Arc<crate::pyarray::Storage>),
+}
+
+impl std::ops::Deref for ArrIn {
+    type Target = Arr;
+
+    fn deref(&self) -> &Arr {
+        match self {
+            ArrIn::Owned(a) => a,
+            ArrIn::Shared(s) => s.arr(),
+        }
+    }
+}
+
+impl ArrIn {
+    pub fn into_owned(self) -> Arr {
+        match self {
+            ArrIn::Owned(a) => a,
+            ArrIn::Shared(s) => crate::with_arr!(s.arr(), a => Arr::from(a.clone())),
+        }
+    }
+}
+
 pub enum Arr {
     Bool(NdArray<bool>),
     I8(NdArray<i8>),
@@ -260,7 +285,9 @@ impl Arr {
             Arr::C128(a) => ("complex128", pyo3::types::PyComplex::from_doubles(py, a.as_slice()[0].re, a.as_slice()[0].im).into_any()),
             _ => return Ok(None),
         };
-        Ok(Some(py.import("rustnumpy._scalars")?.getattr("scalar")?.call1((dtype, value))?.unbind()))
+        static SCALAR: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
+        let make = SCALAR.get_or_try_init(py, || py.import("rustnumpy._scalars")?.getattr("scalar").map(Bound::unbind))?;
+        Ok(Some(make.bind(py).call1((dtype, value))?.unbind()))
     }
 
     pub fn from_scalar_class(obj: &Bound<'_, PyAny>) -> PyResult<Option<Arr>> {
@@ -286,6 +313,22 @@ impl Arr {
             crate::createfns::alloc_guard(this.size(), crate::dtypes::itemsize(this.dtype_name()) + 8)?;
             return Ok(this.to_arr());
         }
+        Arr::from_non_array(py, obj)
+    }
+
+    pub fn input(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<ArrIn> {
+        if let Ok(a) = obj.downcast::<crate::pyarray::PyArray>() {
+            let this = a.borrow();
+            if this.is_whole_storage() {
+                return Ok(ArrIn::Shared(std::sync::Arc::clone(&this.storage)));
+            }
+            crate::createfns::alloc_guard(this.size(), crate::dtypes::itemsize(this.dtype_name()) + 8)?;
+            return Ok(ArrIn::Owned(this.to_arr()));
+        }
+        Arr::from_non_array(py, obj).map(ArrIn::Owned)
+    }
+
+    fn from_non_array(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
         if let Some(a) = Arr::from_scalar_class(obj)? {
             return Ok(a);
         }

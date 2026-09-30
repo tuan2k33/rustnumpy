@@ -18,8 +18,12 @@ pub fn zip_with<T: Copy>(
     })?;
     let a_b = a.broadcast_to(&out_shape)?;
     let b_b = b.broadcast_to(&out_shape)?;
-
-    let data: Vec<T> = a_b.iter().zip(b_b.iter()).map(|(x, y)| f(x, y)).collect();
+    let data: Vec<T> = match (a_b.as_slice_c(), b_b.as_slice_c(), a.as_slice_c(), b.as_slice_c()) {
+        (Some(x), Some(y), _, _) => x.iter().zip(y).map(|(&x, &y)| f(x, y)).collect(),
+        (Some(x), None, _, Some([y])) => x.iter().map(|&x| f(x, *y)).collect(),
+        (None, Some(y), Some([x]), _) => y.iter().map(|&y| f(*x, y)).collect(),
+        _ => a_b.iter().zip(b_b.iter()).map(|(x, y)| f(x, y)).collect(),
+    };
     NdArray::from_vec(data, &out_shape)
 }
 
@@ -50,7 +54,10 @@ pub fn zip_with_into<T: Copy>(
 }
 
 pub fn map<T: Copy>(a: &ArrayView<T>, f: impl Fn(T) -> T) -> NdArray<T> {
-    let data: Vec<T> = a.iter().map(f).collect();
+    let data: Vec<T> = match a.as_slice_c() {
+        Some(s) => s.iter().map(|&x| f(x)).collect(),
+        None => a.iter().map(f).collect(),
+    };
     NdArray::from_vec(data, a.shape()).expect("data.len() always matches a.shape().iter().product()")
 }
 
@@ -66,7 +73,10 @@ pub fn zip_with_parallel<T: Copy + Send + Sync>(
     let a_b = a.broadcast_to(&out_shape)?;
     let b_b = b.broadcast_to(&out_shape)?;
     let len: usize = out_shape.iter().product();
-
+    if let (Some(x), Some(y)) = (a_b.as_slice_c(), b_b.as_slice_c()) {
+        let data: Vec<T> = x.par_iter().zip(y.par_iter()).with_min_len(PARALLEL_CHUNK).map(|(&x, &y)| f(x, y)).collect();
+        return NdArray::from_vec(data, &out_shape);
+    }
     let data: Vec<T> = (0..len.div_ceil(PARALLEL_CHUNK))
         .into_par_iter()
         .flat_map_iter(|chunk| {
@@ -81,6 +91,10 @@ pub fn zip_with_parallel<T: Copy + Send + Sync>(
 pub fn map_parallel<T: Copy + Send + Sync>(a: &ArrayView<T>, f: impl Fn(T) -> T + Sync) -> NdArray<T> {
     let shape = a.shape();
     let len: usize = shape.iter().product();
+    if let Some(s) = a.as_slice_c() {
+        let data: Vec<T> = s.par_iter().with_min_len(PARALLEL_CHUNK).map(|&x| f(x)).collect();
+        return NdArray::from_vec(data, shape).expect("data.len() always matches shape.iter().product()");
+    }
     let data: Vec<T> = (0..len.div_ceil(PARALLEL_CHUNK))
         .into_par_iter()
         .flat_map_iter(|chunk| {

@@ -10,7 +10,7 @@ Facts that shape everything else:
 
 - **Target is NumPy >= 2.5 semantics only.** Deprecated or backward-compat-only NumPy behaviour is out of scope (see "NumPy Parts Worth Dropping" in `NumPy.md`). The oracle is stock NumPy 2.5.3.
 - **Working rule for failing comparisons:** print and analyse the failure first. It is a bug only if NumPy's behaviour is the intended one; otherwise record it in `docs/CONVENTIONS.md`. Do not "fix" a difference just because a test fails.
-- **State of the tree:** steps 1-26d of `NumPy.md` are here. Steps 27-28 (structured/datetime dtypes, StringDType) were written earlier but are not in this tree (git history: `5a3933f`, `083b9af`); step 29 (masked arrays) is not started.
+- **State of the tree:** steps 1-26e of `NumPy.md` are here. Steps 27-28 (structured/datetime dtypes, StringDType) were written earlier but are not in this tree (git history: `5a3933f`, `083b9af`); step 29 (masked arrays) is not started.
 - **Source comments were deliberately stripped** from every `.rs` file. Put design rationale in `NumPy.md`, not in doc comments, and match the surrounding uncommented style.
 - **`rust-version = 1.85`**: clippy rejects newer std APIs (e.g. `is_multiple_of`); use the older spelling.
 
@@ -47,6 +47,8 @@ ARRAY_API_TESTS_MODULE=rustnumpy ARRAY_API_TESTS_VERSION=2025.12 \
   python -m pytest array_api_tests -n 3 --max-examples=20 --hypothesis-disable-deadline -W ignore --timeout=120
 ```
 
+Performance vs NumPy: `PYTHONPATH=python/python_src python scripts/bench_vs_numpy.py` (numbers and the remaining gaps in `NumPy.md`, "Step 26e"). Keep optimisations result-neutral: float `sum`/`mean`/`var` are NumPy's pairwise summation bit-for-bit, and `sort` reproduces stable tie order.
+
 Reference numbers (step 26d): rustnumpy 1347 passed / 29 failed, stock NumPy 2.5.3 1331 / 46; counts vary by a few between runs (Hypothesis draws). Also: `python/numpy_suite/run_suite.py` runs NumPy's own test files through a shim (see `NumPy.md`, "Step 25"); shadow mode after step 26d: 455,254 comparisons match, 4 known mismatches. `.npy` fixtures in `tests/fixtures/` come from `scripts/gen_fixtures.py` (needs NumPy).
 
 ## Architecture
@@ -66,7 +68,7 @@ Dependency shape: `error.rs` is the leaf (`shape.rs` only uses its `ShapeError`)
 
 Standalone array library that **never imports NumPy** (`tests/test_ndarray.py` blocks the import; NumPy is only the test oracle). `rustnumpy._core` is the compiled module (`python/src/`); `python/python_src/rustnumpy/` is a Python layer over it.
 
-- Native side: `Arr` (`dynarray.rs`) is a 14-variant enum of `NdArray<T>`; function modules convert any input to `Arr`, call the core, wrap the result. `pyarray.rs` holds the few `unsafe` blocks (SAFETY comments; the `Sync` claim assumes the GIL). `ops.rs` has `Operand` (array or weak Python int/float/complex) and NEP 50 loop resolution; `umath.rs` has every ufunc kernel and complex special values.
+- Native side: `Arr` (`dynarray.rs`) is a 14-variant enum of `NdArray<T>`. Hot paths take inputs with `Arr::input` (an `ArrIn` that borrows the whole-storage array without copying; bind `let x: &Arr = &x_in;` before matching on it) and `cast_ref` (casts only if the dtype differs); `Arr::from_object` returns an owned copy and is fine for cold paths. `alloc_guard` only checks allocations >= 64 MiB. `pyarray.rs` holds the few `unsafe` blocks (SAFETY comments; the `Sync` claim assumes the GIL). `ops.rs` has `Operand` (array or weak Python int/float/complex) and NEP 50 loop resolution; `umath.rs` has every ufunc kernel and complex special values.
 - Python side: `_ufunc.py` (ufunc objects with `out=`/`where=`/`reduce`...), `_reductions.py`, `_manip.py`, `_numeric.py`, `_creation.py`, `_indexing.py`, `_io.py` (`.npy`/`.npz` for every dtype), `_print.py` (port of NumPy's printing), `linalg.py`, `fft.py` (n-D composed from 1-D line transforms; norm scaling is in `linalgfns.rs`), `random.py`, `_arrayapi.py` (`__array_namespace_info__`), `_scalars.py`.
 - **0-d results** for `bool`/`int64`/`float64`/`complex128` are scalar objects (`float64`/`complex128` subclass `float`/`complex`; `int64`/`bool` are plain classes, as in NumPy) with `.dtype`/`.shape`/`.astype`; every operator delegates to the 0-d array, so they are strong under NEP 50 like `np.float64`; other dtypes give 0-d arrays. Internal Python code that feeds such a value back into an op must be aware it is strong, not weak (use `float(x)` to get a weak Python number). Details in `docs/CONVENTIONS.md`.
 - Matrices with a zero dimension are answered from their shapes in `linalg.py` (`_guard`); the numeric kernels never see them. SVD rescales extreme magnitudes before calling faer.
@@ -88,7 +90,7 @@ Rust: small tolerance-based tests per module with expected values baked in as li
 │   ├── linalg, linalg_complex, fft, random, polynomial, npy
 ├── examples/              one runnable demo per early step
 ├── tests/fixtures/*.npy   written by real NumPy (scripts/gen_fixtures.py)
-├── scripts/               gen_fixtures.py
+├── scripts/               gen_fixtures.py, bench_vs_numpy.py
 └── python/                PyO3 binding crate + Python package
     ├── src/               native modules (dynarray, pyarray, pyindex, ops, umath, arrayfns, shapefns, logicfns, createfns, linalgfns, clinalgfns, ...)
     ├── python_src/rustnumpy/   Python layer (see above)

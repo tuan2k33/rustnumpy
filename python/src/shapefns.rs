@@ -1,6 +1,6 @@
 use crate::arrayfns::{ints, norm_axis};
 use crate::casting::{astype, kind_name};
-use crate::dynarray::{unsupported, Arr};
+use crate::dynarray::{unsupported, Arr, ArrIn};
 use crate::ops::{out, out_array, shape_err, Operand};
 use crate::with_arr;
 use pyo3::exceptions::PyValueError;
@@ -69,8 +69,8 @@ macro_rules! with_real {
     };
 }
 
-fn arr_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {
-    Operand::parse(py, obj)?.into_arr(py)
+fn arr_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<ArrIn> {
+    Operand::parse(py, obj)?.into_input(py)
 }
 
 pub fn common_all(arrs: &[Arr]) -> PyResult<Vec<Arr>> {
@@ -83,7 +83,7 @@ pub fn common_all(arrs: &[Arr]) -> PyResult<Vec<Arr>> {
 }
 
 fn list_of(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Vec<Arr>> {
-    obj.try_iter()?.map(|item| arr_of(py, &item?)).collect()
+    obj.try_iter()?.map(|item| arr_of(py, &item?).map(ArrIn::into_owned)).collect()
 }
 
 fn to_list(py: Python<'_>, items: Vec<Arr>, scalar: bool) -> PyResult<Py<PyAny>> {
@@ -97,7 +97,8 @@ fn to_list(py: Python<'_>, items: Vec<Arr>, scalar: bool) -> PyResult<Py<PyAny>>
 #[pyfunction]
 #[pyo3(signature = (a, shift, axis=None))]
 pub fn roll(py: Python<'_>, a: &Bound<'_, PyAny>, shift: &Bound<'_, PyAny>, axis: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     let shifts = ints(shift)?;
     let axes = axis.map(ints).transpose()?;
     out_array(py, with_arr!(&arr, x => Arr::from(rustnumpy::roll(&x.view(), &shifts, axes.as_deref()).map_err(shape_err)?)))
@@ -106,7 +107,8 @@ pub fn roll(py: Python<'_>, a: &Bound<'_, PyAny>, shift: &Bound<'_, PyAny>, axis
 #[pyfunction]
 #[pyo3(signature = (a, repeats, axis=None))]
 pub fn repeat(py: Python<'_>, a: &Bound<'_, PyAny>, repeats: &Bound<'_, PyAny>, axis: Option<isize>) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     let reps: Vec<usize> = ints(repeats)?
         .into_iter()
         .map(|r| usize::try_from(r).map_err(|_| PyValueError::new_err("negative dimensions are not allowed")))
@@ -127,22 +129,23 @@ fn acc_name(a: &Arr) -> &'static str {
 #[pyfunction]
 #[pyo3(signature = (a, offset=0))]
 pub fn trace(py: Python<'_>, a: &Bound<'_, PyAny>, offset: isize) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, a)?;
-    let acc = astype(&arr, acc_name(&arr))?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
+    let acc = astype(arr, acc_name(arr))?;
     let result = with_arr!(&acc, x => Arr::from(NdArray::from_vec(vec![rustnumpy::trace(&x.view(), offset).map_err(shape_err)?], &[]).map_err(shape_err)?));
     out(py, result)
 }
 
 #[pyfunction]
 pub fn kron(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
+    let pair = common_all(&[arr_of(py, a)?.into_owned(), arr_of(py, b)?.into_owned()])?;
     let result = with_list!(pair, l => Arr::from(rustnumpy::kron(&l[0].view(), &l[1].view()).map_err(shape_err)?));
     out_array(py, result)
 }
 
 #[pyfunction]
 pub fn cross(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
+    let pair = common_all(&[arr_of(py, a)?.into_owned(), arr_of(py, b)?.into_owned()])?;
     let result = with_list_nb!(pair, l => Arr::from(rustnumpy::cross(&l[0].view(), &l[1].view()).map_err(shape_err)?));
     out_array(py, result)
 }
@@ -151,8 +154,12 @@ macro_rules! contract2 {
     ($name:ident, $core:path) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
-            let result = with_list!(pair, l => Arr::from($core(&l[0].view(), &l[1].view()).map_err(shape_err)?));
+            let (ai, bi) = (arr_of(py, a)?, arr_of(py, b)?);
+            let name = crate::casting::kind_name(rustnumpy::common_dtype(ai.kind(), bi.kind()));
+            let (mut sa, mut sb) = (None, None);
+            let x = crate::casting::cast_ref(&ai, name, &mut sa)?;
+            let y = crate::casting::cast_ref(&bi, name, &mut sb)?;
+            let result = crate::dispatch_same!(x, y, p, q => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?));
             out(py, result)
         }
     };
@@ -163,7 +170,7 @@ contract2!(outer, rustnumpy::outer);
 
 #[pyfunction]
 pub fn vecdot(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let mut pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
+    let mut pair = common_all(&[arr_of(py, a)?.into_owned(), arr_of(py, b)?.into_owned()])?;
     if pair[0].is_complex() {
         let conj = py.import("rustnumpy._core")?.getattr("conjugate")?;
         pair[0] = Arr::from_object(py, &conj.call1((crate::pyarray::wrap(py, crate::pyarray::PyArray::from_arr(pair[0].clone_arr()))?,))?)?;
@@ -175,7 +182,7 @@ pub fn vecdot(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyR
 #[pyfunction]
 #[pyo3(signature = (a, b, axes=None))]
 pub fn tensordot(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, axes: Option<&Bound<'_, PyAny>>) -> PyResult<Py<PyAny>> {
-    let pair = common_all(&[arr_of(py, a)?, arr_of(py, b)?])?;
+    let pair = common_all(&[arr_of(py, a)?.into_owned(), arr_of(py, b)?.into_owned()])?;
     let (nd_a, nd_b) = (pair[0].ndim(), pair[1].ndim());
     let (axes_a, axes_b): (Vec<isize>, Vec<isize>) = match axes {
         None => (((nd_a as isize - 2)..nd_a as isize).collect(), (0..2).collect()),
@@ -200,7 +207,7 @@ pub fn tensordot(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, axe
 #[pyfunction]
 #[pyo3(signature = (subscripts, *operands))]
 pub fn einsum(py: Python<'_>, subscripts: &str, operands: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Py<PyAny>> {
-    let arrs: Vec<Arr> = operands.iter().map(|o| arr_of(py, &o)).collect::<PyResult<_>>()?;
+    let arrs: Vec<Arr> = operands.iter().map(|o| arr_of(py, &o).map(ArrIn::into_owned)).collect::<PyResult<_>>()?;
     if arrs.is_empty() {
         return Err(PyValueError::new_err("No input operands"));
     }
@@ -215,9 +222,10 @@ pub fn einsum(py: Python<'_>, subscripts: &str, operands: &Bound<'_, pyo3::types
 
 #[pyfunction]
 pub fn where_(py: Python<'_>, cond: &Bound<'_, PyAny>, x: &Bound<'_, PyAny>, y: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let c = astype(&arr_of(py, cond)?, "bool")?;
+    let c = astype(&*arr_of(py, cond)?, "bool")?;
     let Arr::Bool(mask) = c else { unreachable!("cast to bool") };
-    let (px, py_) = crate::ops::resolve_binary(py, x, y)?;
+    let (pxi, pyi) = crate::ops::resolve_binary(py, x, y)?;
+    let (px, py_): (&Arr, &Arr) = (&pxi, &pyi);
     let pair = [px, py_];
     let result = with_list!(pair, l => Arr::from(rustnumpy::where_cond(&mask.view(), &l[0].view(), &l[1].view()).map_err(shape_err)?));
     out_array(py, result)
@@ -246,7 +254,7 @@ pub fn select(py: Python<'_>, condlist: &Bound<'_, PyAny>, choicelist: &Bound<'_
     let (target, dflt) = match default_operand {
         Operand::WeakInt(v, f) => {
             let name = if choices[0].is_bool() { "int64" } else { choices[0].dtype_name() };
-            (name, crate::ops::materialize(Operand::WeakInt(v, f), name)?)
+            (name, crate::ops::materialize(Operand::WeakInt(v, f), name)?.into_owned())
         }
         Operand::WeakFloat(v) => {
             let name = if choices[0].is_bool() || choices[0].is_int() { "float64" } else { choices[0].dtype_name() };
@@ -258,7 +266,7 @@ pub fn select(py: Python<'_>, condlist: &Bound<'_, PyAny>, choicelist: &Bound<'_
         }
         Operand::Arr(a) => {
             let mut both = choices.iter().map(|c| astype(c, c.dtype_name())).collect::<PyResult<Vec<_>>>()?;
-            both.push(a);
+            both.push(a.into_owned());
             let both = common_all(&both)?;
             let name = both[0].dtype_name();
             (name, astype(both.last().expect("pushed above"), name)?)
@@ -292,7 +300,7 @@ pub fn choose(py: Python<'_>, a: &Bound<'_, PyAny>, choices: &Bound<'_, PyAny>, 
         "clip" => ChooseMode::Clip,
         other => return Err(PyValueError::new_err(format!("clipmode must be one of 'clip', 'raise', or 'wrap' (got '{other}')"))),
     };
-    let idx = astype(&arr_of(py, a)?, "int64")?;
+    let idx = astype(&*arr_of(py, a)?, "int64")?;
     let Arr::I64(idx) = idx else { unreachable!("cast to int64") };
     let chs = common_all(&list_of(py, choices)?)?;
     let result = with_list!(chs, l => {
@@ -306,7 +314,8 @@ pub fn choose(py: Python<'_>, a: &Bound<'_, PyAny>, choices: &Bound<'_, PyAny>, 
 #[pyfunction]
 #[pyo3(signature = (ary, indices_or_sections, axis=0))]
 pub fn array_split(py: Python<'_>, ary: &Bound<'_, PyAny>, indices_or_sections: &Bound<'_, PyAny>, axis: isize) -> PyResult<Py<PyAny>> {
-    let arr = arr_of(py, ary)?;
+    let arr_in = arr_of(py, ary)?;
+    let arr: &Arr = &arr_in;
     let ax = norm_axis(axis, arr.ndim())?;
     let parts: Vec<Arr> = match indices_or_sections.extract::<usize>() {
         Ok(n) => with_arr!(&arr, x => rustnumpy::array_split(x, n, ax).map_err(shape_err)?.into_iter().map(Arr::from).collect()),
@@ -334,7 +343,8 @@ fn unique_of<K: rustnumpy::reductions::FloatIsh>(
 }
 
 fn unique_parts(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Arr, Vec<usize>, Arr, Vec<usize>)> {
-    let arr = arr_of(py, a)?;
+    let arr_in = arr_of(py, a)?;
+    let arr: &Arr = &arr_in;
     fn flat<T>(values: Vec<T>) -> PyResult<Arr>
     where
         Arr: From<NdArray<T>>,

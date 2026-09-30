@@ -71,6 +71,14 @@ _UNARY = ["__neg__", "__pos__", "__abs__", "__invert__"]
 _COMPARE = ["__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"]
 
 
+_CORE = {
+    "add": "add", "sub": "subtract", "mul": "multiply", "truediv": "divide", "floordiv": "floor_divide",
+    "mod": "remainder", "pow": "power", "lshift": "left_shift", "rshift": "right_shift",
+    "and": "bitwise_and", "or": "bitwise_or", "xor": "bitwise_xor",
+    "eq": "equal", "ne": "not_equal", "lt": "less", "le": "less_equal", "gt": "greater", "ge": "greater_equal",
+}
+
+
 def _delegate(name):
     def op(self, *args):
         return getattr(self._array(), name)(*args)
@@ -79,9 +87,24 @@ def _delegate(name):
     return op
 
 
+def _direct(name):
+    reflected = name.startswith("__r") and name[3:-2] in _CORE
+    fn = getattr(_core, _CORE[name[3:-2] if reflected else name[2:-2]])
+    slow = _delegate(name)
+
+    def op(self, other):
+        if type(other) not in _FAST:
+            return slow(self, other)
+        return fn(other, self) if reflected else fn(self, other)
+
+    op.__name__ = name
+    return op
+
+
 def _install(cls):
     for name in _BINARY + _UNARY + _COMPARE:
-        setattr(cls, name, _delegate(name))
+        key = name[3:-2] if name.startswith("__r") and name[3:-2] in _CORE else name[2:-2]
+        setattr(cls, name, _direct(name) if key in _CORE else _delegate(name))
     cls.__hash__ = lambda self: hash(self._plain())
 
 
@@ -139,6 +162,8 @@ class _Bool(_Plain):
     __slots__ = ()
     _base = bool
 
+
+_FAST = {int, float, complex, bool, _F64, _C128, _I64, _Bool}
 
 for _cls, _base, _name in ((_F64, float, "float64"), (_C128, complex, "complex128"), (_I64, int, "int64"), (_Bool, bool, "bool")):
     _cls._base = _base

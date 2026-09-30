@@ -143,6 +143,17 @@ impl<'a, T> ArrayView<'a, T> {
         is_c_contiguous_layout(&self.shape, &self.strides)
     }
 
+    pub fn as_slice_c(&self) -> Option<&'a [T]> {
+        let n = self.len();
+        if n == 0 {
+            Some(&self.data[..0])
+        } else if self.is_c_contiguous() {
+            self.data.get(self.offset..self.offset + n)
+        } else {
+            None
+        }
+    }
+
     pub fn reshape(&self, shape: &[isize]) -> Result<ArrayView<'a, T>, ShapeError> {
         let resolved = resolve_reshape(self.len(), shape)?;
         if !self.is_c_contiguous() {
@@ -190,7 +201,10 @@ impl<'a, T: Copy> ArrayView<'a, T> {
     }
 
     pub fn to_owned(&self) -> NdArray<T> {
-        let data: Vec<T> = self.iter().collect();
+        let data: Vec<T> = match self.as_slice_c() {
+            Some(s) => s.to_vec(),
+            None => self.iter().collect(),
+        };
         NdArray::from_vec(data, &self.shape).expect("data.len() always matches shape.iter().product()")
     }
 

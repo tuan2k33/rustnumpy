@@ -1,5 +1,5 @@
 use crate::casting::astype;
-use crate::dynarray::{unsupported, Arr, C32, C64};
+use crate::dynarray::{unsupported, Arr, ArrIn, C32, C64};
 use crate::ops::{out, resolve_binary, resolve_loop, shape_err, Operand};
 use half::f16;
 use num_complex::Complex;
@@ -41,13 +41,13 @@ fn common_static(name: &str) -> &'static str {
     }
 }
 
-fn float_input(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Arr> {
-    let arr = Arr::from_object(py, a)?;
+fn float_input(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<ArrIn> {
+    let arr = Arr::input(py, a)?;
     let target = float_loop_name(arr.dtype_name());
     if target == arr.dtype_name() {
         Ok(arr)
     } else {
-        astype(&arr, target)
+        astype(&arr, target).map(ArrIn::Owned)
     }
 }
 
@@ -561,7 +561,8 @@ macro_rules! unary_math {
     ($name:ident, $real:path, $complex:path) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = float_input(py, a)?;
+            let arr_in = float_input(py, a)?;
+            let arr: &Arr = &arr_in;
             let r = match &arr {
                 Arr::C64(x) => Arr::from(map(&x.view(), $complex)),
                 Arr::C128(x) => Arr::from(map(&x.view(), $complex)),
@@ -573,7 +574,8 @@ macro_rules! unary_math {
     ($name:ident, $real:path) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let arr = float_input(py, a)?;
+            let arr_in = float_input(py, a)?;
+            let arr: &Arr = &arr_in;
             let r = match &arr {
                 Arr::C64(_) | Arr::C128(_) => return Err(not_supported(stringify!($name), arr.dtype_name())),
                 other => float_arms!(other, x, T => Arr::from(map(&x.view(), $real)), else unreachable!("float loop input")),
@@ -639,9 +641,9 @@ fn c_recip<T: Float>(z: Complex<T>) -> Complex<T> {
     }
 }
 
-fn bool_as_i8(arr: Arr) -> PyResult<Arr> {
+fn bool_as_i8(arr: ArrIn) -> PyResult<ArrIn> {
     if arr.is_bool() {
-        astype(&arr, "int8")
+        astype(&arr, "int8").map(ArrIn::Owned)
     } else {
         Ok(arr)
     }
@@ -670,8 +672,8 @@ recip_float!(f16, f32, f64);
 
 #[pyfunction]
 pub fn reciprocal(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = bool_as_i8(Arr::from_object(py, a)?)?;
-    let r = match &arr {
+    let arr = bool_as_i8(Arr::input(py, a)?)?;
+    let r = match &*arr {
         Arr::C64(x) => Arr::from(map(&x.view(), c_recip)),
         Arr::C128(x) => Arr::from(map(&x.view(), c_recip)),
         other => real_arms!(other, x, T => Arr::from(map(&x.view(), <T as Recip>::recip_)), else unreachable!("bool cast to int8")),
@@ -681,8 +683,8 @@ pub fn reciprocal(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 
 #[pyfunction]
 pub fn square(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = bool_as_i8(Arr::from_object(py, a)?)?;
-    let r = match &arr {
+    let arr = bool_as_i8(Arr::input(py, a)?)?;
+    let r = match &*arr {
         Arr::C64(x) => Arr::from(map(&x.view(), |z| z * z)),
         Arr::C128(x) => Arr::from(map(&x.view(), |z| z * z)),
         other => real_arms!(other, x, T => Arr::from(mathfunc::square(&x.view())), else unreachable!("bool cast to int8")),
@@ -749,11 +751,11 @@ pub fn absolute(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 
 #[pyfunction]
 pub fn conjugate(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = bool_as_i8(Arr::from_object(py, a)?)?;
-    let r = match &arr {
+    let arr = bool_as_i8(Arr::input(py, a)?)?;
+    let r = match &*arr {
         Arr::C64(x) => Arr::from(map(&x.view(), |z| z.conj())),
         Arr::C128(x) => Arr::from(map(&x.view(), |z| z.conj())),
-        _ => arr,
+        other => crate::with_arr!(other, a => Arr::from(a.clone())),
     };
     out(py, r)
 }
@@ -828,7 +830,7 @@ fn int_arms1(arr: &Arr) -> PyResult<Arr> {
     })
 }
 
-fn float_pair(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, name: &str) -> PyResult<(Arr, Arr)> {
+fn float_pair(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>, name: &str) -> PyResult<(ArrIn, ArrIn)> {
     resolve_loop(py, a, b, |common, strong| {
         let names = ["float16", "float32", "float64", "complex64", "complex128"];
         let is_float = |d: &str| d.starts_with("float") || d.starts_with("complex");
@@ -981,7 +983,8 @@ pub fn nextafter(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> 
 
 #[pyfunction]
 pub fn spacing(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = float_input(py, a)?;
+    let arr_in = float_input(py, a)?;
+    let arr: &Arr = &arr_in;
     if arr.is_complex() {
         return Err(not_supported("spacing", arr.dtype_name()));
     }
@@ -1037,7 +1040,8 @@ fn ldexp64(x: f64, n: i64) -> f64 {
 
 #[pyfunction]
 pub fn frexp(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-    let arr = float_input(py, a)?;
+    let arr_in = float_input(py, a)?;
+    let arr: &Arr = &arr_in;
     if arr.is_complex() {
         return Err(not_supported("frexp", arr.dtype_name()));
     }
@@ -1062,7 +1066,8 @@ pub fn frexp(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<Py
 
 #[pyfunction]
 pub fn ldexp(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let x = float_input(py, a)?;
+    let x_in = float_input(py, a)?;
+    let x: &Arr = &x_in;
     let e = Arr::from_object(py, b)?;
     if !(e.is_int() || e.is_bool()) || matches!(e, Arr::U64(_)) {
         return Err(not_supported("ldexp", e.dtype_name()));
@@ -1087,7 +1092,8 @@ fn zip_pair<T: Copy>(p: &NdArray<T>, e: &NdArray<i64>, f: impl Fn(T, i64) -> T) 
 
 #[pyfunction]
 pub fn modf(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-    let arr = float_input(py, a)?;
+    let arr_in = float_input(py, a)?;
+    let arr: &Arr = &arr_in;
     if arr.is_complex() {
         return Err(not_supported("modf", arr.dtype_name()));
     }
@@ -1108,8 +1114,9 @@ macro_rules! arith_binary {
     ($name:ident, $core:path) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let (x, y) = (bool_as_i8(x)?, bool_as_i8(y)?);
+            let (xi, yi) = resolve_binary(py, a, b)?;
+            let (xi, yi) = (bool_as_i8(xi)?, bool_as_i8(yi)?);
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             let r = real_arms2!(&x, &y, p, q, T => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?), else return Err(not_supported(stringify!($name), x.dtype_name())));
             out(py, r)
         }
@@ -1142,8 +1149,9 @@ fmod_float!(f16, f32, f64);
 
 #[pyfunction]
 pub fn fmod(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (x, y) = resolve_binary(py, a, b)?;
-    let (x, y) = (bool_as_i8(x)?, bool_as_i8(y)?);
+    let (xi, yi) = resolve_binary(py, a, b)?;
+            let (xi, yi) = (bool_as_i8(xi)?, bool_as_i8(yi)?);
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
     let r = real_arms2!(&x, &y, p, q, T => Arr::from(zip_with(&p.view(), &q.view(), <T as CFmod>::fmod_).map_err(shape_err)?), else return Err(not_supported("fmod", x.dtype_name())));
     out(py, r)
 }
@@ -1219,12 +1227,13 @@ impl<T: Float> DivideGeneric<T> for Complex<T> {
 
 #[pyfunction]
 pub fn power(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (x, y) = resolve_binary(py, a, b)?;
-    out(py, power_arrs(x, y)?)
+    let (xi, yi) = resolve_binary(py, a, b)?;
+    out(py, power_arrs(xi, yi)?)
 }
 
-fn power_arrs(x: Arr, y: Arr) -> PyResult<Arr> {
-    let (x, y) = (bool_as_i8(x)?, bool_as_i8(y)?);
+fn power_arrs(x: ArrIn, y: ArrIn) -> PyResult<Arr> {
+    let (xi, yi) = (bool_as_i8(x)?, bool_as_i8(y)?);
+    let (x, y): (&Arr, &Arr) = (&xi, &yi);
     Ok(match (&x, &y) {
         (Arr::C64(p), Arr::C64(q)) => Arr::from(zip_with(&p.view(), &q.view(), c_pow).map_err(shape_err)?),
         (Arr::C128(p), Arr::C128(q)) => Arr::from(zip_with(&p.view(), &q.view(), c_pow).map_err(shape_err)?),
@@ -1234,15 +1243,16 @@ fn power_arrs(x: Arr, y: Arr) -> PyResult<Arr> {
 
 #[pyfunction]
 pub fn float_power(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (x, y) = resolve_loop(py, a, b, |common, _| Ok(if common.starts_with("complex") { "complex128" } else { "float64" }))?;
-    out(py, power_arrs(x, y)?)
+    let (xi, yi) = resolve_loop(py, a, b, |common, _| Ok(if common.starts_with("complex") { "complex128" } else { "float64" }))?;
+    out(py, power_arrs(xi, yi)?)
 }
 
 macro_rules! extreme {
     ($name:ident, $keep_first:expr, $bool_op:expr) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
+            let (xi, yi) = resolve_binary(py, a, b)?;
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             let r = match (&x, &y) {
                 (Arr::Bool(p), Arr::Bool(q)) => Arr::from(zip_with(&p.view(), &q.view(), $bool_op).map_err(shape_err)?),
                 (Arr::C64(p), Arr::C64(q)) => Arr::from(zip_with(&p.view(), &q.view(), |m, n| $keep_first(m, n)).map_err(shape_err)?),
@@ -1283,9 +1293,10 @@ extreme!(fmin, c_fmin, |m: bool, n: bool| m && n);
 
 #[pyfunction]
 pub fn divide(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let (x, y) = resolve_loop(py, a, b, |common, _| {
+    let (xi, yi) = resolve_loop(py, a, b, |common, _| {
         Ok(if common.starts_with("float") || common.starts_with("complex") { common_static(common) } else { "float64" })
     })?;
+    let (x, y): (&Arr, &Arr) = (&xi, &yi);
     let r = match (&x, &y) {
         (Arr::F16(p), Arr::F16(q)) => Arr::from(mathfunc::divide(&p.view(), &q.view()).map_err(shape_err)?),
         (Arr::F32(p), Arr::F32(q)) => Arr::from(mathfunc::divide(&p.view(), &q.view()).map_err(shape_err)?),
@@ -1339,7 +1350,8 @@ macro_rules! gcd_fn {
     ($name:ident, $m:ident) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
+            let (xi, yi) = resolve_binary(py, a, b)?;
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             let r = int_arms2!(&x, &y, p, q, T => Arr::from(zip_with(&p.view(), &q.view(), <T as Gcd>::$m).map_err(shape_err)?), else return Err(not_supported(stringify!($name), x.dtype_name())));
             out(py, r)
         }
@@ -1415,7 +1427,8 @@ macro_rules! compare_fn {
                 return out(py, Arr::from(c));
             }
             let name = crate::ops::common_name(&oa, &ob);
-            let (x, y) = (crate::ops::materialize(oa, name)?, crate::ops::materialize(ob, name)?);
+            let (xi, yi) = (crate::ops::materialize(oa, name)?, crate::ops::materialize(ob, name)?);
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             let r = all_arms2!(&x, &y, p, q, T => zip_map(&p.view(), &q.view(), $f).map_err(shape_err)?, else return Err(unsupported("unreachable comparison dtype")));
             out(py, Arr::from(r))
         }
@@ -1452,7 +1465,8 @@ macro_rules! bit_binary {
     ($name:ident, $core:path) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
+            let (xi, yi) = resolve_binary(py, a, b)?;
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             let r = match (&x, &y) {
                 (Arr::Bool(p), Arr::Bool(q)) => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?),
                 _ => int_arms2!(&x, &y, p, q, T => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?), else return Err(not_supported(stringify!($name), x.dtype_name()))),
@@ -1469,8 +1483,9 @@ macro_rules! shift_binary {
     ($name:ident, $core:path) => {
         #[pyfunction]
         pub fn $name(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-            let (x, y) = resolve_binary(py, a, b)?;
-            let (x, y) = (bool_as_i8(x)?, bool_as_i8(y)?);
+            let (xi, yi) = resolve_binary(py, a, b)?;
+            let (xi, yi) = (bool_as_i8(xi)?, bool_as_i8(yi)?);
+            let (x, y): (&Arr, &Arr) = (&xi, &yi);
             let r = int_arms2!(&x, &y, p, q, T => Arr::from($core(&p.view(), &q.view()).map_err(shape_err)?), else return Err(not_supported(stringify!($name), x.dtype_name())));
             out(py, r)
         }
