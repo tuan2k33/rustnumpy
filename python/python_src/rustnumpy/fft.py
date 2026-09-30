@@ -22,6 +22,7 @@ def _cook_nd_args(a, s, axes, invreal=False):
         raise ValueError("Shape and axes have different lengths.")
     if invreal and shapeless and axes:
         s[-1] = (a.shape[axes[-1]] - 1) * 2
+    s = [a.shape[ax] if n == -1 else n for n, ax in zip(s, axes)]
     return a, s, axes
 
 

@@ -47,7 +47,7 @@ ARRAY_API_TESTS_MODULE=rustnumpy ARRAY_API_TESTS_VERSION=2025.12 \
   python -m pytest array_api_tests -n 3 --max-examples=20 --hypothesis-disable-deadline -W ignore --timeout=120
 ```
 
-Reference numbers (step 26c): rustnumpy 1335 passed / 41 failed, stock NumPy 2.5.3 1331 / 46; counts vary by a few between runs (Hypothesis draws). Also: `python/numpy_suite/run_suite.py` runs NumPy's own test files through a shim (see `NumPy.md`, "Step 25"). `.npy` fixtures in `tests/fixtures/` come from `scripts/gen_fixtures.py` (needs NumPy).
+Reference numbers (step 26d): rustnumpy 1347 passed / 29 failed, stock NumPy 2.5.3 1331 / 46; counts vary by a few between runs (Hypothesis draws). Also: `python/numpy_suite/run_suite.py` runs NumPy's own test files through a shim (see `NumPy.md`, "Step 25"); shadow mode after step 26d: 455,254 comparisons match, 4 known mismatches. `.npy` fixtures in `tests/fixtures/` come from `scripts/gen_fixtures.py` (needs NumPy).
 
 ## Architecture
 

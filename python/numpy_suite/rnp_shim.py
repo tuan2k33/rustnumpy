@@ -259,7 +259,8 @@ def _eigh_cmp(ours, theirs, args, kw):
         return "dtype"
     if not _close(ours[0], theirs[0], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
         return "eigenvalues"
-    sym = np.tril(a) + np.swapaxes(np.tril(a, -1), -1, -2)
+    lower = np.tril(a) if kw.get("UPLO", args[1] if len(args) > 1 else "L") in ("L", "l") else np.swapaxes(np.triu(a), -1, -2).conj()
+    sym = lower + np.swapaxes(np.tril(lower, -1), -1, -2).conj()
     if not _close(sym @ ours[1], ours[1] * ours[0][..., None, :], rtol * 5, atol * 5 * max(1.0, float(np.abs(a).max(initial=0)))):
         return "A v != lambda v"
     return None
@@ -291,7 +292,14 @@ def _qr_cmp(ours, theirs, args, kw):
     return None if _close(q @ r, a, rtol * 20, atol * 20 * max(1.0, float(np.abs(a).max(initial=0)))) else "Q R != A"
 
 
-LINALG_COMPARATORS = {"eig": _eig_cmp, "eigh": _eigh_cmp, "svd": _svd_cmp, "qr": _qr_cmp}
+def _eigvals_cmp(ours, theirs, args, kw):
+    rtol, atol = _tol_for(args[0])
+    if np.asarray(ours).dtype != np.asarray(theirs).dtype:
+        return "dtype"
+    return None if _close(_sorted_eigs(ours), _sorted_eigs(theirs), rtol * 5, atol * 5) else "eigenvalues"
+
+
+LINALG_COMPARATORS = {"eig": _eig_cmp, "eigh": _eigh_cmp, "eigvals": _eigvals_cmp, "svd": _svd_cmp, "qr": _qr_cmp}
 
 
 BINARY_UFUNCS = {

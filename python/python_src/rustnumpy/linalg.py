@@ -331,20 +331,28 @@ def lstsq(a, b, rcond=None):
             r = _c.subtract(b, _c.matmul(a, x))
             res = _c.sum(_c.real(_c.multiply(r, _c.conjugate(r))), 0) if b.ndim > 1 else asarray(_c.sum(_c.real(_c.multiply(r, _c.conjugate(r))))).reshape((1,))
         else:
-            res = _c.zeros((0,), "float64")
-        return x, asarray(res), rank, sv
+            res = _c.zeros((0,), sv.dtype)
+        return x, asarray(res), _c.array(rank, "int32"), sv
     return _c.lstsq(a, b, rcond)
+
+
+def _cond_by_inverse(m, p, real):
+    try:
+        return _c.multiply(norm(m, p), norm(inv(m), p))
+    except LinAlgError:
+        return _c.array(float("inf"), real)
 
 
 def cond(x, p=None):
     x = asarray(x)
     if _cx(x):
         sv = svdvals(x)
+        hi, lo = _c.max(sv, -1), _c.min(sv, -1)
         if p is None or p == 2:
-            return _c.divide(_c.max(sv, -1) if sv.ndim > 1 else sv.max(), _c.min(sv, -1) if sv.ndim > 1 else sv.min())
+            return _c.divide(hi, lo)
         if p == -2:
-            return _c.divide(sv.min(), sv.max())
-        return _c.multiply(norm(x, p), norm(inv(x), p))
+            return _c.divide(lo, hi)
+        return _stack(lambda m: _cond_by_inverse(m, p, sv.dtype), x)
     if x.ndim == 2:
         return _c.cond(x, p)
     return _stack(lambda m: _c.cond(m, p), x)
