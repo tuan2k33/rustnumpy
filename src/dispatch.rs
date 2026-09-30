@@ -1,12 +1,9 @@
 use crate::reductions::ReductionError;
-use crate::dtype::DType;
 use crate::error::{OpError, ShapeError};
 use crate::ndarray::NdArray;
-use crate::promote::{Promote, PromoteWeak, Widen};
 use crate::shape::{broadcast_shapes, IndexIter};
 use crate::view::{ArrayView, ArrayViewMut};
 use num_complex::Complex;
-use rayon::prelude::*;
 
 pub trait WrapAdd: Copy {
     fn wrap_add(self, rhs: Self) -> Self;
@@ -50,83 +47,6 @@ impl WrapMul for bool {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WeakInt(pub i64);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WeakFloat(pub f64);
-
-pub trait FromWeak: Copy {
-    fn from_weak_int(v: i64) -> Option<Self>;
-    fn from_weak_float(v: f64) -> Self;
-}
-
-macro_rules! from_weak_int_type {
-    ($($t:ty),*) => {$(
-        impl FromWeak for $t {
-            fn from_weak_int(v: i64) -> Option<Self> { <$t>::try_from(v).ok() }
-            fn from_weak_float(v: f64) -> Self { v as $t }
-        }
-    )*};
-}
-from_weak_int_type!(i8, i16, i32, i64, u8, u16, u32, u64);
-
-macro_rules! from_weak_float_type {
-    ($($t:ty),*) => {$(
-        impl FromWeak for $t {
-            fn from_weak_int(v: i64) -> Option<Self> { Some(v as $t) }
-            fn from_weak_float(v: f64) -> Self { v as $t }
-        }
-        impl FromWeak for Complex<$t> {
-            fn from_weak_int(v: i64) -> Option<Self> { Some(Complex::new(v as $t, 0.0)) }
-            fn from_weak_float(v: f64) -> Self { Complex::new(v as $t, 0.0) }
-        }
-    )*};
-}
-from_weak_float_type!(f32, f64);
-
-impl FromWeak for half::f16 {
-    fn from_weak_int(v: i64) -> Option<Self> {
-        Some(half::f16::from_f64(v as f64))
-    }
-    fn from_weak_float(v: f64) -> Self {
-        half::f16::from_f64(v)
-    }
-}
-
-impl FromWeak for bool {
-    fn from_weak_int(v: i64) -> Option<Self> {
-        Some(v != 0)
-    }
-    fn from_weak_float(v: f64) -> Self {
-        v != 0.0
-    }
-}
-
-pub trait Common<B>: Copy {
-    type Out: DType;
-    fn lhs(self) -> Self::Out;
-    fn rhs(b: B) -> Self::Out;
-}
-
-impl<A, B> Common<B> for A
-where
-    A: Promote<B> + Widen<<A as Promote<B>>::Output>,
-    B: Widen<<A as Promote<B>>::Output>,
-{
-    type Out = <A as Promote<B>>::Output;
-
-    fn lhs(self) -> Self::Out {
-        self.widen()
-    }
-
-    fn rhs(b: B) -> Self::Out {
-        b.widen()
-    }
-}
-
-pub type Out<A, B> = <A as Common<B>>::Out;
-
 fn out_shape<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<Vec<usize>, ShapeError> {
     broadcast_shapes(a.shape(), b.shape()).ok_or_else(|| ShapeError::NotBroadcastable {
         lhs: a.shape().to_vec(),
@@ -134,121 +54,12 @@ fn out_shape<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<Vec<usize>, Sha
     })
 }
 
-pub fn zip_with_promoted<A, B>(
-    a: &ArrayView<A>,
-    b: &ArrayView<B>,
-    f: impl Fn(Out<A, B>, Out<A, B>) -> Out<A, B>,
-) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-{
-    let shape = out_shape(a, b)?;
-    let (a_b, b_b) = (a.broadcast_to(&shape)?, b.broadcast_to(&shape)?);
-    let data: Vec<Out<A, B>> = a_b
-        .iter()
-        .zip(b_b.iter())
-        .map(|(x, y)| f(Common::lhs(x), A::rhs(y)))
-        .collect();
-    NdArray::from_vec(data, &shape)
-}
-
-const PARALLEL_CHUNK: usize = 4096;
-
-pub fn zip_with_promoted_parallel<A, B>(
-    a: &ArrayView<A>,
-    b: &ArrayView<B>,
-    f: impl Fn(Out<A, B>, Out<A, B>) -> Out<A, B> + Sync,
-) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B> + Send + Sync,
-    B: Copy + Send + Sync,
-    Out<A, B>: Send,
-{
-    let shape = out_shape(a, b)?;
-    let (a_b, b_b) = (a.broadcast_to(&shape)?, b.broadcast_to(&shape)?);
-    let len: usize = shape.iter().product();
-    let data: Vec<Out<A, B>> = (0..len.div_ceil(PARALLEL_CHUNK))
-        .into_par_iter()
-        .flat_map_iter(|chunk| {
-            let (start, n) = (chunk * PARALLEL_CHUNK, PARALLEL_CHUNK);
-            let f = &f;
-            a_b.iter_range(start, n)
-                .zip(b_b.iter_range(start, n))
-                .map(move |(x, y)| f(Common::lhs(x), A::rhs(y)))
-        })
-        .collect();
-    NdArray::from_vec(data, &shape)
-}
-
-pub fn map_weak_int<A>(
-    a: &ArrayView<A>,
-    s: i64,
-    f: impl Fn(<A as PromoteWeak<WeakInt>>::Output, <A as PromoteWeak<WeakInt>>::Output) -> <A as PromoteWeak<WeakInt>>::Output,
-) -> Result<NdArray<<A as PromoteWeak<WeakInt>>::Output>, OpError>
-where
-    A: PromoteWeak<WeakInt> + Widen<<A as PromoteWeak<WeakInt>>::Output>,
-    <A as PromoteWeak<WeakInt>>::Output: FromWeak,
-{
-    type O<A> = <A as PromoteWeak<WeakInt>>::Output;
-    let scalar = <O<A> as FromWeak>::from_weak_int(s)
-        .ok_or(OpError::WeakScalarOverflow { value: s, dtype: <O<A> as DType>::type_name() })?;
-    let data: Vec<O<A>> = a.iter().map(|x| f(x.widen(), scalar)).collect();
-    NdArray::from_vec(data, a.shape()).map_err(OpError::from)
-}
-
-pub fn map_weak_float<A>(
-    a: &ArrayView<A>,
-    s: f64,
-    f: impl Fn(<A as PromoteWeak<WeakFloat>>::Output, <A as PromoteWeak<WeakFloat>>::Output) -> <A as PromoteWeak<WeakFloat>>::Output,
-) -> Result<NdArray<<A as PromoteWeak<WeakFloat>>::Output>, ShapeError>
-where
-    A: PromoteWeak<WeakFloat> + Widen<<A as PromoteWeak<WeakFloat>>::Output>,
-    <A as PromoteWeak<WeakFloat>>::Output: FromWeak,
-{
-    type O<A> = <A as PromoteWeak<WeakFloat>>::Output;
-    let scalar = <O<A> as FromWeak>::from_weak_float(s);
-    let data: Vec<O<A>> = a.iter().map(|x| f(x.widen(), scalar)).collect();
-    NdArray::from_vec(data, a.shape())
-}
-
-macro_rules! weak_ops {
-    ($($int:ident, $float:ident => $op:ident, $bound:ident);* $(;)?) => {$(
-        pub fn $int<A>(a: &ArrayView<A>, s: i64) -> Result<NdArray<<A as PromoteWeak<WeakInt>>::Output>, OpError>
-        where
-            A: PromoteWeak<WeakInt> + Widen<<A as PromoteWeak<WeakInt>>::Output>,
-            <A as PromoteWeak<WeakInt>>::Output: FromWeak + $bound,
-        {
-            map_weak_int(a, s, |x, y| x.$op(y))
-        }
-
-        pub fn $float<A>(a: &ArrayView<A>, s: f64) -> Result<NdArray<<A as PromoteWeak<WeakFloat>>::Output>, ShapeError>
-        where
-            A: PromoteWeak<WeakFloat> + Widen<<A as PromoteWeak<WeakFloat>>::Output>,
-            <A as PromoteWeak<WeakFloat>>::Output: FromWeak + $bound,
-        {
-            map_weak_float(a, s, |x, y| x.$op(y))
-        }
-    )*};
-}
-
-weak_ops! {
-    add_weak_int, add_weak_float => wrap_add, WrapAdd;
-    sub_weak_int, sub_weak_float => wrap_sub, WrapSub;
-    mul_weak_int, mul_weak_float => wrap_mul, WrapMul;
-}
-
-pub fn zip_assign<A, B>(
-    out: &mut ArrayViewMut<A>,
-    b: &ArrayView<B>,
+pub fn zip_assign<T: Copy>(
+    out: &mut ArrayViewMut<T>,
+    b: &ArrayView<T>,
     mask: Option<&ArrayView<bool>>,
-    f: impl Fn(Out<A, B>, Out<A, B>) -> Out<A, B>,
-) -> Result<(), ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: Widen<A>,
-{
+    f: impl Fn(T, T) -> T,
+) -> Result<(), ShapeError> {
     let shape = out.shape().to_vec();
     let b_b = b.broadcast_to(&shape)?;
     let mask_b = mask.map(|m| m.broadcast_to(&shape)).transpose()?;
@@ -256,52 +67,31 @@ where
         if mask_b.as_ref().is_some_and(|m| !m.get(&idx).unwrap()) {
             continue;
         }
-        let current = out.get(&idx).unwrap();
-        let value = f(Common::lhs(current), A::rhs(b_b.get(&idx).unwrap()));
-        out.set(&idx, value.widen())?;
+        let value = f(out.get(&idx).unwrap(), b_b.get(&idx).unwrap());
+        out.set(&idx, value)?;
     }
     Ok(())
 }
 
-pub fn add_assign<A, B>(out: &mut ArrayViewMut<A>, b: &ArrayView<B>) -> Result<(), ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: Widen<A> + WrapAdd,
-{
-    zip_assign(out, b, None, |x, y| x.wrap_add(y))
+pub fn add_assign<T: WrapAdd>(out: &mut ArrayViewMut<T>, b: &ArrayView<T>) -> Result<(), ShapeError> {
+    zip_assign(out, b, None, T::wrap_add)
 }
 
-pub fn sub_assign<A, B>(out: &mut ArrayViewMut<A>, b: &ArrayView<B>) -> Result<(), ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: Widen<A> + WrapSub,
-{
-    zip_assign(out, b, None, |x, y| x.wrap_sub(y))
+pub fn sub_assign<T: WrapSub>(out: &mut ArrayViewMut<T>, b: &ArrayView<T>) -> Result<(), ShapeError> {
+    zip_assign(out, b, None, T::wrap_sub)
 }
 
-pub fn mul_assign<A, B>(out: &mut ArrayViewMut<A>, b: &ArrayView<B>) -> Result<(), ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: Widen<A> + WrapMul,
-{
-    zip_assign(out, b, None, |x, y| x.wrap_mul(y))
+pub fn mul_assign<T: WrapMul>(out: &mut ArrayViewMut<T>, b: &ArrayView<T>) -> Result<(), ShapeError> {
+    zip_assign(out, b, None, T::wrap_mul)
 }
 
-pub fn zip_promoted_into<A, B, C>(
-    out: &mut ArrayViewMut<C>,
-    a: &ArrayView<A>,
-    b: &ArrayView<B>,
+pub fn zip_into_where<T: Copy>(
+    out: &mut ArrayViewMut<T>,
+    a: &ArrayView<T>,
+    b: &ArrayView<T>,
     mask: Option<&ArrayView<bool>>,
-    f: impl Fn(Out<A, B>, Out<A, B>) -> Out<A, B>,
-) -> Result<(), ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: Widen<C>,
-{
+    f: impl Fn(T, T) -> T,
+) -> Result<(), ShapeError> {
     let shape = out_shape(a, b)?;
     if out.shape() != shape.as_slice() {
         return Err(ShapeError::DataShapeMismatch { data_len: out.shape().iter().product(), shape });
@@ -312,8 +102,7 @@ where
         if mask_b.as_ref().is_some_and(|m| !m.get(&idx).unwrap()) {
             continue;
         }
-        let value = f(Common::lhs(a_b.get(&idx).unwrap()), A::rhs(b_b.get(&idx).unwrap()));
-        out.set(&idx, value.widen())?;
+        out.set(&idx, f(a_b.get(&idx).unwrap(), b_b.get(&idx).unwrap()))?;
     }
     Ok(())
 }
@@ -401,19 +190,11 @@ pub fn accumulate<T: Copy>(view: &ArrayView<T>, axis: usize, f: impl Fn(T, T) ->
     NdArray::from_vec(data, owned.shape())
 }
 
-pub fn outer_with<A, B>(
-    a: &ArrayView<A>,
-    b: &ArrayView<B>,
-    f: impl Fn(Out<A, B>, Out<A, B>) -> Out<A, B>,
-) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-{
-    let bv: Vec<B> = b.iter().collect();
+pub fn outer_with<T: Copy>(a: &ArrayView<T>, b: &ArrayView<T>, f: impl Fn(T, T) -> T) -> Result<NdArray<T>, ShapeError> {
+    let bv: Vec<T> = b.iter().collect();
     let mut data = Vec::with_capacity(a.len() * bv.len());
     for x in a.iter() {
-        data.extend(bv.iter().map(|&y| f(Common::lhs(x), A::rhs(y))));
+        data.extend(bv.iter().map(|&y| f(x, y)));
     }
     let shape: Vec<usize> = a.shape().iter().chain(b.shape()).copied().collect();
     NdArray::from_vec(data, &shape)
@@ -422,112 +203,35 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dtype::{common_dtype_of, Kind};
+    use crate::dtype::DType;
     use crate::ufunc::{add, mul, sub};
+    use num_complex::Complex;
 
     fn arr<T>(data: Vec<T>) -> NdArray<T> {
         let n = data.len();
         NdArray::from_vec(data, &[n]).unwrap()
     }
 
-    fn kind_of_out<A: Common<B>, B>() -> Kind {
-        <Out<A, B> as DType>::KIND
-    }
-
-    macro_rules! check_pairs {
-        ($($a:ty),* ; $bs:tt) => {
-            $( check_pairs!(@row $a; $bs); )*
-        };
-        (@row $a:ty; ($($b:ty),*)) => {
-            $( assert_eq!(kind_of_out::<$a, $b>(), common_dtype_of::<$a, $b>(), "{} + {}", <$a as DType>::type_name(), <$b as DType>::type_name()); )*
-        };
-    }
-
     #[test]
-    fn generated_promotion_table_agrees_with_dtype_rs_for_every_pair() {
-        use num_complex::Complex;
-        check_pairs!(
-            bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, Complex<f32>, Complex<f64>;
-            (bool, i8, i16, i32, i64, u8, u16, u32, u64, f32, f64, Complex<f32>, Complex<f64>)
-        );
-    }
-
-    #[test]
-    fn mixed_dtype_add_promotes_like_numpy() {
+    fn mixed_dtypes_are_cast_explicitly_to_the_common_dtype() {
         let i = arr(vec![1i32, 2, 3]);
         let f = arr(vec![0.5f64, 0.5, 0.5]);
-        let sum = add(&i.view(), &f.view()).unwrap();
-        assert_eq!(sum.as_slice(), &[1.5, 2.5, 3.5]);
-        let f32s = arr(vec![1.5f32, 2.5]);
-        let i16s = arr(vec![1i16, 2]);
-        let s: NdArray<f32> = add(&i16s.view(), &f32s.view()).unwrap();
-        assert_eq!(s.as_slice(), &[2.5f32, 4.5]);
-        let i32s = arr(vec![1i32, 2]);
-        let widened: NdArray<f64> = mul(&i32s.view(), &f32s.view()).unwrap();
-        assert_eq!(widened.as_slice(), &[1.5, 5.0]);
-        let u = arr(vec![200u8]);
-        let s8 = arr(vec![-100i8]);
-        let mixed: NdArray<i16> = sub(&u.view(), &s8.view()).unwrap();
-        assert_eq!(mixed.as_slice(), &[300]);
-        let u64s = arr(vec![1u64]);
-        let i64s = arr(vec![-1i64]);
-        let to_float: NdArray<f64> = add(&u64s.view(), &i64s.view()).unwrap();
-        assert_eq!(to_float.as_slice(), &[0.0]);
-        let b = arr(vec![true, false]);
-        let bi = arr(vec![10i8, 20]);
-        let out: NdArray<i8> = add(&b.view(), &bi.view()).unwrap();
-        assert_eq!(out.as_slice(), &[11, 20]);
+        assert_eq!(crate::dtype::common_dtype(i32::KIND, f64::KIND), f64::KIND);
+        assert_eq!(add(&i.astype::<f64>().view(), &f.view()).unwrap().as_slice(), &[1.5, 2.5, 3.5]);
+        let (u, s8) = (arr(vec![200u8]), arr(vec![-100i8]));
+        assert_eq!(sub(&u.astype::<i16>().view(), &s8.astype::<i16>().view()).unwrap().as_slice(), &[300]);
         let c = arr(vec![Complex::new(1.0f32, 1.0)]);
-        let d = arr(vec![2.0f64]);
-        let cd: NdArray<Complex<f64>> = add(&c.view(), &d.view()).unwrap();
+        let cd = add(&c.astype::<Complex<f64>>().view(), &arr(vec![2.0f64]).astype::<Complex<f64>>().view()).unwrap();
         assert_eq!(cd.as_slice(), &[Complex::new(3.0, 1.0)]);
+        let (b, bi) = (arr(vec![true, false]), arr(vec![10i8, 20]));
+        assert_eq!(mul(&b.astype::<i8>().view(), &bi.view()).unwrap().as_slice(), &[10, 0]);
     }
 
     #[test]
-    fn int_overflow_wraps_in_the_promoted_type() {
+    fn int_overflow_wraps_in_the_operand_type() {
         let a = arr(vec![100i8]);
-        let b = arr(vec![100i8]);
-        assert_eq!(add(&a.view(), &b.view()).unwrap().as_slice(), &[-56]);
-        let wide = arr(vec![100i16]);
-        assert_eq!(add(&a.view(), &wide.view()).unwrap().as_slice(), &[200i16]);
-    }
-
-    #[test]
-    fn weak_python_scalars_follow_nep_50() {
-        let i8s = arr(vec![1i8]);
-        let r: NdArray<i8> = add_weak_int(&i8s.view(), 3).unwrap();
-        assert_eq!(r.as_slice(), &[4]);
-        assert_eq!(
-            add_weak_int(&i8s.view(), 300).unwrap_err(),
-            OpError::WeakScalarOverflow { value: 300, dtype: "int8" }
-        );
-        let u8s = arr(vec![1u8]);
-        assert_eq!(
-            add_weak_int(&u8s.view(), -1).unwrap_err(),
-            OpError::WeakScalarOverflow { value: -1, dtype: "uint8" }
-        );
-        assert_eq!(add_weak_int(&u8s.view(), 255).unwrap().as_slice(), &[0u8]);
-        assert!(add_weak_int(&u8s.view(), 256).is_err());
-
-        let f: NdArray<f64> = add_weak_float(&i8s.view(), 3.0).unwrap();
-        assert_eq!(f.as_slice(), &[4.0]);
-        let f32s = arr(vec![1.0f32]);
-        let kept: NdArray<f32> = add_weak_float(&f32s.view(), 3.0).unwrap();
-        assert_eq!(kept.as_slice(), &[4.0f32]);
-        let kept_int: NdArray<f32> = add_weak_int(&f32s.view(), 3).unwrap();
-        assert_eq!(kept_int.as_slice(), &[4.0f32]);
-        assert_eq!(add_weak_float(&f32s.view(), 1e300).unwrap().as_slice(), &[f32::INFINITY]);
-        let bools = arr(vec![true]);
-        let promoted: NdArray<i64> = add_weak_int(&bools.view(), 3).unwrap();
-        assert_eq!(promoted.as_slice(), &[4]);
-        let bf: NdArray<f64> = add_weak_float(&bools.view(), 3.0).unwrap();
-        assert_eq!(bf.as_slice(), &[4.0]);
-        let c64 = arr(vec![Complex::new(1.0f32, 0.0)]);
-        let cs: NdArray<Complex<f32>> = add_weak_float(&c64.view(), 3.0).unwrap();
-        assert_eq!(cs.as_slice(), &[Complex::new(4.0, 0.0)]);
-        let i32s = arr(vec![10i32]);
-        assert_eq!(sub_weak_int(&i32s.view(), 3).unwrap().as_slice(), &[7]);
-        assert_eq!(mul_weak_float(&i32s.view(), 0.5).unwrap().as_slice(), &[5.0]);
+        assert_eq!(add(&a.view(), &a.view()).unwrap().as_slice(), &[-56]);
+        assert_eq!(add(&a.astype::<i16>().view(), &a.astype::<i16>().view()).unwrap().as_slice(), &[200i16]);
     }
 
     #[test]
@@ -538,21 +242,15 @@ mod tests {
         let mut m = arr(vec![i8::MAX]);
         add_assign(&mut m.view_mut(), &arr(vec![1i8]).view()).unwrap();
         assert_eq!(m.as_slice(), &[i8::MIN]);
-        assert_eq!(add_weak_int(&a.view(), 1).unwrap().as_slice(), &[i8::MIN]);
     }
 
     #[test]
-    fn in_place_ops_follow_same_kind_casting() {
+    fn in_place_ops_broadcast_the_operand_into_the_output() {
         let mut a = arr(vec![1i32, 2, 3]);
-        let wide = arr(vec![1i64, 1, 1]);
-        add_assign(&mut a.view_mut(), &wide.view()).unwrap();
+        add_assign(&mut a.view_mut(), &arr(vec![1i64, 1, 1]).astype::<i32>().view()).unwrap();
         assert_eq!(a.as_slice(), &[2, 3, 4]);
-        let narrow = arr(vec![1i8, 1, 1]);
-        mul_assign(&mut a.view_mut(), &narrow.view()).unwrap();
-        assert_eq!(a.as_slice(), &[2, 3, 4]);
-        let mut f = arr(vec![1.0f32, 2.0]);
-        add_assign(&mut f.view_mut(), &arr(vec![0.5f64]).view()).unwrap();
-        assert_eq!(f.as_slice(), &[1.5f32, 2.5]);
+        mul_assign(&mut a.view_mut(), &arr(vec![2i32]).view()).unwrap();
+        assert_eq!(a.as_slice(), &[4, 6, 8]);
         let mut m = NdArray::from_vec(vec![1, 2, 3, 4], &[2, 2]).unwrap();
         sub_assign(&mut m.view_mut(), &arr(vec![10, 20]).view()).unwrap();
         assert_eq!(m.as_slice(), &[-9, -18, -7, -16]);
@@ -567,7 +265,7 @@ mod tests {
         let y = arr(vec![10i64, 20, 30, 40]);
         let mut out = arr(vec![-1i64; 4]);
         let mask = arr(vec![true, false, true, false]);
-        zip_promoted_into(&mut out.view_mut(), &x.view(), &y.view(), Some(&mask.view()), |a, b| a + b).unwrap();
+        zip_into_where(&mut out.view_mut(), &x.view(), &y.view(), Some(&mask.view()), |a, b| a + b).unwrap();
         assert_eq!(out.as_slice(), &[11, -1, 33, -1]);
 
         let mut z = arr(vec![1i64, 2, 3, 4]);
@@ -575,12 +273,7 @@ mod tests {
         assert_eq!(z.as_slice(), &[11, 2, 33, 4]);
 
         let mut small = arr(vec![0i64; 3]);
-        assert!(zip_promoted_into(&mut small.view_mut(), &x.view(), &y.view(), None, |a, b| a + b).is_err());
-
-        let mut narrow_out = arr(vec![0i16; 4]);
-        zip_promoted_into(&mut narrow_out.view_mut(), &arr(vec![1i8, 2, 3, 4]).view(), &arr(vec![1i8; 4]).view(), None, |a, b| a + b)
-            .unwrap();
-        assert_eq!(narrow_out.as_slice(), &[2, 3, 4, 5]);
+        assert!(zip_into_where(&mut small.view_mut(), &x.view(), &y.view(), None, |a, b| a + b).is_err());
     }
 
     #[test]
@@ -639,7 +332,7 @@ mod tests {
         assert_eq!(outer_with(&u.view(), &v.view(), |a, b| a + b).unwrap().as_slice(), &[0, 1, 1, 2, 2, 3]);
         let flat = outer_with(&m.view(), &v.view(), |a, b| a * b).unwrap();
         assert_eq!(flat.shape(), &[2, 3, 2]);
-        let mixed: NdArray<f64> = outer_with(&arr(vec![1i32, 2]).view(), &arr(vec![0.5f64]).view(), |a, b| a * b).unwrap();
+        let mixed = outer_with(&arr(vec![1i32, 2]).astype::<f64>().view(), &arr(vec![0.5f64]).view(), |a, b| a * b).unwrap();
         assert_eq!(mixed.as_slice(), &[0.5, 1.0]);
     }
 }

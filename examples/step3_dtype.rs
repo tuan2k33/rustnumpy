@@ -1,11 +1,11 @@
-use rustnumpy::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
+use rustnumpy::{can_cast, common_dtype, with_weak, CastSafety, DType, Kind, NdArray, Weak};
 
 fn show_common(a: Kind, b: Kind) {
     println!("  common_dtype({a:?}, {b:?}) = {:?}", common_dtype(a, b));
 }
 
-fn show_weak(array: Kind, scalar: WeakScalar) {
-    let result = rustnumpy::dtype::promote_array_with_weak_scalar(array, scalar);
+fn show_weak(array: Kind, scalar: Weak) {
+    let result = with_weak(array, scalar);
     println!("  array({array:?}) + weak_scalar({scalar:?}) -> {result:?}");
 }
 
@@ -17,20 +17,18 @@ fn main() {
     show_common(Kind::Int(8), Kind::Int(64));
 
     println!("\n-- array dtype x Python weak scalar (NEP 50) --");
-    show_weak(Kind::Bool, WeakScalar::Int(1));
-    show_weak(Kind::Int(32), WeakScalar::Int(1));
-    show_weak(Kind::Int(32), WeakScalar::Float(1.0));
-    show_weak(Kind::Float(32), WeakScalar::Float(1.0));
+    show_weak(Kind::Bool, Weak::Int);
+    show_weak(Kind::Int(32), Weak::Int);
+    show_weak(Kind::Int(32), Weak::Float);
+    show_weak(Kind::Float(32), Weak::Float);
+    show_weak(Kind::Float(32), Weak::Complex);
 
-    println!("\n-- compile-time promotion via the DType trait (no runtime branching) --");
-    println!("  common_dtype_of::<i32, f32>() = {:?}", common_dtype_of::<i32, f32>());
-    println!("  common_dtype_of::<bool, i32>() = {:?}", common_dtype_of::<bool, i32>());
-    println!(
-        "  {} vs {}: common kind = {:?}",
-        i32::type_name(),
-        f64::type_name(),
-        common_dtype_of::<i32, f64>()
-    );
+    println!("\n-- mixed dtypes: resolve the common kind, then cast explicitly --");
+    let ints = NdArray::from_vec(vec![1i32, 2, 3], &[3]).unwrap();
+    let floats = NdArray::from_vec(vec![0.5f32, 0.5, 0.5], &[3]).unwrap();
+    println!("  common_dtype({}, {}) = {:?}", i32::type_name(), f32::type_name(), common_dtype(i32::KIND, f32::KIND));
+    let sum = rustnumpy::add(&ints.astype::<f64>().view(), &floats.astype::<f64>().view()).unwrap();
+    println!("  ints.astype::<f64>() + floats.astype::<f64>() = {:?}", sum.as_slice());
 
     println!("\n-- casting safety levels --");
     for (from, to) in [

@@ -1,4 +1,5 @@
 import itertools
+import operator
 
 import numpy as np
 import pytest
@@ -63,7 +64,8 @@ def test_zero_dim_results_are_array_scalars_or_0d_arrays():
     r = rnp.add(np.float64(1.5), np.float64(2.0))
     assert isinstance(r, float) and r == 3.5 and r.dtype == "float64" and r.shape == () and type(r.item()) is float
     r = rnp.add(np.int64(1), np.int64(2))
-    assert isinstance(r, int) and r == 3 and r.dtype == "int64" and type(r.item()) is int
+    assert isinstance(r, int) is isinstance(np.int64(3), int) and r == 3 and r.dtype == "int64" and type(r.item()) is int
+    assert operator.index(r) == 3 and [10, 20, 30, 40][r] == 40
     r = rnp.add(True, True)
     assert bool(r) is True and r.dtype == "bool" and r.ndim == 0
     r = rnp.multiply(1 + 2j, 2)

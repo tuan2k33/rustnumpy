@@ -1,4 +1,4 @@
-use crate::dispatch::{WrapAdd, WrapMul, WrapSub, zip_with_promoted, zip_with_promoted_parallel, Common, Out};
+use crate::dispatch::{WrapAdd, WrapMul, WrapSub};
 use crate::error::ShapeError;
 use crate::ndarray::NdArray;
 use crate::shape::{broadcast_shapes, IndexIter};
@@ -91,75 +91,35 @@ pub fn map_parallel<T: Copy + Send + Sync>(a: &ArrayView<T>, f: impl Fn(T) -> T 
     NdArray::from_vec(data, shape).expect("data.len() always matches shape.iter().product()")
 }
 
-pub fn add<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: WrapAdd,
-{
-    zip_with_promoted(a, b, |x, y| x.wrap_add(y))
+pub fn add<T: WrapAdd>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+    zip_with(a, b, T::wrap_add)
 }
 
-pub fn sub<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: WrapSub,
-{
-    zip_with_promoted(a, b, |x, y| x.wrap_sub(y))
+pub fn sub<T: WrapSub>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+    zip_with(a, b, T::wrap_sub)
 }
 
-pub fn mul<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: WrapMul,
-{
-    zip_with_promoted(a, b, |x, y| x.wrap_mul(y))
+pub fn mul<T: WrapMul>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+    zip_with(a, b, T::wrap_mul)
 }
 
-pub fn subtract<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: WrapSub,
-{
+pub fn subtract<T: WrapSub>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
     sub(a, b)
 }
 
-pub fn multiply<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: WrapMul,
-{
+pub fn multiply<T: WrapMul>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
     mul(a, b)
 }
 
-pub fn add_parallel<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B> + Send + Sync,
-    B: Copy + Send + Sync,
-    Out<A, B>: WrapAdd + Send,
-{
-    zip_with_promoted_parallel(a, b, |x, y| x.wrap_add(y))
+pub fn add_parallel<T: WrapAdd + Send + Sync>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+    zip_with_parallel(a, b, T::wrap_add)
 }
 
-pub fn mul_parallel<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B> + Send + Sync,
-    B: Copy + Send + Sync,
-    Out<A, B>: WrapMul + Send,
-{
-    zip_with_promoted_parallel(a, b, |x, y| x.wrap_mul(y))
+pub fn mul_parallel<T: WrapMul + Send + Sync>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
+    zip_with_parallel(a, b, T::wrap_mul)
 }
 
-pub fn add_broadcast<A, B>(a: &ArrayView<A>, b: &ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: WrapAdd,
-{
+pub fn add_broadcast<T: WrapAdd>(a: &ArrayView<T>, b: &ArrayView<T>) -> Result<NdArray<T>, ShapeError> {
     add(a, b)
 }
 

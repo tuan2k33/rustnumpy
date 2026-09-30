@@ -206,7 +206,6 @@ pub enum OpError {
     Reduction(crate::reductions::ReductionError),
     InvalidEinsum { reason: String },
     InvalidGufunc { reason: String },
-    WeakScalarOverflow { value: i64, dtype: &'static str },
     NegativeIntegerPower,
     InvalidArange,
     ChoiceIndexOutOfBounds { index: i64, choices: usize },
@@ -219,7 +218,6 @@ impl fmt::Display for OpError {
             OpError::Reduction(e) => write!(f, "{e}"),
             OpError::InvalidEinsum { reason } => write!(f, "invalid einsum: {reason}"),
             OpError::InvalidGufunc { reason } => write!(f, "invalid gufunc call: {reason}"),
-            OpError::WeakScalarOverflow { value, dtype } => write!(f, "Python integer {value} out of bounds for {dtype}"),
             OpError::NegativeIntegerPower => write!(f, "integers to negative integer powers are not allowed"),
             OpError::InvalidArange => write!(f, "arange needs finite start/stop and a non-zero finite step"),
             OpError::ChoiceIndexOutOfBounds { index, choices } => {

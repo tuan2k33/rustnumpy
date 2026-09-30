@@ -15,7 +15,6 @@ pub mod mathfunc;
 pub mod ndarray;
 pub mod npy;
 pub mod polynomial;
-pub mod promote;
 pub mod random;
 pub mod reductions;
 pub mod selection;
@@ -26,7 +25,7 @@ pub mod view;
 
 pub use allocator::{AllocError, Allocator, BumpArena, PooledVec, System};
 pub use contraction::{dot, einsum, matmul, outer, tensordot, tensordot_n};
-pub use dtype::{can_cast, common_dtype, common_dtype_of, CastSafety, DType, Kind, WeakScalar};
+pub use dtype::{can_cast, common_dtype, result_type, with_weak, Cast, CastSafety, DType, Kind, Weak};
 pub use error::{Error, OpError, ShapeError};
 pub use fft::{FftFloat, 
     fft, fft2, fftfreq, fftn, fftshift, hfft, ifft, ifft2, ifftn, ifftshift, ihfft, irfft, irfft2,

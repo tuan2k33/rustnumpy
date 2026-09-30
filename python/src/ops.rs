@@ -1,17 +1,13 @@
 use crate::casting::astype;
 use crate::dynarray::{value_err, Arr, C32, C64};
-use crate::dispatch2;
+use crate::dispatch_same;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyInt};
-use rustnumpy::dispatch::{zip_with_promoted, Common, Out};
-use rustnumpy::{NdArray, OpError, ShapeError};
+use rustnumpy::{NdArray, OpError};
 
 pub fn shape_err<E: Into<OpError>>(e: E) -> PyErr {
-    match e.into() {
-        e @ OpError::WeakScalarOverflow { .. } => PyOverflowError::new_err(e.to_string()),
-        other => value_err(other),
-    }
+    value_err(e.into())
 }
 
 pub enum Operand {
@@ -53,8 +49,8 @@ impl Operand {
         }
     }
 
-    fn weak(&self) -> Option<crate::typefns::Weak> {
-        use crate::typefns::Weak;
+    fn weak(&self) -> Option<rustnumpy::Weak> {
+        use rustnumpy::Weak;
         match self {
             Operand::Arr(_) => None,
             Operand::WeakInt(..) => Some(Weak::Int),
@@ -72,16 +68,10 @@ impl Operand {
 }
 
 pub fn common_name(a: &Operand, b: &Operand) -> &'static str {
-    use crate::typefns::{kind_of_name, weak_rank, with_weak};
-    let strong = [a.strong_dtype(), b.strong_dtype()].into_iter().flatten().map(kind_of_name).reduce(rustnumpy::common_dtype);
-    let widest = [a.weak(), b.weak()].into_iter().flatten().max_by_key(|&w| weak_rank(w));
-    let kind = match (strong, widest) {
-        (Some(k), Some(w)) => with_weak(k, w),
-        (Some(k), None) => k,
-        (None, Some(w)) => with_weak(rustnumpy::Kind::Bool, w),
-        (None, None) => unreachable!("an operand is either strong or weak"),
-    };
-    crate::casting::kind_name(kind)
+    use crate::typefns::kind_of_name;
+    let strong = [a.strong_dtype(), b.strong_dtype()].into_iter().flatten().map(kind_of_name);
+    let kind = rustnumpy::result_type(strong, [a.weak(), b.weak()].into_iter().flatten());
+    crate::casting::kind_name(kind.expect("an operand is either strong or weak"))
 }
 
 fn weak_int_scalar(v: i128, f: f64, target: Option<&'static str>) -> PyResult<Arr> {
@@ -148,15 +138,6 @@ impl BSub for bool {
     }
 }
 
-pub fn sub_promoted<A, B>(a: &rustnumpy::ArrayView<A>, b: &rustnumpy::ArrayView<B>) -> Result<NdArray<Out<A, B>>, ShapeError>
-where
-    A: Common<B>,
-    B: Copy,
-    Out<A, B>: BSub,
-{
-    zip_with_promoted(a, b, |x, y| x.bsub(y))
-}
-
 macro_rules! arith_fn {
     ($name:ident, $prom:expr, $bool_check:expr) => {
         #[pyfunction]
@@ -167,7 +148,7 @@ macro_rules! arith_fn {
                     "numpy boolean subtract, the `-` operator, is not supported, use the bitwise_xor, the `^` operator, or the logical_xor function instead.",
                 ));
             }
-            let result: Arr = dispatch2!(&x, &y, p, q => Arr::from($prom(&p.view(), &q.view()).map_err(shape_err)?));
+            let result: Arr = dispatch_same!(&x, &y, p, q => Arr::from($prom(&p.view(), &q.view()).map_err(shape_err)?));
             out(py, result)
         }
     };
@@ -175,7 +156,7 @@ macro_rules! arith_fn {
 
 arith_fn!(add, rustnumpy::add, false);
 arith_fn!(multiply, rustnumpy::mul, false);
-arith_fn!(subtract, sub_promoted, true);
+arith_fn!(subtract, |p, q| rustnumpy::zip_with(p, q, BSub::bsub), true);
 
 #[pyfunction]
 pub fn astype_(py: Python<'_>, a: &Bound<'_, PyAny>, dtype: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {

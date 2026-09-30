@@ -56,45 +56,24 @@ macro_rules! with_arr {
 }
 
 #[macro_export]
-macro_rules! dispatch_b {
-    ($b:expr, $x:ident, $y:ident => $body:expr) => {
-        match $b {
-            Arr::Bool($y) => $body,
-            Arr::I8($y) => $body,
-            Arr::I16($y) => $body,
-            Arr::I32($y) => $body,
-            Arr::I64($y) => $body,
-            Arr::U8($y) => $body,
-            Arr::U16($y) => $body,
-            Arr::U32($y) => $body,
-            Arr::U64($y) => $body,
-            Arr::F16($y) => $body,
-            Arr::F32($y) => $body,
-            Arr::F64($y) => $body,
-            Arr::C64($y) => $body,
-            Arr::C128($y) => $body,
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! dispatch2 {
+macro_rules! dispatch_same {
     ($a:expr, $b:expr, $x:ident, $y:ident => $body:expr) => {
-        match $a {
-            Arr::Bool($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::I8($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::I16($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::I32($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::I64($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::U8($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::U16($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::U32($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::U64($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::F16($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::F32($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::F64($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::C64($x) => $crate::dispatch_b!($b, $x, $y => $body),
-            Arr::C128($x) => $crate::dispatch_b!($b, $x, $y => $body),
+        match ($a, $b) {
+            (Arr::Bool($x), Arr::Bool($y)) => $body,
+            (Arr::I8($x), Arr::I8($y)) => $body,
+            (Arr::I16($x), Arr::I16($y)) => $body,
+            (Arr::I32($x), Arr::I32($y)) => $body,
+            (Arr::I64($x), Arr::I64($y)) => $body,
+            (Arr::U8($x), Arr::U8($y)) => $body,
+            (Arr::U16($x), Arr::U16($y)) => $body,
+            (Arr::U32($x), Arr::U32($y)) => $body,
+            (Arr::U64($x), Arr::U64($y)) => $body,
+            (Arr::F16($x), Arr::F16($y)) => $body,
+            (Arr::F32($x), Arr::F32($y)) => $body,
+            (Arr::F64($x), Arr::F64($y)) => $body,
+            (Arr::C64($x), Arr::C64($y)) => $body,
+            (Arr::C128($x), Arr::C128($y)) => $body,
+            _ => unreachable!("operands are cast to one dtype before dispatch"),
         }
     };
 }

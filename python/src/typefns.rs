@@ -4,7 +4,7 @@ use crate::pyarray::PyArray;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyComplex, PyFloat, PyInt, PyType};
-use rustnumpy::{can_cast as core_can_cast, common_dtype, CastSafety, Kind};
+use rustnumpy::{can_cast as core_can_cast, common_dtype, CastSafety, Kind, Weak};
 
 pub fn kind_of_name(name: &str) -> Kind {
     match name {
@@ -68,56 +68,17 @@ pub fn promote_types(a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyD
     Ok(PyDtype { name: kind_name(k) })
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Weak {
-    Int,
-    Float,
-    Complex,
-}
-
-fn category(k: Kind) -> u8 {
-    match k {
-        Kind::Bool => 0,
-        Kind::Int(_) | Kind::Uint(_) => 1,
-        Kind::Float(_) => 2,
-        Kind::Complex(_) => 3,
-    }
-}
-
-pub fn weak_rank(w: Weak) -> u8 {
-    match w {
-        Weak::Int => 1,
-        Weak::Float => 2,
-        Weak::Complex => 3,
-    }
-}
-
-pub fn with_weak(k: Kind, w: Weak) -> Kind {
-    let default = match w {
-        Weak::Int => Kind::Int(64),
-        Weak::Float => Kind::Float(64),
-        Weak::Complex => Kind::Complex(64),
-    };
-    if category(k) >= weak_rank(w) {
-        k
-    } else if weak_rank(w) == 3 && category(k) == 2 {
-        Kind::Complex(if k == Kind::Float(64) { 64 } else { 32 })
-    } else {
-        default
-    }
-}
-
 #[pyfunction]
 #[pyo3(signature = (*args))]
 pub fn result_type(args: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyDtype> {
     if args.is_empty() {
         return Err(PyValueError::new_err("at least one array or dtype is required"));
     }
-    let mut strong: Option<Kind> = None;
+    let mut strong: Vec<Kind> = Vec::new();
     let mut weak: Vec<Weak> = Vec::new();
     for a in args.iter() {
         if a.is_exact_instance_of::<PyBool>() {
-            strong = Some(strong.map_or(Kind::Bool, |s| common_dtype(s, Kind::Bool)));
+            strong.push(Kind::Bool);
         } else if a.is_exact_instance_of::<PyInt>() {
             weak.push(Weak::Int);
         } else if a.is_exact_instance_of::<PyFloat>() {
@@ -125,17 +86,10 @@ pub fn result_type(args: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<PyDtype> 
         } else if a.is_exact_instance_of::<PyComplex>() {
             weak.push(Weak::Complex);
         } else {
-            let k = strong_kind(&a)?;
-            strong = Some(strong.map_or(k, |s| common_dtype(s, k)));
+            strong.push(strong_kind(&a)?);
         }
     }
-    let widest = weak.iter().copied().max_by_key(|&w| weak_rank(w));
-    let kind = match (strong, widest) {
-        (Some(k), Some(w)) => with_weak(k, w),
-        (Some(k), None) => k,
-        (None, Some(w)) => with_weak(Kind::Bool, w),
-        (None, None) => unreachable!("at least one argument"),
-    };
+    let kind = rustnumpy::result_type(strong, weak).expect("at least one argument");
     Ok(PyDtype { name: kind_name(kind) })
 }
 

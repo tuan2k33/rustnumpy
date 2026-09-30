@@ -338,50 +338,83 @@ fn scalar_mask_value(item: &Bound<'_, PyAny>) -> PyResult<Option<bool>> {
     Ok(None)
 }
 
-fn split_scalar_masks<'py>(py: Python<'py>, index: &Bound<'py, PyAny>) -> PyResult<Option<(Bound<'py, PyAny>, bool)>> {
-    let raw: Vec<Bound<'py, PyAny>> = match index.downcast::<PyTuple>() {
+fn axes_consumed(item: &Bound<'_, PyAny>) -> PyResult<usize> {
+    if item.is_none() {
+        return Ok(0);
+    }
+    if let Ok(a) = item.downcast::<PyArray>() {
+        let this = a.borrow();
+        return Ok(if this.dtype_name() == "bool" { this.shape.len() } else { 1 });
+    }
+    Ok(1)
+}
+
+fn expand_scalar_masks<'py>(
+    py: Python<'py>,
+    index: &Bound<'py, PyAny>,
+    ndim: usize,
+) -> PyResult<Option<(Bound<'py, PyAny>, Bound<'py, PyAny>)>> {
+    let items: Vec<Bound<'py, PyAny>> = match index.downcast::<PyTuple>() {
         Ok(t) => t.iter().collect(),
         Err(_) => vec![index.clone()],
     };
-    let mut keep = true;
-    let mut found = false;
-    let mut rest = Vec::with_capacity(raw.len());
-    for item in raw {
-        match scalar_mask_value(&item)? {
-            Some(v) => {
-                found = true;
-                keep &= v;
-            }
-            None => rest.push(item),
-        }
-    }
-    if !found {
+    let masks: Vec<Option<bool>> = items.iter().map(scalar_mask_value).collect::<PyResult<_>>()?;
+    if masks.iter().all(Option::is_none) {
         return Ok(None);
     }
-    Ok(Some((PyTuple::new(py, rest)?.into_any(), keep)))
+    let ellipsis = py.Ellipsis();
+    let mut explicit = 0;
+    for (item, mask) in items.iter().zip(&masks) {
+        if mask.is_none() && !item.is(&ellipsis) {
+            explicit += axes_consumed(item)?;
+        }
+    }
+    let core = py.import("rustnumpy._core")?;
+    let full = py.eval(c"slice(None)", None, None)?;
+    let mut inserts = Vec::new();
+    let mut axis = 0;
+    let mut replaced = Vec::with_capacity(items.len());
+    for (item, mask) in items.into_iter().zip(masks) {
+        match mask {
+            Some(keep) => {
+                inserts.push(axis + inserts.len());
+                replaced.push(core.getattr("zeros")?.call1(((usize::from(keep),), "int64"))?);
+            }
+            None if item.is_none() => {
+                inserts.push(axis + inserts.len());
+                replaced.push(full.clone());
+            }
+            None => {
+                let consumed = if item.is(&ellipsis) { ndim.saturating_sub(explicit) } else { axes_consumed(&item)? };
+                axis += consumed;
+                if consumed > 1 && !item.is(&ellipsis) {
+                    replaced.extend(item.call_method0("nonzero")?.downcast_into::<PyTuple>()?.iter());
+                } else {
+                    replaced.push(item);
+                }
+            }
+        }
+    }
+    let expand: Vec<Bound<'py, PyAny>> =
+        (0..ndim + inserts.len()).map(|p| if inserts.contains(&p) { py.None().into_bound(py) } else { full.clone() }).collect();
+    Ok(Some((PyTuple::new(py, expand)?.into_any(), PyTuple::new(py, replaced)?.into_any())))
 }
 
 #[pymethods]
 impl PyArray {
     fn __getitem__(slf: &Bound<'_, Self>, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        if let Some((rest, keep)) = split_scalar_masks(py, index)? {
-            let inner = slf.get_item(rest)?;
-            let core = py.import("rustnumpy._core")?;
-            let arr = core.getattr("asarray")?.call1((inner,))?;
-            if keep {
-                return Ok(arr.get_item(py.None())?.unbind());
-            }
-            let mut shape: Vec<usize> = vec![0];
-            shape.extend(arr.getattr("shape")?.extract::<Vec<usize>>()?);
-            return Ok(core.getattr("zeros")?.call1((shape, arr.getattr("dtype")?))?.unbind());
+        let ndim = slf.borrow().shape.len();
+        if let Some((expand, rest)) = expand_scalar_masks(py, index, ndim)? {
+            return Ok(slf.get_item(expand)?.get_item(rest)?.unbind());
         }
         let this = slf.borrow();
         this.get_plain(py, index)
     }
 
     fn __setitem__(slf: &Bound<'_, Self>, py: Python<'_>, index: &Bound<'_, PyAny>, value: &Bound<'_, PyAny>) -> PyResult<()> {
-        if let Some((rest, keep)) = split_scalar_masks(py, index)? {
-            return if keep { slf.set_item(rest, value) } else { Ok(()) };
+        let ndim = slf.borrow().shape.len();
+        if let Some((expand, rest)) = expand_scalar_masks(py, index, ndim)? {
+            return slf.get_item(expand)?.set_item(rest, value);
         }
         let this = slf.borrow();
         this.set_plain(py, index, value)
