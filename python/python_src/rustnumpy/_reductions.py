@@ -3,6 +3,7 @@ import warnings
 
 from . import _core
 from ._core import asarray, ndarray
+from ._axiserror import AxisError
 from ._ufunc import _NoValue, _write_out
 
 _SIZE_TYPES = (int,)
@@ -20,7 +21,7 @@ def _axes(axis, ndim):
         if a < -ndim or a >= ndim:
             if ndim == 0 and a in (0, -1):
                 continue
-            raise ValueError("axis %d is out of bounds for array of dimension %d" % (a, ndim))
+            raise AxisError(a, ndim)
         out.append(a % ndim if ndim else 0)
     if len(set(out)) != len(out):
         raise ValueError("duplicate value in 'axis'")
@@ -380,13 +381,19 @@ def _nan_extreme(a, axis, out, keepdims, initial, where, want_max):
     fn = max if want_max else min
     if m is None:
         return fn(a, axis=axis, out=out, keepdims=keepdims, initial=initial, where=where)
+    if initial is _NoValue and a.size == 0 and _b.any(a.shape[i] == 0 for i in _axes(axis, a.ndim)):
+        raise ValueError("zero-size array to reduction operation %s which has no identity" % ("fmax" if want_max else "fmin"))
     fill = float("-inf") if want_max else float("inf")
     filled = _core.where(m, asarray(fill, a.dtype), a)
-    res = fn(filled, axis=axis, keepdims=True, initial=initial, where=where)
+    res = fn(filled, axis=axis, keepdims=True, initial=fill, where=where)
     all_nan = all(m, axis=axis, keepdims=True)
-    if bool(any(all_nan)):
+    if initial is _NoValue:
+        res = _core.where(all_nan, asarray(float("nan"), a.dtype), res)
+    else:
+        seeded = (_core.fmax if want_max else _core.fmin)(res, asarray(initial, a.dtype))
+        res = _core.where(all_nan, asarray(initial, a.dtype), seeded)
+    if bool(any(_core.isnan(res))):
         warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
-    res = _core.where(all_nan, asarray(float("nan"), a.dtype), res)
     axes = _axes(axis, a.ndim)
     if not keepdims:
         res = res.reshape(tuple(s for i, s in enumerate(a.shape) if i not in axes))
@@ -671,6 +678,7 @@ def _lerp(a, b, t):
 
 def _quantile(a, q, axis, out, method, keepdims, weights, is_percentile, nan_policy):
     a = asarray(a)
+    q_weak = type(q) in (int, float)
     q = asarray(q)
     q = asarray(_core.divide(q, 100)) if is_percentile else q
     qf = q.astype("float64") if q.dtype.kind != "f" else q
@@ -680,12 +688,16 @@ def _quantile(a, q, axis, out, method, keepdims, weights, is_percentile, nan_pol
         raise ValueError("Percentiles must be in the range [0, 100]" if is_percentile else "Quantiles must be in the range [0, 1]")
     if a.dtype.kind == "c":
         raise TypeError("a must be an array of real numbers")
+    q_integral = q.dtype.kind in "biu"
     if a.dtype.kind in "biu":
         work = a.astype("float64")
-        out_dtype = _core.dtype("float64")
+        if q_integral:
+            out_dtype = a.dtype
+        else:
+            out_dtype = _core.dtype("float64") if q_weak else _core.result_type(a.dtype, qf.dtype)
     else:
         work = a
-        out_dtype = a.dtype
+        out_dtype = a.dtype if q_weak or q_integral else _core.result_type(a.dtype, qf.dtype)
     if weights is not None:
         return _weighted_quantile(a, qf, axis, method, keepdims, weights, out)
     shape = tuple(a.shape)

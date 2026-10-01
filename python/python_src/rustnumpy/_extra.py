@@ -1,19 +1,7 @@
 from . import _core
 from ._core import asarray, ndarray
 from ._misc import flatiter as flatiter
-
-
-class AxisError(ValueError, IndexError):
-    def __init__(self, axis, ndim=None, msg_prefix=None):
-        if ndim is None and msg_prefix is None:
-            msg = axis
-        else:
-            msg = "axis %s is out of bounds for array of dimension %s" % (axis, ndim)
-            if msg_prefix is not None:
-                msg = "%s: %s" % (msg_prefix, msg)
-        super().__init__(msg)
-        self.axis = axis
-        self.ndim = ndim
+from ._axiserror import AxisError as AxisError
 
 
 class ComplexWarning(RuntimeWarning):
@@ -104,14 +92,15 @@ def min_scalar_type(a):
             b = 8 * _core.dtype(n).itemsize
             if -(2 ** (b - 1)) <= v < 2 ** (b - 1):
                 return _core.dtype(n)
-    if a.ndim == 0 and a.dtype.kind == "f":
-        v = float(a)
-        for n in ("float16", "float32"):
-            info = _core.finfo(n)
-            if abs(v) <= float(info.max) or v != v or abs(v) == float("inf"):
-                if _core.array(v, n).item() == v or v != v:
-                    return _core.dtype(n)
-        return _core.dtype("float64")
+    if a.ndim == 0 and a.dtype.kind in "fc":
+        parts = [float(a)] if a.dtype.kind == "f" else [a.item().real, a.item().imag]
+        if a.dtype.kind == "f":
+            v = parts[0]
+            small = "float16" if v != v or abs(v) == float("inf") or abs(v) < 65000 else "float32" if abs(v) < 3.4e38 else "float64"
+        else:
+            small = "complex64" if all(abs(v) < 3.4e38 for v in parts) else "complex128"
+        smaller = _core.dtype(small)
+        return smaller if smaller.itemsize < a.dtype.itemsize else a.dtype
     return a.dtype
 
 

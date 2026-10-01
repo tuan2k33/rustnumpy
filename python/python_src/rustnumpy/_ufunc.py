@@ -1,4 +1,5 @@
 from . import _core
+from ._axiserror import AxisError
 from ._core import asarray, ndarray
 
 _NoValue = type("_NoValue", (), {"__repr__": lambda self: "<no value>"})()
@@ -32,7 +33,7 @@ def _as_tuple(axis, ndim, name):
 
 
 def _core_axis_error(axis, ndim):
-    return ValueError("axis %d is out of bounds for array of dimension %d" % (axis, ndim))
+    return AxisError(axis, ndim)
 
 
 def _write_out(res, out, where, casting, name):
@@ -336,8 +337,6 @@ class gufunc(ufunc):
 
 
 def _extra_axis_error(message):
-    from ._extra import AxisError
-
     return AxisError(message)
 
 

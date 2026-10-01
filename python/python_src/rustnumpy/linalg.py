@@ -1,4 +1,5 @@
 from . import _core
+from ._axiserror import AxisError
 from ._core import LinAlgError, asarray
 from . import _core as _c
 from ._numeric import cross, outer
@@ -357,6 +358,17 @@ def cond(x, p=None):
     return _stack(lambda m: _c.cond(m, p), x)
 
 
+def _check_axes(ndim, axes):
+    out = []
+    for a in axes:
+        if not -ndim <= a < ndim:
+            raise AxisError("axis %d is out of bounds for array of dimension %d" % (a, ndim))
+        out.append(a % ndim)
+    if len(set(out)) != len(out):
+        raise ValueError("Duplicate axes given.")
+    return tuple(out)
+
+
 def norm(x, ord=None, axis=None, keepdims=False):
     x = asarray(x)
     if x.dtype.kind in "biu":
@@ -374,6 +386,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
     if isinstance(axis, int):
         return vector_norm(x, axis=axis, keepdims=keepdims, ord=2 if ord is None else ord)
     if len(axis) == 2:
+        _check_axes(x.ndim, axis)
         return _matrix_norm(x, keepdims, "fro" if ord is None else ord, axis)
     raise ValueError("Improper number of dimensions to norm.")
 
@@ -382,9 +395,15 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
     from . import _reductions as R
 
     x = asarray(x)
+    if isinstance(axis, tuple):
+        _check_axes(x.ndim, axis)
+    if isinstance(ord, str):
+        raise ValueError("Invalid norm order '%s' for vectors" % ord)
     if x.dtype.kind in "biu":
         x = x.astype("float64")
     ax = _c.absolute(x)
+    if isinstance(axis, int):
+        _check_axes(x.ndim, (axis,))
     if axis is None and not isinstance(axis, tuple):
         ax_flat = ax.reshape((-1,))
         res = _vec_norm(ax_flat, 0, ord)
@@ -396,8 +415,11 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
 def _vec_norm(ax, axis, ord, keepdims=False):
     from . import _reductions as R
 
+    if isinstance(ord, str):
+        raise ValueError("Invalid norm order '%s' for vectors" % ord)
+
     if ord == float("inf"):
-        return R.max(ax, axis=axis, keepdims=keepdims)
+        return R.max(ax, axis=axis, keepdims=keepdims, initial=0)
     if ord == float("-inf"):
         return R.min(ax, axis=axis, keepdims=keepdims)
     if ord == 0:
@@ -417,11 +439,9 @@ def _matrix_norm(x, keepdims, ord, axes):
     from . import _reductions as R
 
     x = asarray(x)
-    if x.ndim < 2:
-        raise ValueError("Improper number of dimensions to norm.")
+    r, c = _check_axes(x.ndim, axes)
     if x.dtype.kind in "biu":
         x = x.astype("float64")
-    r, c = (a % x.ndim for a in axes)
     if ord == "fro" or ord is None:
         res = _c.sqrt(R.sum(_c.real(_c.multiply(x, _c.conjugate(x))), axis=(r, c), keepdims=keepdims))
         return res
@@ -430,13 +450,13 @@ def _matrix_norm(x, keepdims, ord, axes):
         res = R.sum(svdvals(moved), axis=-1)
     elif ord in (2, -2):
         s = svdvals(moved)
-        res = R.max(s, axis=-1) if ord == 2 else R.min(s, axis=-1)
+        res = R.max(s, axis=-1, initial=0) if ord == 2 else R.min(s, axis=-1)
     elif ord in (1, -1):
         colsum = R.sum(_c.absolute(moved), axis=-2)
-        res = R.max(colsum, axis=-1) if ord == 1 else R.min(colsum, axis=-1)
+        res = R.max(colsum, axis=-1, initial=0) if ord == 1 else R.min(colsum, axis=-1)
     elif ord in (float("inf"), float("-inf")):
         rowsum = R.sum(_c.absolute(moved), axis=-1)
-        res = R.max(rowsum, axis=-1) if ord > 0 else R.min(rowsum, axis=-1)
+        res = R.max(rowsum, axis=-1, initial=0) if ord > 0 else R.min(rowsum, axis=-1)
     else:
         raise ValueError("Invalid norm order for matrices.")
     res = asarray(res)

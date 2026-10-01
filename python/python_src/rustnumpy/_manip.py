@@ -1,6 +1,7 @@
 from . import _core
 from ._core import asarray, ndarray
 from ._indexing import _norm_axis, take_along_axis
+from ._axiserror import AxisError
 from ._ufunc import _NoValue, _write_out
 
 
@@ -72,7 +73,12 @@ def matrix_transpose(x, /):
 
 
 def moveaxis(a, source, destination):
-    return _core.moveaxis(asarray(a), source, destination)
+    a = asarray(a)
+    for label, spec in (("source", source), ("destination", destination)):
+        for ax in [spec] if isinstance(spec, int) else list(spec):
+            if isinstance(ax, int) and not -a.ndim <= ax < a.ndim:
+                raise AxisError(ax, a.ndim, label)
+    return _core.moveaxis(a, source, destination)
 
 
 def rollaxis(a, axis, start=0):
@@ -102,8 +108,6 @@ def squeeze(a, axis=None):
 
 
 def expand_dims(a, axis):
-    from ._extra import AxisError
-
     a = asarray(a)
     axes = tuple(axis) if isinstance(axis, (tuple, list)) else (axis,)
     out_ndim = a.ndim + len(axes)
@@ -752,6 +756,7 @@ def argsort(a, axis=-1, kind=None, order=None, *, stable=None, descending=False)
         axis = -1
     if not descending or a.ndim == 0:
         return _core.argsort(a, axis)
+    axis = _norm_axis(axis, a.ndim)
     n = a.shape[axis]
     order = _core.subtract(n - 1, _core.flip(_core.argsort(_core.flip(a, axis), axis), axis))
     return _nan_last(order, take_along_axis(a, order, axis), axis)
@@ -775,6 +780,14 @@ def searchsorted(a, v, side="left", sorter=None):
     a = asarray(a)
     if sorter is not None:
         a = a[asarray(sorter).astype("int64")]
+    if type(v) is int and a.dtype.kind in "iu":
+        bits = 8 * a.dtype.itemsize
+        lo, hi = (0, 2**bits - 1) if a.dtype.kind == "u" else (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
+        if v < lo:
+            return _core.searchsorted(a, asarray(lo, a.dtype), "left")
+        if v > hi:
+            return _core.searchsorted(a, asarray(hi, a.dtype), "right")
+        v = asarray(v, a.dtype)
     return _core.searchsorted(a, v, side)
 
 
@@ -807,6 +820,7 @@ def partition(a, kth, axis=-1, kind="introselect", order=None):
     if axis is None:
         a = a.reshape((-1,))
         axis = -1
+    axis = _norm_axis(axis, a.ndim)
     n = a.shape[axis]
     for k in (kth if _seq(kth) or isinstance(kth, ndarray) else [kth]):
         k = int(k)
@@ -820,6 +834,7 @@ def argpartition(a, kth, axis=-1, kind="introselect", order=None):
     if axis is None:
         a = a.reshape((-1,))
         axis = -1
+    axis = _norm_axis(axis, a.ndim)
     n = a.shape[axis]
     for k in (kth if _seq(kth) or isinstance(kth, ndarray) else [kth]):
         k = int(k)

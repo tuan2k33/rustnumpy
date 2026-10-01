@@ -30,9 +30,7 @@ macro_rules! with_real {
 pub fn norm_axis(axis: isize, ndim: usize) -> PyResult<usize> {
     let n = ndim as isize;
     if axis < -n || axis >= n {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "axis {axis} is out of bounds for array of dimension {ndim}"
-        )));
+        return Err(crate::dynarray::axis_error(axis, ndim));
     }
     Ok(if axis < 0 { axis + n } else { axis } as usize)
 }

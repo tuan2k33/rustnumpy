@@ -4,11 +4,29 @@ from ._indexing import _norm_axis
 
 
 def _unique_flat(a, return_index, return_inverse, return_counts, equal_nan):
+    if a.dtype.kind == "c" or (a.dtype.kind == "f" and (not equal_nan or bool(_core.any(_core.isnan(a))))):
+        return _unique_by_sort(a, equal_nan)
     res = _core.unique_all(a)
-    values, indices, inverse, counts = res.values, res.indices, res.inverse_indices, res.counts
-    if not equal_nan and a.dtype.kind in "fc":
-        raise NotImplementedError("equal_nan=False is not supported")
-    return values, indices, inverse, counts
+    return res.values, res.indices, res.inverse_indices, res.counts
+
+
+def _unique_by_sort(a, equal_nan):
+    n = a.size
+    order = _core.argsort(a, 0)
+    s = a[order]
+    starts = _core.concatenate([_core.ones((min(n, 1),), "bool"), _core.not_equal(s[1:], s[:-1])])
+    if equal_nan and n:
+        nan = _core.isnan(s)
+        if bool(_core.any(nan)):
+            first_nan = int(_core.argmax(nan))
+            keep = _core.arange(n) == first_nan
+            starts = _core.where(nan, keep, starts)
+    positions = _core.arange(n)[starts]
+    group = _core.subtract(_core.cumsum(starts.astype("int64"), 0), 1)
+    inverse = _core.empty((n,), "int64")
+    inverse[order] = group
+    counts = _core.subtract(_core.concatenate([positions[1:], _core.full((1,), n, "int64")]), positions)
+    return s[positions], order[positions], inverse, counts
 
 
 def _rows_unique(a, axis, return_index, return_inverse, return_counts):

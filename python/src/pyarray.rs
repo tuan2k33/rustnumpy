@@ -307,13 +307,13 @@ impl PyArray {
         self.item(py)?.bind(py).extract::<f64>().or_else(|_| self.item(py)?.bind(py).call_method0("__float__")?.extract())
     }
 
-    fn __int__(&self, py: Python<'_>) -> PyResult<i64> {
+    fn __int__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.require_0d()?;
         let v = self.item(py)?;
-        v.bind(py).call_method0("__int__")?.extract()
+        Ok(v.bind(py).call_method0("__int__")?.unbind())
     }
 
-    fn __index__(&self, py: Python<'_>) -> PyResult<i64> {
+    fn __index__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if !matches!(self.storage.arr(), Arr::I8(_) | Arr::I16(_) | Arr::I32(_) | Arr::I64(_) | Arr::U8(_) | Arr::U16(_) | Arr::U32(_) | Arr::U64(_)) || !self.shape.is_empty() {
             return Err(PyTypeError::new_err("only integer scalar arrays can be converted to a scalar index"));
         }

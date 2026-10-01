@@ -13,6 +13,16 @@ pub fn value_err(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
+pub fn axis_error(axis: isize, ndim: usize) -> PyErr {
+    Python::attach(|py| {
+        py.import("rustnumpy._axiserror")
+            .and_then(|m| m.getattr("AxisError"))
+            .and_then(|class| class.call1((axis, ndim)))
+            .map(PyErr::from_value)
+            .unwrap_or_else(|_| PyValueError::new_err(format!("axis {axis} is out of bounds for array of dimension {ndim}")))
+    })
+}
+
 pub type C32 = Complex<f32>;
 pub type C64 = Complex<f64>;
 

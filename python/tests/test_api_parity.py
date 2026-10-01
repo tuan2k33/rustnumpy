@@ -200,3 +200,176 @@ def test_genfromtxt_invalid_raise_false_warns_and_skips():
 def test_genfromtxt_unsupported_options_say_so(kwargs):
     with pytest.raises(NotImplementedError):
         rnp.genfromtxt(["a b", "1 2"], **kwargs)
+
+
+Q_FORMS = {
+    "py": lambda m: 0.5,
+    "py_int": lambda m: 1,
+    "np_float64": lambda m: np.float64(0.5),
+    "np_int64": lambda m: np.int64(1),
+    "zero_d": lambda m: m.asarray(0.5),
+    "list": lambda m: [0.25, 0.5],
+    "int_list": lambda m: [0, 1],
+    "f64": lambda m: m.asarray([0.25, 0.5]),
+    "f32": lambda m: m.asarray([0.25, 0.5], dtype="float32"),
+    "f16": lambda m: m.asarray([0.25, 0.5], dtype="float16"),
+    "i8": lambda m: m.asarray([0, 1], dtype="int8"),
+}
+
+
+@pytest.mark.parametrize("dtype", ["float16", "float32", "float64", "int8", "int64", "uint8"])
+@pytest.mark.parametrize("qname", list(Q_FORMS))
+@pytest.mark.parametrize("fname", ["quantile", "nanquantile", "percentile", "nanpercentile"])
+def test_quantile_result_dtype_follows_q(dtype, qname, fname):
+    def run(m):
+        q = Q_FORMS[qname](m)
+        if "percentile" in fname and not (isinstance(q, np.generic) and q.dtype.kind in "iu"):
+            if isinstance(q, list):
+                q = [v * 100 for v in q]
+            elif isinstance(q, (int, float)) or q.dtype.kind == "f":
+                q = q * 100
+        return getattr(m, fname)(m.asarray([[1, 2, 3], [4, 5, 7]], dtype=dtype), q, axis=1)
+
+    want, got = outcome(np, run), outcome(rnp, run)
+    assert same(want, got), (want, got)
+
+
+def test_quantile_is_float64_for_array_q_whatever_the_slice_order():
+    a = rnp.asarray([[1.0, 2.0], [float("nan"), float("nan")]], dtype="float32")
+    q = rnp.asarray([0.3])
+    assert rnp.nanquantile(a, q, axis=1).dtype == "float64"
+    assert rnp.nanquantile(a[::-1], q, axis=1).dtype == "float64"
+
+
+NAN = float("nan")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0.0, 0.1, 1.5, 64999.0, 65000.0, 65504.0, -65000.0, 1e5, 3.39e38, 3.4e38, 3.4028234663852886e38, 1e39, 1.7976931348623157e308,
+     float("inf"), float("-inf"), NAN, 5e-324, 1 + 2j, 65503 + 0j, 3.4e38 + 0j, 1e39 + 0j, complex(NAN, 0), complex(0, float("inf")), 3, -129, 300, 2**63, -(2**63)],
+)
+def test_min_scalar_type_matches_numpy(value):
+    assert str(rnp.min_scalar_type(value)) == str(np.min_scalar_type(value))
+
+
+def test_min_scalar_type_of_sized_scalars_and_arrays():
+    assert str(rnp.min_scalar_type(rnp.asarray([3.5], dtype="float32")[0])) == str(np.min_scalar_type(np.float32(3.5)))
+    assert str(rnp.min_scalar_type(rnp.asarray([1.0]))) == "float64"
+
+
+def test_int_and_index_of_zero_d_uint64_above_int64_max():
+    big = 2**63 + 5
+    a = rnp.asarray(big, dtype="uint64")
+    assert int(a) == big and a.__index__() == big and a.item() == big
+
+
+NAN_EXTREME_DATA = {"plain": [1.0, 5.0, 2.0], "nan": [1.0, NAN, 3.0], "all_nan": [NAN, NAN], "empty": [], "one": [7.0], "two_d": [[1.0, NAN], [NAN, NAN]]}
+
+
+@pytest.mark.parametrize("data", list(NAN_EXTREME_DATA))
+@pytest.mark.parametrize("initial", [None, NAN, 0.0, 10.0, -5.0, float("inf")])
+@pytest.mark.parametrize("fname", ["nanmax", "nanmin"])
+@pytest.mark.parametrize("axis", [None, 0, 1])
+@pytest.mark.parametrize("dtype", ["float64", "float32"])
+def test_nanmax_nanmin_initial(data, initial, fname, axis, dtype):
+    arr = np.array(NAN_EXTREME_DATA[data], dtype=dtype)
+    if axis is not None and arr.ndim <= axis:
+        pytest.skip("axis out of range")
+    kwargs = {} if initial is None else {"initial": initial}
+    run = lambda m: getattr(m, fname)(m.asarray(arr), axis=axis, **kwargs)
+    assert same(outcome(np, run), outcome(rnp, run))
+
+
+@pytest.mark.parametrize("shape", [(0,), (3,), (0, 3), (3, 0), (0, 0), (2, 3), (2, 2, 2), (2, 0, 2)])
+@pytest.mark.parametrize("ord_", [None, "fro", "nuc", 0, 1, -1, 2, -2, 3, 0.5, float("inf"), float("-inf")])
+@pytest.mark.parametrize("axis", [None, 0, -1, (0, 1), (-2, -1), (0, 1, 2), 5, (0, 5), (0, 0)])
+def test_norm_family_matches_numpy_including_empty_and_axis_errors(shape, ord_, axis):
+    def make(m):
+        return m.asarray(np.arange(int(np.prod(shape)), dtype="float64").reshape(shape) + 1)
+
+    for run in (
+        lambda m: m.linalg.norm(make(m), ord=ord_, axis=axis),
+        lambda m: m.linalg.vector_norm(make(m), ord=2 if ord_ is None else ord_, axis=axis),
+    ):
+        assert same(outcome(np, run), outcome(rnp, run)), (outcome(np, run), outcome(rnp, run))
+    run = lambda m: m.linalg.matrix_norm(make(m), ord="fro" if ord_ is None else ord_)
+    assert same(outcome(np, run), outcome(rnp, run))
+
+
+def exact_unique_outcome(m, data, dtype, equal_nan):
+    a = m.asarray(np.array(data, dtype=dtype))
+    r = m.unique(a, return_index=True, return_inverse=True, return_counts=True, equal_nan=equal_nan)
+    return [np.asarray(x) for x in r]
+
+
+UNIQUE_DATA = [
+    ("float64", [-0.0, 2.0, 0.0, 2.0, float("-inf"), NAN, 1.0, float("-inf"), NAN, 0.0]),
+    ("float32", [NAN, NAN]),
+    ("float64", []),
+    ("complex128", [1 + 1j, NAN, complex(0, NAN), complex(1, NAN)]),
+    ("complex128", [complex(NAN, NAN), complex(NAN, 0), complex(0, NAN), 5, complex(NAN, 1), complex(NAN, 0)]),
+    ("complex128", [complex(1, NAN), complex(0, NAN), complex(1, NAN)]),
+    ("complex64", [2j, 1, 2j, complex(NAN, 0), complex(NAN, 0)]),
+]
+
+
+@pytest.mark.parametrize("dtype,data", UNIQUE_DATA)
+@pytest.mark.parametrize("equal_nan", [True, False])
+def test_unique_nan_handling_matches_numpy(dtype, data, equal_nan):
+    want, got = exact_unique_outcome(np, data, dtype, equal_nan), exact_unique_outcome(rnp, data, dtype, equal_nan)
+    for w, g in zip(want, got):
+        assert w.dtype == g.dtype and w.shape == g.shape and np.array_equal(w, g, equal_nan=True), (want, got)
+
+
+@pytest.mark.parametrize("dtype", ["uint8", "int8", "uint16", "int32", "uint64", "int64"])
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_searchsorted_python_int_is_exact(dtype, side):
+    info = np.iinfo(dtype)
+    base = [info.min, info.min + 1, info.max - 1, info.max, 0, 1] if dtype != "uint64" else [0, 1, 2**62, 2**62 + 9, 2**63, info.max]
+    a = np.array(sorted(set(base)), dtype=dtype)
+    for v in [info.min, info.max, int(info.max) + 1, int(info.min) - 1, 0, -1, 2**63, 2**64, 10**30, 2**62 + 25, -(2**63), 2**62]:
+        want = sum((int(x) < v) if side == "left" else (int(x) <= v) for x in a)
+        assert int(rnp.searchsorted(rnp.asarray(a), v, side=side)) == want, (dtype, v, side)
+
+
+AXIS_ERROR_CALLS = {
+    "sum": lambda m: m.sum(m.ones((2, 3)), axis=5),
+    "mean": lambda m: m.mean(m.ones((2, 3)), axis=5),
+    "max": lambda m: m.max(m.ones((2, 3)), axis=5),
+    "argmax": lambda m: m.argmax(m.ones((2, 3)), axis=5),
+    "cumsum": lambda m: m.cumsum(m.ones((2, 3)), axis=5),
+    "sort": lambda m: m.sort(m.ones((2, 3)), axis=5),
+    "median": lambda m: m.median(m.ones((2, 3)), axis=5),
+    "diff": lambda m: m.diff(m.ones((2, 3)), axis=5),
+    "flip": lambda m: m.flip(m.ones((2, 3)), axis=5),
+    "squeeze": lambda m: m.squeeze(m.ones((2, 3)), axis=5),
+    "partition": lambda m: m.partition(m.ones((2, 3)), 1, axis=5),
+    "argpartition": lambda m: m.argpartition(m.ones((2, 3)), 1, axis=5),
+    "moveaxis": lambda m: m.moveaxis(m.ones((2, 3)), 5, 0),
+    "add_reduce": lambda m: m.add.reduce(m.ones((2, 3)), axis=5),
+    "negative_axis": lambda m: m.sum(m.ones((2, 3)), axis=-3),
+}
+
+
+@pytest.mark.parametrize("name", list(AXIS_ERROR_CALLS))
+def test_out_of_range_axis_raises_axis_error(name):
+    fn = AXIS_ERROR_CALLS[name]
+    with pytest.raises(np.exceptions.AxisError) as want:
+        fn(np)
+    with pytest.raises(rnp.exceptions.AxisError) as got:
+        fn(rnp)
+    assert str(got.value) == str(want.value)
+    assert isinstance(got.value, (ValueError, IndexError))
+
+
+def test_percentile_empty_axis_and_known_numpy_bugs_we_do_not_copy():
+    big = rnp.zeros(65521, dtype="float16")
+    big[:10] = 1
+    assert float(rnp.nanquantile(big, rnp.asarray([0.5], dtype="float16"))[0]) == 0.0
+    a = rnp.asarray([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0], [9.0, 10.0]])
+    w = rnp.asarray([0.1, 0.2, 0.3, 0.25, 0.15])
+    got = rnp.nanpercentile(a, [33.3, 66.6], weights=w, axis=0, method="inverted_cdf")
+    assert np.array_equal(np.asarray(got), np.asarray(rnp.percentile(a, [33.3, 66.6], weights=w, axis=0, method="inverted_cdf")))
+    assert np.array_equal(np.asarray(rnp.trim_zeros([[0, 1], [0, 0]])), [[1]])
+    assert np.asarray(rnp.einsum("i...->i", rnp.ones((3, 3, 3), dtype="int64"))).tolist() == [9, 9, 9]

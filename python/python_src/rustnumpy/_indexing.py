@@ -1,5 +1,6 @@
 from . import _core
 from ._core import asarray, ndarray
+from ._axiserror import AxisError
 from ._ufunc import _NoValue, _write_out
 
 
@@ -8,7 +9,7 @@ def _norm_axis(axis, ndim):
         raise TypeError("'%s' object cannot be interpreted as an integer" % type(axis).__name__)
     axis = axis.__index__()
     if axis < -ndim or axis >= ndim:
-        raise ValueError("axis %d is out of bounds for array of dimension %d" % (axis, ndim))
+        raise AxisError(axis, ndim)
     return axis % ndim if ndim else 0
 
 

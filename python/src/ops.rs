@@ -4,10 +4,14 @@ use crate::dispatch_same;
 use pyo3::exceptions::PyOverflowError;
 use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyInt};
-use rustnumpy::{NdArray, OpError};
+use rustnumpy::{NdArray, OpError, ShapeError};
 
 pub fn shape_err<E: Into<OpError>>(e: E) -> PyErr {
-    value_err(e.into())
+    match e.into() {
+        OpError::Shape(ShapeError::AxisOutOfBounds { axis, ndim }) => crate::dynarray::axis_error(axis as isize, ndim),
+        OpError::Shape(ShapeError::InvalidAxis { axis, ndim }) => crate::dynarray::axis_error(axis, ndim),
+        other => value_err(other),
+    }
 }
 
 pub enum Operand {
