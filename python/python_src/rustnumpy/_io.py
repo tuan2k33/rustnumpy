@@ -72,7 +72,7 @@ def _open(file, mode):
     return open(os.fspath(file), mode), True
 
 
-def save(file, arr, allow_pickle=True, fix_imports=True):
+def save(file, arr, allow_pickle=True):
     if not hasattr(file, "write"):
         name = os.fspath(file)
         if not name.endswith(".npy"):
@@ -212,12 +212,7 @@ def savetxt(fname, X, fmt="%.18e", delimiter=" ", newline="\n", header="", foote
 
 def loadtxt(fname, dtype=float, comments="#", delimiter=None, converters=None, skiprows=0, usecols=None, unpack=False, ndmin=0,
             encoding=None, max_rows=None, *, quotechar=None, like=None):
-    fh, close = _open(fname, "r")
-    try:
-        lines = fh.read().splitlines()
-    finally:
-        if close:
-            fh.close()
+    lines = _text_lines(fname, encoding)
     rows = []
     cm = [comments] if isinstance(comments, str) else list(comments or [])
     for line in lines[skiprows:]:
@@ -262,37 +257,161 @@ def loadtxt(fname, dtype=float, comments="#", delimiter=None, converters=None, s
     return arr
 
 
+class ConversionWarning(UserWarning):
+    pass
+
+
+def _text_lines(fname, encoding):
+    enc = "utf-8" if encoding in (None, "bytes") else encoding
+    if isinstance(fname, (str, os.PathLike)):
+        with open(os.fspath(fname), "r", encoding=enc) as fh:
+            raw = fh.read().splitlines()
+    elif hasattr(fname, "read"):
+        content = fname.read()
+        raw = (content.decode(enc) if isinstance(content, bytes) else content).splitlines()
+    else:
+        raw = [x.decode(enc) if isinstance(x, bytes) else x for x in fname]
+        raw = [line.rstrip("\r\n") for line in raw]
+    return raw
+
+
+def _str2bool(text):
+    value = text.upper()
+    if value == "TRUE":
+        return True
+    if value == "FALSE":
+        return False
+    raise ValueError("Invalid boolean")
+
+
+_GEN_PARSERS = {"b": _str2bool, "i": int, "u": int, "f": float, "c": lambda t: complex(t.replace("(", "").replace(")", ""))}
+_GEN_FILL = {"b": False, "i": -1, "u": -1, "f": float("nan"), "c": complex(float("nan"), 0.0)}
+_GEN_GUESS = (("b", _str2bool), ("i", int), ("f", float), ("c", _GEN_PARSERS["c"]))
+
+
+def _per_column(spec, index, default):
+    if isinstance(spec, dict):
+        return spec.get(index, default)
+    if isinstance(spec, (list, tuple)) and not isinstance(spec, str):
+        return spec[index] if index < len(spec) else default
+    return spec
+
+
+def _split_fixed(line, delimiter):
+    widths = [delimiter] * (len(line) // delimiter + (len(line) % delimiter > 0)) if isinstance(delimiter, int) else list(delimiter)
+    out, pos = [], 0
+    for w in widths:
+        out.append(line[pos:pos + w].strip())
+        pos += w
+    return out
+
+
 def genfromtxt(fname, dtype=float, comments="#", delimiter=None, skip_header=0, skip_footer=0, converters=None, missing_values=None,
-               filling_values=None, usecols=None, names=None, unpack=None, invalid_raise=True, max_rows=None, encoding=None, **kw):
-    fh, close = _open(fname, "r")
-    try:
-        lines = fh.read().splitlines()
-    finally:
-        if close:
-            fh.close()
-    lines = lines[skip_header: len(lines) - skip_footer if skip_footer else None]
-    rows = []
-    for line in lines:
+               filling_values=None, usecols=None, names=None, excludelist=None, deletechars=None, replace_space="_", autostrip=False,
+               case_sensitive=True, defaultfmt="f%i", unpack=None, usemask=False, loose=True, invalid_raise=True, max_rows=None,
+               encoding=None, *, ndmin=0, like=None):
+    import warnings
+
+    if usemask:
+        raise NotImplementedError("genfromtxt(usemask=True) needs masked arrays, which are not implemented")
+    if names:
+        raise NotImplementedError("genfromtxt(names=...) needs structured dtypes, which are not implemented")
+    if ndmin not in (0, 1, 2):
+        raise ValueError("Illegal value of ndmin keyword: %s" % ndmin)
+    lines = _text_lines(fname, encoding)
+    if skip_header < 0 or skip_footer < 0:
+        raise ValueError("skip_header and skip_footer must not be negative")
+    fixed = delimiter is not None and not isinstance(delimiter, str)
+    parsed = []
+    for number, line in enumerate(lines, 1):
+        if number <= skip_header:
+            continue
         if comments and comments in line:
             line = line[: line.index(comments)]
         line = line.strip()
         if not line:
             continue
-        rows.append([p.strip() for p in (line.split(delimiter) if delimiter else line.split())])
+        if fixed:
+            values = _split_fixed(line, delimiter)
+        else:
+            values = [p.strip() for p in (line.split(delimiter) if delimiter else line.split())]
+        parsed.append((number, values))
+    if skip_footer:
+        parsed = parsed[:-skip_footer]
+    rows, bad = [], []
+    ncols = len(parsed[0][1]) if parsed else None
+    for number, values in parsed:
+        if len(values) != ncols:
+            bad.append((number, len(values), ncols))
+            continue
+        rows.append(values)
+        if max_rows is not None and len(rows) >= max_rows:
+            break
+    if bad:
+        message = "Some errors were detected !" + "".join("\n    Line #%i (got %i columns instead of %i)" % b for b in bad)
+        if invalid_raise:
+            raise ValueError(message)
+        warnings.warn(message, ConversionWarning, stacklevel=2)
     if usecols is not None:
         cols = [usecols] if isinstance(usecols, int) else list(usecols)
         rows = [[r[c] for c in cols] for r in rows]
-    dt = _core.dtype(dtype)
-    fill = float("nan") if filling_values is None and dt.kind == "f" else (0 if filling_values is None else filling_values)
-    def conv(t):
-        if t == "" or (missing_values is not None and t in (missing_values if isinstance(missing_values, (list, tuple)) else [missing_values])):
-            return fill
-        return float(t) if dt.kind in "fc" else int(t)
-    data = [[conv(t) for t in r] for r in rows]
-    arr = _core.array(data, dt)
-    if arr.ndim == 2 and arr.shape[0] == 1 or arr.ndim == 2 and arr.shape[1] == 1:
-        arr = arr.reshape((-1,))
-    return _core.transpose(arr) if unpack and arr.ndim == 2 else arr
+    guessing = dtype is None
+    dt = None if guessing else _core.dtype(dtype)
+    if not rows:
+        warnings.warn('genfromtxt: Empty input file: "%s"' % (fname,), stacklevel=2)
+        return _core.zeros((0,), dt or "float64")
+    width = len(rows[0])
+    missing = []
+    for j in range(width):
+        spec = _per_column(missing_values, j, None)
+        missing.append({""} | set([spec] if isinstance(spec, str) else (spec or [])))
+    columns = []
+    for j in range(width):
+        user = converters.get(j) if isinstance(converters, dict) else converters
+        tokens = [r[j] for r in rows]
+        kind = dt.kind if dt is not None else None
+        if guessing and user is None:
+            present = [t for t in tokens if t not in missing[j]]
+            kind = None if not present else "f"
+            for k, parse in _GEN_GUESS if present else ():
+                try:
+                    for t in present:
+                        parse(t)
+                except ValueError:
+                    continue
+                kind = k
+                break
+            else:
+                if present:
+                    raise NotImplementedError("genfromtxt cannot guess string columns: string dtypes are not implemented")
+        fill = _per_column(filling_values, j, None)
+        if fill is None:
+            fill = 0 if guessing and kind == "i" else _GEN_FILL.get(kind, 0)
+        parse = user or _GEN_PARSERS.get(kind, float)
+        column = []
+        for t in tokens:
+            if t in missing[j]:
+                column.append(fill)
+                continue
+            try:
+                column.append(parse(t))
+            except ValueError:
+                if not loose:
+                    raise ValueError("Cannot convert string %r" % t) from None
+                column.append(fill)
+        columns.append((kind, column))
+    if guessing:
+        kinds = {k for k, _ in columns if k is not None} or {"f"}
+        if len(kinds) > 1:
+            raise NotImplementedError("genfromtxt found columns of different types: structured dtypes are not implemented")
+        dt = _core.dtype({"b": "bool", "i": "int64", "f": "float64", "c": "complex128"}[kinds.pop()])
+    arr = _core.array([list(r) for r in zip(*(c for _, c in columns))], dt)
+    arr = arr.reshape(tuple(s for s in arr.shape if s != 1))
+    if ndmin == 1 and arr.ndim == 0:
+        arr = arr.reshape((1,))
+    elif ndmin == 2:
+        arr = arr.reshape((1,) * (2 - arr.ndim) + tuple(arr.shape)) if arr.ndim < 2 else arr
+    return _core.transpose(arr) if unpack else arr
 
 
 def fromfile(file, dtype=float, count=-1, sep="", offset=0, *, like=None):

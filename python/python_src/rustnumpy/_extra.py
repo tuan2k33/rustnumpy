@@ -92,16 +92,6 @@ def astype(x, dtype, /, *, copy=True, device=None):
     return x.astype(dtype, copy=copy)
 
 
-def matvec(x1, x2, /, **kwargs):
-    x1, x2 = asarray(x1), asarray(x2)
-    return _core.matmul(x1, x2[..., None])[..., 0]
-
-
-def vecmat(x1, x2, /, **kwargs):
-    x1, x2 = asarray(x1), asarray(x2)
-    return _core.matmul(x1[..., None, :], x2)[..., 0, :]
-
-
 def min_scalar_type(a):
     a = asarray(a)
     if a.ndim == 0 and a.dtype.kind in "iu":

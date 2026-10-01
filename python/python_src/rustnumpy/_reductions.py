@@ -773,17 +773,17 @@ def _weighted_quantile(a, qf, axis, method, keepdims, weights, out):
     return res
 
 
-def percentile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None, interpolation=None):
+def percentile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
     return _quantile(a, q, axis, out, method, keepdims, weights, True, "propagate")
 
 
-def quantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None, interpolation=None):
+def quantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
     return _quantile(a, q, axis, out, method, keepdims, weights, False, "propagate")
 
 
-def nanpercentile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=_NoValue, *, weights=None, interpolation=None):
+def nanpercentile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=_NoValue, *, weights=None):
     return _quantile(a, q, axis, out, method, False if keepdims is _NoValue else keepdims, weights, True, "omit")
 
 
-def nanquantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=_NoValue, *, weights=None, interpolation=None):
+def nanquantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=_NoValue, *, weights=None):
     return _quantile(a, q, axis, out, method, False if keepdims is _NoValue else keepdims, weights, False, "omit")

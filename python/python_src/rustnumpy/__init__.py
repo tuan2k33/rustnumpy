@@ -41,23 +41,26 @@ from ._reductions import (
 from ._numeric import (
     round, around, fix, clip, diff, ediff1d, trapezoid, gradient, interp, convolve, correlate, allclose, isclose, array_equal,
     array_equiv, isreal, iscomplex, isrealobj, iscomplexobj, real_if_close, angle, unwrap, sinc, nan_to_num, bincount, digitize,
-    histogram_bin_edges, histogram, histogramdd, histogram2d, cov, corrcoef, vdot, inner, tensordot, cross, outer, vecdot,
-    bitwise_count, packbits, unpackbits, hanning, hamming, blackman, bartlett, kaiser, i0, finfo, iinfo,
+    histogram_bin_edges, histogram, histogramdd, histogram2d, cov, corrcoef, dot, vdot, inner, tensordot, cross, outer,
+    packbits, unpackbits, hanning, hamming, blackman, bartlett, kaiser, i0, finfo, iinfo,
 )
 from ._misc import (
     geterr, seterr, geterrcall, seterrcall, errstate, issubdtype, isdtype, common_type, mintypecode, typename, shares_memory,
     may_share_memory, vectorize, apply_along_axis, apply_over_axes, piecewise, frompyfunc, generic, number, integer,
     signedinteger, unsignedinteger, inexact, floating, complexfloating,
 )
+from ._einsum import einsum, einsum_path
 from ._io import save, load, savez, savez_compressed, savetxt, loadtxt, genfromtxt, fromfile, fromstring
 from ._print import array2string, array_repr, array_str, set_printoptions, get_printoptions, printoptions
 from ._methods import _m_sort, _m_partition, _m_resize, _m_view, _m_byteswap, _m_tofile, _m_dump, _m_dumps, _m_to_device, _m_setflags, _m_unsupported, _m_tobytes_alias, _m_compress
 
 from . import fft, linalg, random
 
+linalg.matmul = matmul
+
 from ._extra import (
     AxisError, ComplexWarning, RankWarning, VisibleDeprecationWarning, TooHardError, DTypePromotionError, isposinf, isneginf,
-    ix_, isfortran, asarray_chkfinite, astype, matvec, vecmat, min_scalar_type, binary_repr, base_repr, format_float_positional,
+    ix_, isfortran, asarray_chkfinite, astype, min_scalar_type, binary_repr, base_repr, format_float_positional,
     format_float_scientific, typecodes, little_endian, getbufsize, setbufsize, show_config, emath, flatiter,
 )
 from . import _extra as exceptions

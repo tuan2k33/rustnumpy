@@ -39,11 +39,7 @@ def iterable(y):
     return True
 
 
-def reshape(a, /, shape=None, order="C", *, newshape=None, copy=None):
-    if newshape is not None:
-        if shape is not None:
-            raise TypeError("You cannot specify 'newshape' and 'shape' arguments at the same time.")
-        shape = newshape
+def reshape(a, /, shape, order="C", *, copy=None):
     a = asarray(a)
     if order not in ("C", "F", "A"):
         raise ValueError("order must be one of 'C', 'F', or 'A'")

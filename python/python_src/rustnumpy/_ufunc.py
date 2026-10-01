@@ -278,6 +278,93 @@ class ufunc:
         return None
 
 
+class gufunc(ufunc):
+    def __init__(self, fn, name, signature, core_in, core_out, single_core=False):
+        super().__init__(fn, name, 2)
+        self.__doc__ = "%s(x1, x2, /, out=None, *, axes=None, axis=None, keepdims=False, casting='same_kind', dtype=None)\n\nA rustnumpy generalized ufunc." % name
+        self.signature = signature
+        self._core_in = core_in
+        self._core_out = core_out
+        self._single_core = single_core
+
+    def _core_dims(self, ndim, spec):
+        return min(spec, ndim) if isinstance(spec, int) else spec(ndim)
+
+    def __call__(self, *args, out=None, axes=None, axis=None, keepdims=False, where=_NoValue, **kwargs):
+        name = self.__name__
+        if where is not _NoValue:
+            raise TypeError("%s() got an unexpected keyword argument 'where'" % name)
+        if axes is None and axis is None and not keepdims:
+            return super().__call__(*args, out=out, **kwargs)
+        if len(args) != 2:
+            return super().__call__(*args, out=out, **kwargs)
+        if axes is not None and axis is not None:
+            raise TypeError("cannot specify both 'axis' and 'axes'")
+        if axis is not None and not self._single_core:
+            raise TypeError("%s: axis can only be used with a single shared core dimension, not with the distinct dimensions in signature %s" % (name, self.signature))
+        if keepdims and not self._single_core:
+            raise TypeError("%s does not support keepdims: its signature %s requires every output to have the same number of core dimensions as the inputs" % (name, self.signature))
+        if axis is not None:
+            axes = [(axis,), (axis,)] + ([(axis,)] if keepdims else [])
+        operands = [asarray(a) for a in args]
+        counts = [self._core_dims(o.ndim, spec) for o, spec in zip(operands, self._core_in)]
+        n_out = self._core_out(operands) if callable(self._core_out) else self._core_out
+        if keepdims:
+            n_out = 1
+        if axes is None:
+            axes = [tuple(range(-c, 0)) for c in counts] + [tuple(range(-n_out, 0))]
+        else:
+            axes = [tuple(a) if isinstance(a, (tuple, list)) else (a,) for a in axes]
+            if len(axes) == 2 and n_out == 0:
+                axes.append(())
+            if len(axes) != 3:
+                raise ValueError("axes should be a list with an entry for each operand")
+        moved = []
+        for i, (o, c) in enumerate(zip(operands, counts)):
+            if len(axes[i]) != c:
+                raise _extra_axis_error("%s: operand %d has %d core dimensions, but %d dimensions are specified by axes tuple." % (name, i, c, len(axes[i])))
+            moved.append(_core.moveaxis(o, axes[i], tuple(range(-c, 0))) if c else o)
+        if len(axes[2]) != n_out:
+            raise _extra_axis_error("%s: operand 2 has %d core dimensions, but %d dimensions are specified by axes tuple." % (name, n_out, len(axes[2])))
+        res = asarray(super().__call__(*moved, **kwargs))
+        if n_out:
+            if keepdims:
+                res = _core.expand_dims(res, axes[2][0])
+            else:
+                res = _core.moveaxis(res, tuple(range(-n_out, 0)), axes[2])
+        return _write_out(res, out, True, kwargs.get("casting", "same_kind"), name)
+
+
+def _extra_axis_error(message):
+    from ._extra import AxisError
+
+    return AxisError(message)
+
+
+def _matvec(x1, x2):
+    x1, x2 = asarray(x1), asarray(x2)
+    return _core.matmul(x1, x2[..., None])[..., 0]
+
+
+def _vecmat(x1, x2):
+    x1, x2 = asarray(x1), asarray(x2)
+    return _core.matmul(x1[..., None, :], x2)[..., 0, :]
+
+
+def _bitwise_count(x):
+    x = asarray(x)
+    if x.dtype.kind not in "iub":
+        raise TypeError("ufunc 'bitwise_count' not supported for the input types")
+    if x.dtype.kind == "i":
+        ux = _core.where(_core.less(x, 0), _core.absolute(x.astype("int64")).astype("uint64"), x.astype("uint64"))
+    else:
+        ux = x.astype("uint64")
+    count = _core.zeros(tuple(ux.shape), "uint8")
+    for bit in range(64):
+        count = _core.add(count, _core.bitwise_and(_core.right_shift(ux, bit), 1).astype("uint8"))
+    return count
+
+
 def _unravel(flat, shape):
     idx = []
     for s in reversed(shape):
@@ -363,5 +450,8 @@ def _install(namespace):
     for new, old in (("acos", "arccos"), ("asin", "arcsin"), ("atan", "arctan"), ("acosh", "arccosh"), ("asinh", "arcsinh"),
                      ("atanh", "arctanh"), ("atan2", "arctan2")):
         namespace[new] = namespace[old]
-    namespace["matmul"] = _make("matmul", _core.matmul, 2)
-    namespace["vecdot"] = _make("vecdot", _core.vecdot, 2)
+    namespace["matmul"] = gufunc(_core.matmul, "matmul", "(n?,k),(k,m?)->(n?,m?)", (2, 2), lambda ops: sum(o.ndim >= 2 for o in ops))
+    namespace["vecdot"] = gufunc(_core.vecdot, "vecdot", "(n),(n)->()", (1, 1), 0, True)
+    namespace["matvec"] = gufunc(_matvec, "matvec", "(m,n),(n)->(m)", (2, 1), 1)
+    namespace["vecmat"] = gufunc(_vecmat, "vecmat", "(n),(n,m)->(m)", (1, 2), 1)
+    namespace["bitwise_count"] = _make("bitwise_count", _bitwise_count, 1)

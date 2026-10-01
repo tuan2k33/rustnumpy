@@ -17,3 +17,5 @@ Behaviours where rustnumpy differs from NumPy (or from a standard) deliberately.
 ## Process-wide side effect
 
 On Linux with glibc, importing `rustnumpy` calls `mallopt` to set `M_MMAP_THRESHOLD` to 32 MiB and `M_TRIM_THRESHOLD` to 128 MiB, so the temporaries of ordinary array code are reused instead of being returned to the OS and page-faulted back on the next call (2.5x to 10x on mixed-dtype arithmetic, see `NumPy.md`, "Step 26e"). It affects the whole Python process, and up to 128 MiB of freed memory stays with it. Set `RUSTNUMPY_NO_MALLOC_TUNING=1` before the import to skip it.
+
+**API parity (step 26g).** `einsum(optimize=...)` runs the contraction path as chained two-operand einsums, not through NumPy's batched matmul, so floating-point sums can differ in the last digits. `einsum(order=)` is accepted and has no effect on memory layout. `genfromtxt` raises `NotImplementedError` for `names=`, `usemask=True`, string columns and per-column mixed types (structured dtypes and masked arrays are not implemented). `array(ndmax=)` only limits nested sequences; there is no object dtype to fall back to.

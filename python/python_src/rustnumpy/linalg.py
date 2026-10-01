@@ -1,8 +1,7 @@
 from . import _core
 from ._core import LinAlgError, asarray
 from . import _core as _c
-from ._core import matmul
-from ._numeric import cross, outer, vecdot
+from ._numeric import cross, outer
 from ._manip import matrix_transpose, swapaxes, transpose as _transpose, moveaxis
 from ._numeric import tensordot
 import collections as _collections
@@ -504,3 +503,9 @@ def tensorinv(a, ind=2):
         prod *= d
     a = a.reshape((prod, -1))
     return inv(a).reshape(invshape)
+
+
+def vecdot(x1, x2, /, *, axis=-1):
+    from . import vecdot as _vecdot
+
+    return _vecdot(x1, x2, axis=axis)

@@ -40,7 +40,11 @@ def _apply_order(x, order):
     return x
 
 
-def array(object, dtype=None, *, copy=True, order="K", subok=False, ndmin=0, like=None):
+def array(object, dtype=None, *, copy=True, order="K", subok=False, ndmin=0, ndmax=None, like=None):
+    if ndmax is not None and not 0 <= ndmax <= 64:
+        raise ValueError("ndmax must be in the range [0, NPY_MAXDIMS (64)] ")
+    if ndmax is not None and ndmin > ndmax:
+        raise ValueError("ndmin must be <= ndmax (%d)" % ndmax)
     if isinstance(object, ndarray):
         same = dtype is None or _core.dtype(dtype) == object.dtype
         if same:
@@ -53,6 +57,10 @@ def array(object, dtype=None, *, copy=True, order="K", subok=False, ndmin=0, lik
         if copy is False and isinstance(object, (list, tuple)):
             raise ValueError("Unable to avoid copy while creating an array as requested.")
         res = _core.array(object, dtype, True)
+        if ndmax is not None and res.ndim > ndmax:
+            raise ValueError(
+                "setting an array element with a sequence. The requested array would exceed the maximum number of dimension of %d." % ndmax
+            )
     if ndmin and res.ndim < ndmin:
         res = res.reshape((1,) * (ndmin - res.ndim) + tuple(res.shape))
     return _apply_order(res, order)

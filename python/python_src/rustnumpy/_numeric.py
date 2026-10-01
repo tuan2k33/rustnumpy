@@ -865,6 +865,17 @@ def corrcoef(x, y=None, rowvar=True, *, dtype=None):
     return _core.clip(c, -1, 1)
 
 
+def dot(a, b, out=None):
+    res = _core.dot(a, b)
+    if out is None:
+        return res
+    res = asarray(res)
+    if not isinstance(out, ndarray) or out.dtype != res.dtype or tuple(out.shape) != tuple(res.shape) or not out.flags.c_contiguous:
+        raise ValueError("output array is not acceptable (must have the right datatype, number of dimensions, and be a C-Array)")
+    out[...] = res
+    return out
+
+
 def vdot(a, b):
     a = asarray(a).reshape((-1,))
     b = asarray(b).reshape((-1,))
@@ -907,28 +918,6 @@ def outer(a, b, out=None):
     a, b = asarray(a).reshape((-1,)), asarray(b).reshape((-1,))
     res = _core.outer(a, b)
     return _write_out(res, out, True, "same_kind", "outer") if out is not None else res
-
-
-def vecdot(x1, x2, /, *, axis=-1):
-    x1, x2 = asarray(x1), asarray(x2)
-    if axis != -1:
-        x1, x2 = _core.moveaxis(x1, axis, -1), _core.moveaxis(x2, axis, -1)
-    return _core.vecdot(x1, x2)
-
-
-def bitwise_count(x):
-    x = asarray(x)
-    if x.dtype.kind not in "iub":
-        raise TypeError("ufunc 'bitwise_count' not supported for the input types")
-    if x.dtype.kind == "i":
-        ux = _core.absolute(x.astype("int64")).astype("uint64") if x.dtype.itemsize < 8 else _core.absolute(x).astype("uint64")
-        ux = _core.where(_core.less(x, 0), _core.absolute(x.astype("int64")).astype("uint64"), x.astype("uint64"))
-    else:
-        ux = x.astype("uint64")
-    count = _core.zeros(tuple(ux.shape), "uint8")
-    for bit in builtins_range(64):
-        count = _core.add(count, _core.bitwise_and(_core.right_shift(ux, bit), 1).astype("uint8"))
-    return count
 
 
 def packbits(a, /, axis=None, bitorder="big"):

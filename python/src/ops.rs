@@ -205,19 +205,21 @@ pub fn resolve_loop(
 }
 
 #[pyfunction]
-pub fn real(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = Arr::from_object(py, a)?;
+#[pyo3(signature = (val))]
+pub fn real(py: Python<'_>, val: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let arr = Arr::from_object(py, val)?;
     let result = match &arr {
         Arr::C64(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.re).collect(), x.shape()).map_err(shape_err)?),
         Arr::C128(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.re).collect(), x.shape()).map_err(shape_err)?),
-        _ => return crate::pyarray::wrap(py, crate::pyarray::as_array(py, a)?),
+        _ => return crate::pyarray::wrap(py, crate::pyarray::as_array(py, val)?),
     };
     out_array(py, result)
 }
 
 #[pyfunction]
-pub fn imag(py: Python<'_>, a: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr = Arr::from_object(py, a)?;
+#[pyo3(signature = (val))]
+pub fn imag(py: Python<'_>, val: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let arr = Arr::from_object(py, val)?;
     let result = match &arr {
         Arr::C64(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.im).collect(), x.shape()).map_err(shape_err)?),
         Arr::C128(x) => Arr::from(NdArray::from_vec(x.as_slice().iter().map(|c| c.im).collect(), x.shape()).map_err(shape_err)?),

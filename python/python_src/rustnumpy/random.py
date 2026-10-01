@@ -82,6 +82,9 @@ class Generator:
     def __getattr__(self, name):
         return getattr(self._g, name)
 
+    def __dir__(self):
+        return sorted(set(object.__dir__(self)) | {n for n in dir(self._g) if not n.startswith("_")})
+
     def random(self, size=None, dtype="float64", out=None):
         res = self._g.random(size)
         if dtype not in ("float64", float, _core.float64):

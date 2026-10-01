@@ -1,12 +1,30 @@
 import builtins as _b
 
 from . import _core
-from ._core import fft, hfft, ifft, ihfft, irfft, rfft
+from ._ufunc import _write_out
 
 
-def _prod_check(out):
-    if out is not None:
-        raise NotImplementedError("out= is not supported by the fft functions")
+def _deliver(res, out, name):
+    if out is None:
+        return res
+    if not isinstance(out, _core.ndarray):
+        raise TypeError("return arrays must be of ArrayType")
+    if tuple(out.shape) != tuple(res.shape):
+        raise ValueError("output array has wrong shape.")
+    return _write_out(res, out, True, "same_kind", name)
+
+
+def _line(name):
+    core = getattr(_core, name)
+
+    def transform(a, n=None, axis=-1, norm=None, out=None):
+        return _deliver(core(a, n, axis, norm), out, name)
+
+    transform.__name__ = name
+    return transform
+
+
+fft, ifft, rfft, irfft, hfft, ihfft = (_line(n) for n in ("fft", "ifft", "rfft", "irfft", "hfft", "ihfft"))
 
 
 def _cook_nd_args(a, s, axes, invreal=False):
@@ -27,11 +45,10 @@ def _cook_nd_args(a, s, axes, invreal=False):
 
 
 def _nd_c2c(one, a, s, axes, norm, out):
-    _prod_check(out)
     a, s, axes = _cook_nd_args(a, s, axes)
     for ii in reversed(range(len(axes))):
         a = one(a, n=s[ii], axis=axes[ii], norm=norm)
-    return a
+    return _deliver(a, out, one.__name__)
 
 
 def fftn(a, s=None, axes=None, norm=None, out=None):
@@ -51,20 +68,18 @@ def ifft2(a, s=None, axes=(-2, -1), norm=None, out=None):
 
 
 def rfftn(a, s=None, axes=None, norm=None, out=None):
-    _prod_check(out)
     a, s, axes = _cook_nd_args(a, s, axes)
     a = rfft(a, s[-1], axes[-1], norm)
     for ii in reversed(range(len(axes) - 1)):
         a = fft(a, s[ii], axes[ii], norm)
-    return a
+    return _deliver(a, out, "rfft")
 
 
 def irfftn(a, s=None, axes=None, norm=None, out=None):
-    _prod_check(out)
     a, s, axes = _cook_nd_args(a, s, axes, invreal=True)
     for ii in range(len(axes) - 1):
         a = ifft(a, s[ii], axes[ii], norm)
-    return irfft(a, s[-1], axes[-1], norm)
+    return _deliver(irfft(a, s[-1], axes[-1], norm), out, "irfft")
 
 
 def rfft2(a, s=None, axes=(-2, -1), norm=None, out=None):

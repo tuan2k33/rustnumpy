@@ -396,7 +396,7 @@ def _resolve(opts_in, max_line_width, precision, suppress_small):
     return opts
 
 
-def array2string(a, max_line_width=None, precision=None, suppress_small=None, separator=" ", prefix="", style=None, formatter=None,
+def array2string(a, max_line_width=None, precision=None, suppress_small=None, separator=" ", prefix="", formatter=None,
                  threshold=None, edgeitems=None, sign=None, floatmode=None, suffix="", *, legacy=None):
     from . import _core
 
