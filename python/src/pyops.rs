@@ -105,6 +105,9 @@ impl PyArray {
     }
 
     fn __pos__(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        if slf.borrow().dtype_name() == "bool" {
+            return unary(slf, umath::positive);
+        }
         Ok(slf.clone().into_any().unbind())
     }
 

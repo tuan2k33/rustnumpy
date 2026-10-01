@@ -278,33 +278,17 @@ impl Arr {
         if self.ndim() != 0 {
             return Ok(None);
         }
-        let (dtype, value) = match self {
-            Arr::Bool(a) => ("bool", pyo3::types::PyBool::new(py, a.as_slice()[0]).to_owned().into_any()),
-            Arr::I64(a) => ("int64", a.as_slice()[0].into_pyobject(py)?.into_any()),
-            Arr::F64(a) => ("float64", a.as_slice()[0].into_pyobject(py)?.into_any()),
-            Arr::C128(a) => ("complex128", pyo3::types::PyComplex::from_doubles(py, a.as_slice()[0].re, a.as_slice()[0].im).into_any()),
+        Ok(Some(match self {
+            Arr::Bool(a) => crate::scalars::new_bool(py, a.as_slice()[0])?,
+            Arr::I64(a) => crate::scalars::new_i64(py, a.as_slice()[0])?,
+            Arr::F64(a) => crate::scalars::new_f64(py, a.as_slice()[0])?,
+            Arr::C128(a) => crate::scalars::new_c128(py, a.as_slice()[0].re, a.as_slice()[0].im)?,
             _ => return Ok(None),
-        };
-        static SCALAR: pyo3::sync::PyOnceLock<Py<PyAny>> = pyo3::sync::PyOnceLock::new();
-        let make = SCALAR.get_or_try_init(py, || py.import("rustnumpy._scalars")?.getattr("scalar").map(Bound::unbind))?;
-        Ok(Some(make.bind(py).call1((dtype, value))?.unbind()))
+        }))
     }
 
     pub fn from_scalar_class(obj: &Bound<'_, PyAny>) -> PyResult<Option<Arr>> {
-        use pyo3::types::{PyComplex, PyFloat, PyInt};
-        if obj.is_exact_instance_of::<PyFloat>() || obj.is_exact_instance_of::<PyInt>() || obj.is_exact_instance_of::<PyComplex>() {
-            return Ok(None);
-        }
-        let Ok(name) = obj.get_type().getattr("_rnp_dtype") else { return Ok(None) };
-        Ok(Some(match name.extract::<String>()?.as_str() {
-            "bool" => Arr::scalar(obj.is_truthy()?),
-            "int64" => Arr::scalar(obj.extract::<i64>()?),
-            "float64" => Arr::scalar(obj.extract::<f64>()?),
-            _ => {
-                let c = obj.downcast::<PyComplex>()?;
-                Arr::scalar(Complex::new(c.real(), c.imag()))
-            }
-        }))
+        Ok(crate::scalars::as_arr(obj))
     }
 
     pub fn from_object(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Arr> {

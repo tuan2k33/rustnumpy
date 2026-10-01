@@ -16,6 +16,7 @@ mod pyindex;
 mod pymethods;
 mod pyops;
 mod rngfns;
+mod scalars;
 mod shapefns;
 mod typefns;
 mod umath;
@@ -81,6 +82,7 @@ fn rustnumpy_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     linalgfns::register(m)?;
     clinalgfns::register(m)?;
     rngfns::register(m)?;
+    scalars::register(m)?;
     typefns::register(m)?;
     umath::register(m)?;
     m.add_function(wrap_pyfunction!(dlpack::from_dlpack, m)?)?;

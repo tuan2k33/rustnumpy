@@ -401,10 +401,7 @@ fn scalar_mask_value(item: &Bound<'_, PyAny>) -> PyResult<Option<bool>> {
         }
         return Ok(None);
     }
-    if item.get_type().hasattr("_rnp_scalar")? && item.get_type().getattr("_rnp_dtype")?.extract::<String>()? == "bool" {
-        return Ok(Some(item.is_truthy()?));
-    }
-    Ok(None)
+    Ok(crate::scalars::bool_value(item))
 }
 
 fn axes_consumed(item: &Bound<'_, PyAny>) -> PyResult<usize> {
