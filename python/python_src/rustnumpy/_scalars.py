@@ -135,16 +135,21 @@ def _fast_float(key, reflected, slow):
 
 def _fast_int(key, reflected, slow):
     lo, hi = _I64_RANGE
+    new = object.__new__
     if key in _CMP_KEYS:
         method = getattr(int, f"__{key}__")
 
         def cmp(self, other):
             t = type(other)
             if t is int:
-                return _Bool(method(self._v, other))
-            if t is _I64:
-                return _Bool(method(self._v, other._v))
-            return slow(self, other)
+                r = method(self._v, other)
+            elif t is _I64:
+                r = method(self._v, other._v)
+            else:
+                return slow(self, other)
+            out = new(_Bool)
+            out._v = r
+            return out
 
         return cmp
     if key not in ("add", "sub", "mul", "truediv", "floordiv", "mod"):
@@ -164,7 +169,11 @@ def _fast_int(key, reflected, slow):
         if key == "truediv":
             a, b = (other, self._v) if reflected else (self._v, other)
             return _F64(float(a) / float(b))
-        return _I64(r) if lo <= r <= hi else slow(self, other)
+        if not lo <= r <= hi:
+            return slow(self, other)
+        out = new(_I64)
+        out._v = r
+        return out
 
     return arith
 
@@ -194,7 +203,7 @@ class _Plain(_ScalarBase):
     __slots__ = ("_v",)
 
     def __init__(self, value=0):
-        object.__setattr__(self, "_v", self._base(value))
+        self._v = value if type(value) is self._base else self._base(value)
 
     def _plain(self):
         return self._v
